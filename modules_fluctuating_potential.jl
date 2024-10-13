@@ -46,7 +46,8 @@ module FP
             n = rand(rng, 1:param.N)
 
             w = [D, D, D, D]  # right, up, left, down
-            move = tower_sampling(w, sum(w), rng)
+            w_sum=sum(w)
+            move = tower_sampling(w, w_sum, rng)
 
             if move==1
                 state.pos[n,1] = mod1( state.pos[n,1] + 1, param.Lx)
@@ -58,7 +59,7 @@ module FP
                 state.pos[n,2] = mod1( state.pos[n,2] - 1, param.Ly)
             end
 
-            state.t += 1/(param.N*sum(w))
+            state.t += 1/(param.N*w_sum)
         end
 
         # update the density field
