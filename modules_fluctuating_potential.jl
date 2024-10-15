@@ -1,5 +1,15 @@
+# At the top of the file, outside the FP module
+using Statistics
+using FFTW
+using LsqFit
+
 #Wrap everything with a module to allow redefinition of type
 module FP
+
+    # Add these imports at the top of the file
+    using Statistics
+    using FFTW
+    using LsqFit
 
     mutable struct Param
         D::Float64  # diffusion constant
@@ -85,32 +95,120 @@ module FP
 end
 
 
+function compute_spatial_correlation(ρ)
+    F = fft(ρ)
+    power_spectrum = F .* conj(F)
+    corr = real(ifft(power_spectrum))
+    return fftshift(corr) / (size(ρ, 1) * size(ρ, 2))
+end
 
-function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps)
-    # t_gap = time gap between each frame
-    # n_frame = number of frames
-    # file_name = name of your simulation file
-    # in_fps = number of frames per second
+function compute_time_correlation(ρ_history)
+    n_frames = size(ρ_history, 3)
+    corr = zeros(n_frames)
+    ρ_mean = mean(ρ_history)
+    ρ_var = var(ρ_history)
+    
+    for dt in 0:(n_frames-1)
+        c = 0.0
+        for t in 1:(n_frames-dt)
+            c += mean((ρ_history[:,:,t] .- ρ_mean) .* (ρ_history[:,:,t+dt] .- ρ_mean))
+        end
+        corr[dt+1] = c / ((n_frames-dt) * ρ_var)
+    end
+    
+    return corr
+end
 
-    #initialize
+function fit_exponential(t, y)
+    model(t, p) = p[1] .* exp.(-t ./ p[2]) .+ p[3]  
+    p0 = [1.0, 1.0, 0.0]  # Initial guess for [amplitude, decay time, offset]
+    fit = curve_fit(model, t, y, p0)
+    return fit.param
+end
+
+function initialize_simulation(state, param, n_frame)
     state.t = 0
     prg = Progress(n_frame)
+    ρ_history = zeros(param.Lx, param.Ly, n_frame)
+    decay_times = Float64[]
+    return prg, ρ_history, decay_times
+end
 
-    #animation macro
+function update_and_compute_correlations(state, param, t_gap, ρ_history, frame, rng)
+    FP.update!(t_gap, param, state, rng)
+    ρ_history[:,:,frame] = state.ρ
+    spatial_corr = compute_spatial_correlation(state.ρ)
+    time_corr = compute_time_correlation(ρ_history[:,:,1:frame])
+    return spatial_corr, time_corr
+end
+
+function plot_density(state, param)
+    x_range = range(1, param.Lx, length = param.Lx)
+    y_range = range(1, param.Ly, length = param.Ly)
+    heatmap(x_range, y_range, transpose(state.ρ), 
+            title="Density", 
+            c=cgrad(:inferno), xlims=(1, param.Lx), ylims=(1, param.Ly), 
+            clims=(0,3), aspect_ratio=1, xlabel="x", ylabel="y")
+end
+
+function plot_spatial_correlation(spatial_corr, param)
+    dx_range = range(-param.Lx÷2, param.Lx÷2-1, length=param.Lx)
+    dy_range = range(-param.Ly÷2, param.Ly÷2-1, length=param.Ly)
+    heatmap(dx_range, dy_range, transpose(spatial_corr), 
+            title="Spatial Correlation", 
+            c=cgrad(:viridis), 
+            aspect_ratio=1, xlabel="Δx", ylabel="Δy")
+end
+
+function plot_time_correlation(time_corr, frame, fit_params=nothing)
+    t = 0:(frame-1)
+    p = plot(t, time_corr, 
+             title="Time Correlation", 
+             xlabel="Δt", ylabel="C(Δt)", 
+             legend=false, lw=2, label="Data")
+    
+    if !isnothing(fit_params)
+        plot!(p, t, fit_params[1] .* exp.(-t ./ fit_params[2]) .+ fit_params[3], 
+              lw=2, ls=:dash, label="Fit")
+        annotate!(p, [(frame/2, 0.8, text("τ = $(round(fit_params[2], digits=2))", 10))])
+    end
+    
+    return p
+end
+
+function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps)
+    println("Starting simulation")
+    prg, ρ_history, decay_times = initialize_simulation(state, param, n_frame)
+
     anim = @animate for frame in 1:n_frame
-        FP.update!( t_gap, param, state, rng)
-
-        x_range = range(1, param.Lx, length = param.Lx)
-        y_range = range(1, param.Ly, length = param.Ly)
+        spatial_corr, time_corr = update_and_compute_correlations(state, param, t_gap, ρ_history, frame, rng)
         
-        heatmap(x_range, y_range, transpose(state.ρ), size=(1000,700), c=cgrad(:inferno), xlims = (0, param.Lx), ylims = (0, param.Ly), clims = (0,3), aspect_ratio = 1, xlabel="x", ylabel="y", cbar_width=5)
+        p1 = plot_density(state, param)
+        p2 = plot_spatial_correlation(spatial_corr, param)
+        
+        if frame > 10
+            fit_params = fit_exponential(0:(frame-1), time_corr)
+            push!(decay_times, fit_params[2])
+            p3 = plot_time_correlation(time_corr, frame, fit_params)
+        else
+            p3 = plot_time_correlation(time_corr, frame)
+        end
+        
+        plot(p1, p2, p3, size=(1800,600), layout=(1,3))
         next!(prg)
     end
 
     println("Simulation complete, producing movie")
     name = @sprintf("%s.gif", file_name)
     gif(anim, name, fps = in_fps)
+
+    plot_decay_time_evolution(decay_times)
 end
 
-
-
+function plot_decay_time_evolution(decay_times)
+    p_decay = plot(decay_times, 
+                   title="Evolution of Decay Time", 
+                   xlabel="Frame", ylabel="τ", 
+                   legend=false, lw=2)
+    savefig(p_decay, "decay_time_evolution.png")
+end

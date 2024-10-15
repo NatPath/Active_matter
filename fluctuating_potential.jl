@@ -1,22 +1,24 @@
-#Code for fluctuating potential
-cd(@__DIR__)
-pwd()
+# #Code for fluctuating potential
+# cd(@__DIR__)
+# pwd()
 
-# package installation - you only need to run this once
-using Pkg
+# # package installation - you only need to run this once
+# using Pkg
 
-Pkg.add("Plots")
-Pkg.add("Random")
-Pkg.add("FFTW")
-Pkg.add("ProgressMeter")
-# end of package installation
+# Pkg.add("Plots")
+# Pkg.add("Random")
+# Pkg.add("FFTW")
+# Pkg.add("ProgressMeter")
+# Pkg.add("LsqFit")
+# # end of package installation
 
 # loading packages
 using Plots
 using Random
 using FFTW
-
 using ProgressMeter
+using Statistics
+using LsqFit 
 import Printf.@sprintf
 
 # loading module file
@@ -38,7 +40,8 @@ end
 
 state = FP.setState(0, param, pos₀)
 
-make_movie!(state, param, 0.2, 200, rng, "test", 20)
+# Increase the number of frames to see a more meaningful time correlation
+make_movie!(state, param, 0.2, 500, rng, "test_with_time_corr", 20)
 
 
 
