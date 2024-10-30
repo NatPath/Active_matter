@@ -13,19 +13,20 @@ module FP
 
     mutable struct Param
         D::Float64  # diffusion constant
-        Lx::Int64   # system size along x
-        Ly::Int64   # system size along y
+        # Lx::Int64   # system size along x
+        # Ly::Int64   # system size along y
+        dims::Vector{Int} # system sizes for each dimension
 
         ρ₀::Float64  # density
         N::Int64    # number of particles
     end
 
     #constructor
-    function setParam(D, Lx, Ly, ρ₀)
+    function setParam(D, dims::Vector{Int}, ρ₀)
 
-        N = Int(round( ρ₀*Lx*Ly ))       # number of particles
-
-        param = Param(D, Lx, Ly, ρ₀, N)
+        N = Int(round( ρ₀*prod(dims)))       # number of particles
+        param = Param(D, dims, ρ₀, N)
+        # param = Param(D, Lx, Ly, ρ₀, N)
         return param
     end
 
@@ -33,15 +34,19 @@ module FP
     mutable struct State
         t::Float64              # time
         pos::Array{Int64, 2}    # position vector
-        ρ::Array{Int64, 2}      # density field
+        ρ::Array{Int64}      # density field
     end
 
     function setState(t, param, pos)
-        ρ = zeros(Int64, param.Lx, param.Ly)
+
+        ρ = zeros(Int64, param.dims...)
+        # ρ = zeros(Int64, param.Lx, param.Ly)
 
         for n in 1:param.N
-            x, y = pos[n, 1], pos[n,2]
-            ρ[x,y] += 1
+            idxs = ntuple(i -> pos[n,i], length(param.dims))
+            ρ[idxs...] += 1
+            # x, y = pos[n, 1], pos[n,2]
+            # ρ[x,y] += 1
         end
 
         state = State(t, pos, ρ)
@@ -52,33 +57,62 @@ module FP
         D = param.D
 
         t_end = state.t + Δt
-        while state.t ≤ t_end
+        while state.t <= t_end
             n = rand(rng, 1:param.N)
 
-            w = [D, D, D, D]  # right, up, left, down
-            w_sum=sum(w)
-            move = tower_sampling(w, w_sum, rng)
+            # Define weights for each dimension (assuming equal weights for simplicity)
+            weights = fill(D, length(param.dims) * 2)  # Each dimension has two directions
+            w_sum = sum(weights)
 
-            if move==1
-                state.pos[n,1] = mod1( state.pos[n,1] + 1, param.Lx)
-            elseif move==2
-                state.pos[n,2] = mod1( state.pos[n,2] + 1, param.Ly)
-            elseif move==3
-                state.pos[n,1] = mod1( state.pos[n,1] - 1, param.Lx)
-            else
-                state.pos[n,2] = mod1( state.pos[n,2] - 1, param.Ly)
-            end
+            # Use tower_sampling to select a move
+            move_idx = tower_sampling(weights, w_sum, rng)
+            d = div(move_idx + 1, 2)
+            move = (move_idx % 2 == 1) ? 1 : -1
 
-            state.t += 1/(param.N*w_sum)
+            # Update position with periodic boundary conditions
+            state.pos[n, d] = mod1(state.pos[n, d] + move, param.dims[d])
+
+            state.t += 1 / (param.N * D)
         end
 
-        # update the density field
-        fill!(state.ρ, 0.0)
+        # Update the density field
+        fill!(state.ρ, 0)
         for n in 1:param.N
-            x, y = state.pos[n, 1], state.pos[n,2]
-            state.ρ[x,y] += 1
+            idxs = ntuple(i -> state.pos[n, i], length(param.dims))
+            state.ρ[idxs...] += 1
         end
     end
+    # function update!(Δt, param, state, rng)
+    #     D = param.D
+
+    #     t_end = state.t + Δt
+    #     while state.t ≤ t_end
+    #         n = rand(rng, 1:param.N)
+
+    #         w = [D, D, D, D]  # right, up, left, down
+    #         w_sum=sum(w)
+    #         move = tower_sampling(w, w_sum, rng)
+
+    #         if move==1
+    #             state.pos[n,1] = mod1( state.pos[n,1] + 1, param.Lx)
+    #         elseif move==2
+    #             state.pos[n,2] = mod1( state.pos[n,2] + 1, param.Ly)
+    #         elseif move==3
+    #             state.pos[n,1] = mod1( state.pos[n,1] - 1, param.Lx)
+    #         else
+    #             state.pos[n,2] = mod1( state.pos[n,2] - 1, param.Ly)
+    #         end
+
+    #         state.t += 1/(param.N*w_sum)
+    #     end
+
+    #     # update the density field
+    #     fill!(state.ρ, 0.0)
+    #     for n in 1:param.N
+    #         x, y = state.pos[n, 1], state.pos[n,2]
+    #         state.ρ[x,y] += 1
+    #     end
+    # end
 
     function tower_sampling(weights, w_sum, rng)
         key = w_sum*rand(rng)
@@ -103,21 +137,37 @@ function compute_spatial_correlation(ρ)
 end
 
 function compute_time_correlation(ρ_history)
-    n_frames = size(ρ_history, 3)
+    n_frames = size(ρ_history, ndims(ρ_history))
     corr = zeros(n_frames)
     ρ_mean = mean(ρ_history)
     ρ_var = var(ρ_history)
-    
+
     for dt in 0:(n_frames-1)
         c = 0.0
         for t in 1:(n_frames-dt)
-            c += mean((ρ_history[:,:,t] .- ρ_mean) .* (ρ_history[:,:,t+dt] .- ρ_mean))
+            c += mean((ρ_history[..., t] .- ρ_mean) .* (ρ_history[..., t+dt] .- ρ_mean))
         end
         corr[dt+1] = c / ((n_frames-dt) * ρ_var)
     end
-    
+
     return corr
 end
+# function compute_time_correlation(ρ_history)
+#     n_frames = size(ρ_history, 3)
+#     corr = zeros(n_frames)
+#     ρ_mean = mean(ρ_history)
+#     ρ_var = var(ρ_history)
+    
+#     for dt in 0:(n_frames-1)
+#         c = 0.0
+#         for t in 1:(n_frames-dt)
+#             c += mean((ρ_history[:,:,t] .- ρ_mean) .* (ρ_history[:,:,t+dt] .- ρ_mean))
+#         end
+#         corr[dt+1] = c / ((n_frames-dt) * ρ_var)
+#     end
+    
+#     return corr
+# end
 
 function fit_exponential(t, y)
     model(t, p) = p[1] .* exp.(-t ./ p[2]) .+ p[3]  

@@ -27,21 +27,27 @@ rng = MersenneTwister(123)
 
 
 D = 1               # rate of hopping
-Lx, Ly = 64, 64     # system size
+dims = [64,64]      # system's dimentions
+# Lx, Ly = 64, 64     # system size
 ρ₀ = 0.5             # density
 
-param = FP.setParam(D, Lx, Ly, ρ₀)
+param = FP.setParam(D, dims, ρ₀)
 
 pos₀ = zeros(Int64, param.N, 2)
 for n in 1:param.N
-    pos₀[n,1] = rand(rng, 1:Lx)
-    pos₀[n,2] = rand(rng, 1:Ly)
+    for d in eachindex(dims)
+        pos₀[n,d] = rand(rng, 1:dims[d])
+    end
 end
 
 state = FP.setState(0, param, pos₀)
 
 # Increase the number of frames to see a more meaningful time correlation
-make_movie!(state, param, 0.2, 500, rng, "test_with_time_corr", 20)
+n_frames = 500
+# t_gap = 1/(param.N*D)
+t_gap = 0.2
+fps = 20
+make_movie!(state, param, t_gap, n_frames, rng, "test_with_time_corr", fps)
 
 
 
