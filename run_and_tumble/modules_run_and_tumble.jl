@@ -5,45 +5,92 @@ using LsqFit
 
 #Wrap everything with a module to allow redefinition of type
 module FP
+    dim_num = 1
 
-    mutable struct Param
-        D::Float64  # diffusion constant
-        Lx::Int64   # system size along x
-        Ly::Int64   # system size along y
-
+    struct Param # model parameters
+        α::Float64  # rate of tumbling
+        dims::Tuple{Vararg{Int}} # systen's dimensions
         ρ₀::Float64  # density
         N::Int64    # number of particles
+        D::Float64  #diffusion coefficient
+        T::Float64 # temperature
     end
 
     #constructor
-    function setParam(D, Lx, Ly, ρ₀)
+    function setParam(α, dims, ρ₀, D,T)
 
-        N = Int(round( ρ₀*Lx*Ly ))       # number of particles
+        N = Int(round( ρ₀*prod(dims)))       # number of particles
 
-        param = Param(D, Lx, Ly, ρ₀, N)
+        param = Param(α, dims, ρ₀, N, D, T)
         return param
     end
 
 
     mutable struct State
         t::Float64              # time
-        pos::Array{Int64, 2}    # position vector
-        ρ::Array{Int64, 2}      # density field
+        pos::Array{Int64, 1+dim_num}    # position vector
+        ρ::Array{Int64, dim_num}      # density field
+        V::Array{Float64, dim_num}      # potential
     end
 
-    function setState(t, param, pos)
-        ρ = zeros(Int64, param.Lx, param.Ly)
+    function setState(t, param, pos, V=zeros(Float64,param.dims))
+        # Initialize the matrix with dimensions specified by a tuple
+        ρ = zeros(Int64, param.dims...)
 
+        # Iterate over the positions and update the matrix
         for n in 1:param.N
-            x, y = pos[n, 1], pos[n,2]
-            ρ[x,y] += 1
+            indices = Tuple(pos[n, i] for i in 1:length(param.dims))
+            ρ[CartesianIndex(indices...)] += 1
         end
-
-        state = State(t, pos, ρ)
+        state = State(t, pos, ρ, V)
         return state
     end
 
+    function calculate_probabilities(direction,D,ΔV,T)
+        return (D+ϵ*direction)*min(1,exp(-ΔV*T))
+    end
+
     function update!(Δt, param, state, rng)
+
+        if length(state.dims) == 1
+            α = param.α
+            t_end = state.t + Δt
+            while state.t ≤ t_end
+                for n in 1:param.N
+                    p_left, p_right, p_tumble, p_stay = calc_probabilities((V))
+                    possible_moves = [p_left, p_right, p_tumble, p_stay]  # right, left, stay, tumble
+                    w_sum=sum(possible_moves)
+                    choice = tower_sampling(w, w_sum, rng)
+                    if choice==1
+                        state.pos[n,1]=mod1(state.pos[n,1]-1,param.dims[1])
+                    elseif choice==2
+                        state.pos[n,1]=mod1(state.pos[n,1]+1,param.dims[1])
+                    elseif choice==3
+                        state.direction[n]*=-1
+                    end
+                    
+                end
+                n = rand(rng, 1:param.N)
+
+                choices = [p_left, p_right, p_tumble, p_stay]  # right, up, left, down
+                w_sum=sum(w)
+                move = tower_sampling(w, w_sum, rng)
+
+                if move==1
+                    state.pos[n,1] = mod1( state.pos[n,1] + 1, param.Lx)
+                elseif move==2
+                    state.pos[n,2] = mod1( state.pos[n,2] + 1, param.Ly)
+                elseif move==3
+                    state.pos[n,1] = mod1( state.pos[n,1] - 1, param.Lx)
+                else
+                    state.pos[n,2] = mod1( state.pos[n,2] - 1, param.Ly)
+                end
+
+                state.t += 1/(param.N*w_sum)
+            end
+        else
+            throw(DomainError("Invalid input - dimension not supported yet"))
+        end
         D = param.D
 
         t_end = state.t + Δt
