@@ -2,11 +2,11 @@
 using Statistics
 using FFTW
 using LsqFit
-using LinearAlgebra
 
 #Wrap everything with a module to allow redefinition of type
 module FP
-    dim_num = 1
+    using LinearAlgebra
+    dim_num::Int = 1
 
     struct Param # model parameters
         α::Float64  # rate of tumbling
@@ -14,15 +14,14 @@ module FP
         ρ₀::Float64  # density
         N::Int64    # number of particles
         D::Float64  #diffusion coefficient
-        T::Float64 # temperature
     end
 
     #constructor
-    function setParam(α, dims, ρ₀, D,T)
+    function setParam(α, dims, ρ₀, D)
 
         N = Int(round( ρ₀*prod(dims)))       # number of particles
 
-        param = Param(α, dims, ρ₀, N, D, T)
+        param = Param(α, dims, ρ₀, N, D)
         return param
     end
 
@@ -31,7 +30,7 @@ module FP
         direction::Array{Float64, dim_num}
     end
 
-    function setParticle(sys_params)
+    function setParticle(sys_params,rng)
         dim_num = length(sys_params.dims)
         position = zeros(Int64, dim_num)
         direction = zeros(Float64, dim_num)
@@ -48,15 +47,16 @@ module FP
         #pos::Array{Int64, 1+dim_num}    # position vector
         particles::Array{Particle}
         ρ::Array{Int64, dim_num}      # density field
+        T::Float64                      # temperature
         V::Array{Float64, dim_num}      # potential
     end
 
-    function setState(t, param, V=zeros(Float64,param.dims))
+    function setState(t, rng, param, T, V=zeros(Float64,param.dims))
         N = param.N
         # initialize particles
         particles = Array{Particle}(undef,N)
         for n in 1:N
-            particles[n]= setParticle(param)
+            particles[n]= setParticle(param, rng)
         end
 
         # Initialize the matrix with dimensions specified by a tuple
@@ -67,7 +67,7 @@ module FP
             indices = Tuple(particles[n].position[i] for i in 1:length(param.dims))
             ρ[CartesianIndex(indices...)] += 1
         end
-        state = State(t, particles, ρ, V)
+        state = State(t, particles, ρ, T, V)
         return state
     end
 
@@ -79,32 +79,34 @@ module FP
     function update!(Δt, param, state, rng)
 
         if length(param.dims) == 1
+            V = state.V
+            T = state.T
             α = param.α
             t_end = state.t + Δt
             while state.t ≤ t_end
-                for n in 1:param.N
-                    particle = state.particles[n]
-                    spot_index = particle.position[1]
-                    left_index= mod1(spot_index-1,param.dims[1])
-                    right_index = mod1(spot_index+1,param.dims[1])
-                    p_right = calc_jump_probability(particle.direction[1], param.D, V[right_index]-V[spot_index],T)
-                    p_left = calc_jump_probability(particle.direction[1], param.D, V[left_index]-V[spot_index],T)
-                    p_tumble = α/2
-                    p_stay = α/2
-                    possible_moves = [p_left, p_right, p_tumble, p_stay]  # right, left, stay, tumble
-                    w_sum=sum(possible_moves)
-                    choice = tower_sampling(w, w_sum, rng)
-                    if choice==1
-                        particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
-                    elseif choice==2
-                        particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
-                    elseif choice==3
-                        particle.direction[1]*=-1
-                    end
-                    
+                n = rand(rng,1:param.N)
+                particle = state.particles[n]
+                spot_index = particle.position[1]
+                left_index= mod1(spot_index-1,param.dims[1])
+                right_index = mod1(spot_index+1,param.dims[1])
+                p_right = calculate_jump_probability(particle.direction[1], param.D, V[right_index]-V[spot_index],T)
+                p_left = calculate_jump_probability(particle.direction[1], param.D, V[left_index]-V[spot_index],T)
+                p_tumble = α/2
+                # p_stay = α/2
+                possible_moves = [p_left, p_right, p_tumble ]  # right, left, tumble
+                w_sum=sum(possible_moves)
+                choice = tower_sampling(possible_moves, w_sum, rng)
+                if choice==1
+                    particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
+                elseif choice==2
+                    particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
+                elseif choice==3
+                    particle.direction[1]*=-1
                 end
-                state.t += 1/(param.N) # find correct time increment , in the previous simulation divided by w_sum
+                
             end
+            state.t += 1/(param.N) # find correct time increment , in the previous simulation divided by w_sum
+            
         else
             throw(DomainError("Invalid input - dimension not supported yet"))
         end
