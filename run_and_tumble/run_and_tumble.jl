@@ -27,8 +27,8 @@ for n in 1:param.N
     end
 end
 V = zeros(Float64,dims)
-state = FP.setState(0, param, pos₀,V)
+state = FP.setState(0, param, V)
 
 
 # Increase the number of frames to see a more meaningful time correlation
-# make_movie!(state, param, 0.2, 500, rng, "test_with_time_corr", 20)
+make_movie!(state, param, 0.2, 500, rng, "test_with_time_corr", 20)

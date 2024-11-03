@@ -2,6 +2,7 @@
 using Statistics
 using FFTW
 using LsqFit
+using LinearAlgebra
 
 #Wrap everything with a module to allow redefinition of type
 module FP
@@ -25,68 +26,84 @@ module FP
         return param
     end
 
+    mutable struct Particle
+        position::Array{Int64, dim_num}
+        direction::Array{Float64, dim_num}
+    end
+
+    function setParticle(sys_params)
+        dim_num = length(sys_params.dims)
+        position = zeros(Int64, dim_num)
+        direction = zeros(Float64, dim_num)
+        for (i,dim) in enumerate(sys_params.dims)
+            position[i] = rand(rng, 1:dim)
+            direction[i] = rand(rng,1:dim)
+        end
+        normalize!(direction)
+        Particle(position,direction)
+    end
 
     mutable struct State
         t::Float64              # time
-        pos::Array{Int64, 1+dim_num}    # position vector
+        #pos::Array{Int64, 1+dim_num}    # position vector
+        particles::Array{Particle}
         ρ::Array{Int64, dim_num}      # density field
         V::Array{Float64, dim_num}      # potential
     end
 
-    function setState(t, param, pos, V=zeros(Float64,param.dims))
+    function setState(t, param, V=zeros(Float64,param.dims))
+        N = param.N
+        # initialize particles
+        particles = Array{Particle}(undef,N)
+        for n in 1:N
+            particles[n]= setParticle(param)
+        end
+
         # Initialize the matrix with dimensions specified by a tuple
         ρ = zeros(Int64, param.dims...)
 
         # Iterate over the positions and update the matrix
-        for n in 1:param.N
-            indices = Tuple(pos[n, i] for i in 1:length(param.dims))
+        for n in 1:N
+            indices = Tuple(particles[n].position[i] for i in 1:length(param.dims))
             ρ[CartesianIndex(indices...)] += 1
         end
-        state = State(t, pos, ρ, V)
+        state = State(t, particles, ρ, V)
         return state
     end
 
-    function calculate_probabilities(direction,D,ΔV,T)
-        return (D+ϵ*direction)*min(1,exp(-ΔV*T))
+    function calculate_jump_probability(direction,D,ΔV,T,ϵ=0.1)
+        p=(D+ϵ*direction)*min(1,exp(-ΔV*T))
+        return p
     end
 
     function update!(Δt, param, state, rng)
 
-        if length(state.dims) == 1
+        if length(param.dims) == 1
             α = param.α
             t_end = state.t + Δt
             while state.t ≤ t_end
                 for n in 1:param.N
-                    p_left, p_right, p_tumble, p_stay = calc_probabilities((V))
+                    particle = state.particles[n]
+                    spot_index = particle.position[1]
+                    left_index= mod1(spot_index-1,param.dims[1])
+                    right_index = mod1(spot_index+1,param.dims[1])
+                    p_right = calc_jump_probability(particle.direction[1], param.D, V[right_index]-V[spot_index],T)
+                    p_left = calc_jump_probability(particle.direction[1], param.D, V[left_index]-V[spot_index],T)
+                    p_tumble = α/2
+                    p_stay = α/2
                     possible_moves = [p_left, p_right, p_tumble, p_stay]  # right, left, stay, tumble
                     w_sum=sum(possible_moves)
                     choice = tower_sampling(w, w_sum, rng)
                     if choice==1
-                        state.pos[n,1]=mod1(state.pos[n,1]-1,param.dims[1])
+                        particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
                     elseif choice==2
-                        state.pos[n,1]=mod1(state.pos[n,1]+1,param.dims[1])
+                        particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
                     elseif choice==3
-                        state.direction[n]*=-1
+                        particle.direction[1]*=-1
                     end
                     
                 end
-                n = rand(rng, 1:param.N)
-
-                choices = [p_left, p_right, p_tumble, p_stay]  # right, up, left, down
-                w_sum=sum(w)
-                move = tower_sampling(w, w_sum, rng)
-
-                if move==1
-                    state.pos[n,1] = mod1( state.pos[n,1] + 1, param.Lx)
-                elseif move==2
-                    state.pos[n,2] = mod1( state.pos[n,2] + 1, param.Ly)
-                elseif move==3
-                    state.pos[n,1] = mod1( state.pos[n,1] - 1, param.Lx)
-                else
-                    state.pos[n,2] = mod1( state.pos[n,2] - 1, param.Ly)
-                end
-
-                state.t += 1/(param.N*w_sum)
+                state.t += 1/(param.N) # find correct time increment , in the previous simulation divided by w_sum
             end
         else
             throw(DomainError("Invalid input - dimension not supported yet"))
@@ -111,7 +128,6 @@ module FP
                 state.pos[n,2] = mod1( state.pos[n,2] - 1, param.Ly)
             end
 
-            state.t += 1/(param.N*w_sum)
         end
 
         # update the density field
@@ -171,7 +187,7 @@ end
 function initialize_simulation(state, param, n_frame)
     state.t = 0
     prg = Progress(n_frame)
-    ρ_history = zeros(param.Lx, param.Ly, n_frame)
+    ρ_history = zeros((param.dims..., n_frame))
     decay_times = Float64[]
     return prg, ρ_history, decay_times
 end
