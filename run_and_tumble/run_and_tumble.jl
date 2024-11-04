@@ -12,7 +12,7 @@ rng = MersenneTwister(123)
 dim_num = 1
 D = 1.0                            # diffusion coefficient
 α = 0.1                          # rate of tumbling 
-L= 64
+L= 128
 dims = ntuple(i->L, dim_num)     # system size
 ρ₀ = 0.5                         # density
 T = 1.0                           # temperature   
@@ -25,7 +25,10 @@ for n in 1:param.N
         pos₀[n,i] = rand(rng, 1:dim)
     end
 end
-V = zeros(Float64,dims)
+V = zeros(Float64, dims)
+for i in 1:L
+    V[i] = exp(-((i - L/2)^2) / (2 * (L)^2))  # Gaussian potential centered in the middle
+end
 state = FP.setState(0, rng, param, T, V)
 
 
