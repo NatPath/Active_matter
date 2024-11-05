@@ -72,7 +72,7 @@ module FP
         return state
     end
 
-    function calculate_jump_probability(direction,D,ΔV,T,ϵ=0.1)
+    function calculate_jump_probability(direction,D,ΔV,T,ϵ=0)
         p=(D+ϵ*direction)*min(1,exp(-ΔV*T))
         return p
     end
@@ -90,9 +90,9 @@ module FP
                 spot_index = particle.position[1]
                 left_index= mod1(spot_index-1,param.dims[1])
                 right_index = mod1(spot_index+1,param.dims[1])
-                p_right = calculate_jump_probability(particle.direction[1], param.D, V[right_index]-V[spot_index],T)
                 p_left = calculate_jump_probability(particle.direction[1], param.D, V[left_index]-V[spot_index],T)
-                p_tumble = α/2
+                p_right = calculate_jump_probability(particle.direction[1], param.D, V[right_index]-V[spot_index],T)
+                p_tumble = 0 #α/2
                 # p_stay = α/2
 
                 state.ρ[spot_index] -= 1
@@ -102,10 +102,13 @@ module FP
                 choice = tower_sampling(possible_moves, w_sum, rng)
                 if choice==1
                     particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
+                    # println("choice left")
                 elseif choice==2
                     particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
+                    #println("choice right")
                 elseif choice==3
                     particle.direction[1]*=-1
+                    # println("choice tumble")
                 end
                 new_position = particle.position[1]
 
@@ -135,6 +138,20 @@ module FP
     end
 end
 
+
+
+function fit_exponential(t, y)
+    model(t, p) = p[1] .* exp.(-t ./ p[2]) .+ p[3]  
+    p0 = [1.0, 1.0, 0.0]  # Initial guess for [amplitude, decay time, offset]
+    fit = curve_fit(model, t, y, p0)
+    return fit.param
+end
+
+function calculate_time_averaged_density_field(density_field_history)
+    n_dims = length(size(density_field_history))-1
+    return mean(density_field_history,dims=n_dims+1)[:,1]
+
+end
 
 function compute_spatial_correlation(ρ)
     F = fft(ρ)
@@ -172,52 +189,60 @@ function compute_time_correlation(ρ_history)
     return corr
 end
 
-function fit_exponential(t, y)
-    model(t, p) = p[1] .* exp.(-t ./ p[2]) .+ p[3]  
-    p0 = [1.0, 1.0, 0.0]  # Initial guess for [amplitude, decay time, offset]
-    fit = curve_fit(model, t, y, p0)
-    return fit.param
-end
-
-function initialize_simulation(state, param, n_frame)
-    state.t = 0
-    prg = Progress(n_frame)
-    ρ_history = zeros((param.dims..., n_frame))
-    decay_times = Float64[]
-    return prg, ρ_history, decay_times
-end
-
 function update_and_compute_correlations(state, param, t_gap, ρ_history, frame, rng)
     FP.update!(t_gap, param, state, rng)
     dim_num= length(param.dims)
     if dim_num==1
         ρ_history[:,frame] = state.ρ
+        time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
         spatial_corr = compute_spatial_correlation(state.ρ)
         time_corr = compute_time_correlation(ρ_history[:,1:frame])
     elseif dim_num==2
         ρ_history[:,:,frame] = state.ρ
+        time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
         spatial_corr = compute_spatial_correlation(state.ρ)
         time_corr = compute_time_correlation(ρ_history[:,:,1:frame])
     else
         throw(DomainError("Invalid input - dimension not supported yet"))
     end
-    return spatial_corr, time_corr
+    return time_averaged_desnity_field, spatial_corr, time_corr
 end
 
-function plot_density(state, param)
-    dim_num = length(param.dims)
+# function plot_density(state, param)
+#     dim_num = length(param.dims)
+#     if dim_num==1
+#         x_range = 1:param.dims[1]
+#         plot(x_range, state.ρ, 
+#              title="1D Density", 
+#              xlabel="Position", ylabel="Density", 
+#              legend=false, lw=2)
+#     elseif dim_num == 2
+#         x_range = range(1, param.Lx, length = param.Lx)
+#         y_range = range(1, param.Ly, length = param.Ly)
+#         heatmap(x_range, y_range, transpose(state.ρ), 
+#                 title="Density", 
+#                 c=cgrad(:inferno), xlims=(1, param.Lx), ylims=(1, param.Ly), 
+#                 clims=(0,3), aspect_ratio=1, xlabel="x", ylabel="y")
+#     else
+#         throw(DomainError("Invalid input - dimension not supported yet"))
+#     end
+# end
+function plot_density(density,param; title = "Density")
+    dim_num = length(size(density))
     if dim_num==1
         x_range = 1:param.dims[1]
-        plot(x_range, state.ρ, 
-             title="1D Density", 
-             xlabel="Position", ylabel="Density", 
+        plot(x_range, density, 
+             title=title, 
+             xlabel="Position", ylabel=title, 
              legend=false, lw=2)
     elseif dim_num == 2
-        x_range = range(1, param.Lx, length = param.Lx)
-        y_range = range(1, param.Ly, length = param.Ly)
-        heatmap(x_range, y_range, transpose(state.ρ), 
-                title="Density", 
-                c=cgrad(:inferno), xlims=(1, param.Lx), ylims=(1, param.Ly), 
+        Lx= param.dims[1]
+        Ly= param.dims[2]
+        x_range = range(1, Lx, length = Lx)
+        y_range = range(1, Ly, length = Ly)
+        heatmap(x_range, y_range, transpose(density), 
+                title=title, 
+                c=cgrad(:inferno), xlims=(1, Lx), ylims=(1, Ly), 
                 clims=(0,3), aspect_ratio=1, xlabel="x", ylabel="y")
     else
         throw(DomainError("Invalid input - dimension not supported yet"))
@@ -270,14 +295,24 @@ function plot_time_correlation(time_corr, frame, fit_params=nothing)
     return p
 end
 
+function initialize_simulation(state, param, n_frame)
+    state.t = 0
+    prg = Progress(n_frame)
+    ρ_history = zeros((param.dims..., n_frame))
+    decay_times = Float64[]
+    return prg, ρ_history, decay_times
+end
+
 function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps)
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_frame)
-
     # Initialize the animation
     anim = @animate for frame in 1:n_frame
-        spatial_corr, time_corr = update_and_compute_correlations(state, param, t_gap, ρ_history, frame, rng)
-        p1 = plot_density(state, param)
+        time_averaged_desnity_field, spatial_corr, time_corr = update_and_compute_correlations(state, param, t_gap, ρ_history, frame, rng)
+        # println(size(time_averaged_desnity_field))
+        # println(size(state.ρ))
+        p0 = plot_density(time_averaged_desnity_field,param; title="time averaged density")
+        p1 = plot_density(state.ρ, param)
         p2 = plot_spatial_correlation(spatial_corr, param)
         
         if frame > 10
@@ -288,7 +323,8 @@ function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps)
             p3 = plot_time_correlation(time_corr, frame)
         end
         
-        plot(p1, p2, p3, size=(1800,600), layout=(1,3))
+        plot(p0,p1, p2, p3, size=(1200,1200), layout=(2,2))
+        # plot(p1, p2, p3, size=(1800,600), layout=(1,3))
         next!(prg)
     end
     # for frame in 1:n_frame
