@@ -13,7 +13,7 @@ rng = MersenneTwister(123)
 dim_num = 1
 D = 1.0                            # diffusion coefficient
 α = 0.1                          # rate of tumbling 
-L= 64
+L= 128
 dims = ntuple(i->L, dim_num)     # system size
 ρ₀ = 0.5                       # density
 T = 1.0                           # temperature   
@@ -40,7 +40,7 @@ function choose_V(v_args)
         nothing
     elseif v_string == "smudge"
         middle = Int(L//2)
-        V[middle] = v_args["magnitude"]
+        V[middle] = v_args["magnitude":wait]
         V[middle-1] = v_args["magnitude"]/2
     elseif v_string == "delta"
         V[middle]=v_args["magnitude"]
@@ -63,4 +63,6 @@ state = FP.setState(0, rng, param, T, V)
 
 
 # Increase the number of frames to see a more meaningful time correlation
-make_movie!(state, param, 0.2, 500, rng, "test_with_time_corr", 20)
+make_movie!(state, param, 0.2, 1500, rng, "test_with_time_corr", 20)
+
+

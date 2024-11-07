@@ -47,12 +47,12 @@ module FP
         #pos::Array{Int64, 1+dim_num}    # position vector
         particles::Array{Particle}
         ρ::Array{Int64}      # density field
+        ρ_avg::Array{Float64} #time averaged density field
         T::Float64                      # temperature
         V::Array{Float64}      # potential
     end
 
     function setState(t, rng, param, T, V=zeros(Float64,param.dims))
-        println(V)
         N = param.N
         # initialize particles
         particles = Array{Particle}(undef,N)
@@ -68,7 +68,8 @@ module FP
             indices = Tuple(particles[n].position[i] for i in 1:length(param.dims))
             ρ[CartesianIndex(indices...)] += 1
         end
-        state = State(t, particles, ρ, T, V)
+        ρ_avg = Float64.(ρ)
+        state = State(t, particles, ρ, ρ_avg, T, V)
         return state
     end
 
@@ -84,7 +85,7 @@ module FP
             T = state.T
             α = param.α
             t_end = state.t + Δt
-            while state.t ≤ t_end
+            while state.t < t_end
                 n = rand(rng,1:param.N)
                 particle = state.particles[n]
                 spot_index = particle.position[1]
@@ -101,21 +102,23 @@ module FP
                 w_sum=sum(possible_moves)
                 choice = tower_sampling(possible_moves, w_sum, rng)
                 if choice==1
-                    particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
+                    # particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
+                    particle.position[1] = left_index
                     # println("choice left")
                 elseif choice==2
-                    particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
-                    #println("choice right")
+                    # particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
+                    particle.position[1] = right_index
+                    # println("choice right")
                 elseif choice==3
                     particle.direction[1]*=-1
                     # println("choice tumble")
                 end
                 new_position = particle.position[1]
-
                 state.ρ[new_position] += 1
 
                 
                 state.t += 1/(param.N*w_sum) # find correct time increment , in the previous simulation divided by w_sum
+                # state.t += Δt
             end
             
         else
@@ -125,7 +128,8 @@ module FP
     end
 
     function tower_sampling(weights, w_sum, rng)
-        key = w_sum*rand(rng)
+        #key = w_sum*rand(rng)
+        key = w_sum*rand()
 
         selected = 1
         gathered = weights[selected]
@@ -147,6 +151,9 @@ function fit_exponential(t, y)
     return fit.param
 end
 
+function update_time_averaged_density_field(density_field_history)
+
+end
 function calculate_time_averaged_density_field(density_field_history)
     n_dims = length(size(density_field_history))-1
     return mean(density_field_history,dims=n_dims+1)[:,1]
@@ -189,14 +196,17 @@ function compute_time_correlation(ρ_history)
     return corr
 end
 
-function update_and_compute_correlations(state, param, t_gap, ρ_history, frame, rng)
+function update_and_compute_correlations!(state, param, t_gap, ρ_history, frame, rng)
     FP.update!(t_gap, param, state, rng)
     dim_num= length(param.dims)
     if dim_num==1
         ρ_history[:,frame] = state.ρ
-        time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
+        state.ρ_avg = (state.ρ_avg * (frame-1)+state.ρ)/frame
+        # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
         spatial_corr = compute_spatial_correlation(state.ρ)
         time_corr = compute_time_correlation(ρ_history[:,1:frame])
+        # spatial_corr = compute_spatial_correlation(zeros(size(state.ρ)))
+        # time_corr = compute_spatial_correlation(zeros(size(ρ_history[:,1:frame])))
     elseif dim_num==2
         ρ_history[:,:,frame] = state.ρ
         time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
@@ -205,7 +215,7 @@ function update_and_compute_correlations(state, param, t_gap, ρ_history, frame,
     else
         throw(DomainError("Invalid input - dimension not supported yet"))
     end
-    return time_averaged_desnity_field, spatial_corr, time_corr
+    return spatial_corr, time_corr
 end
 
 # function plot_density(state, param)
@@ -308,10 +318,11 @@ function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps)
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_frame)
     # Initialize the animation
     anim = @animate for frame in 1:n_frame
-        time_averaged_desnity_field, spatial_corr, time_corr = update_and_compute_correlations(state, param, t_gap, ρ_history, frame, rng)
+        spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, frame, rng)
         # println(size(time_averaged_desnity_field))
         # println(size(state.ρ))
-        p0 = plot_density(time_averaged_desnity_field,param; title="time averaged density")
+        # p = plot_density(state.particles[1].position,param)
+        p0 = plot_density(state.ρ_avg, param; title="time averaged density")
         p1 = plot_density(state.ρ, param)
         p2 = plot_spatial_correlation(spatial_corr, param)
         
