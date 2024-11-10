@@ -13,9 +13,9 @@ rng = MersenneTwister(123)
 dim_num = 1
 D = 1.0                            # diffusion coefficient
 α = 0.1                          # rate of tumbling 
-L= 128
+L= 8
 dims = ntuple(i->L, dim_num)     # system size
-ρ₀ = 0.5                       # density
+ρ₀ =  1                     # density
 T = 1.0                           # temperature   
 
 param = FP.setParam(α, dims, ρ₀, D)
@@ -63,6 +63,7 @@ state = FP.setState(0, rng, param, T, V)
 
 
 # Increase the number of frames to see a more meaningful time correlation
-make_movie!(state, param, 0.2, 1500, rng, "test_with_time_corr", 20)
+# make_movie!(state, param, 1, 10000, rng, "test_with_time_corr", 1000)
+run_simulation!(state, param, 1, 500, rng )
 
 

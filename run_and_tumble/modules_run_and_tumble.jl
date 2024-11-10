@@ -196,22 +196,30 @@ function compute_time_correlation(ρ_history)
     return corr
 end
 
-function update_and_compute_correlations!(state, param, t_gap, ρ_history, frame, rng)
+function update_and_compute_correlations!(state, param, t_gap, ρ_history, frame, rng, calc_correlations=false)
     FP.update!(t_gap, param, state, rng)
     dim_num= length(param.dims)
     if dim_num==1
-        ρ_history[:,frame] = state.ρ
         state.ρ_avg = (state.ρ_avg * (frame-1)+state.ρ)/frame
         # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
-        spatial_corr = compute_spatial_correlation(state.ρ)
-        time_corr = compute_time_correlation(ρ_history[:,1:frame])
+        if !calc_correlations
+            return nothing, nothing
+        else
+            ρ_history[:,frame] = state.ρ
+            spatial_corr = compute_spatial_correlation(state.ρ)
+            time_corr = compute_time_correlation(ρ_history[:,1:frame])
+        end
         # spatial_corr = compute_spatial_correlation(zeros(size(state.ρ)))
         # time_corr = compute_spatial_correlation(zeros(size(ρ_history[:,1:frame])))
     elseif dim_num==2
-        ρ_history[:,:,frame] = state.ρ
         time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
-        spatial_corr = compute_spatial_correlation(state.ρ)
-        time_corr = compute_time_correlation(ρ_history[:,:,1:frame])
+        if !calc_correlations
+            return nothing, nothing
+        else
+            ρ_history[:,:,frame] = state.ρ
+            spatial_corr = compute_spatial_correlation(state.ρ)
+            time_corr = compute_time_correlation(ρ_history[:,:,1:frame])
+        end
     else
         throw(DomainError("Invalid input - dimension not supported yet"))
     end
@@ -313,7 +321,46 @@ function initialize_simulation(state, param, n_frame)
     return prg, ρ_history, decay_times
 end
 
-function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps)
+
+function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations = false)
+    println("Starting simulation")
+    prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps)
+    # Initialize the animation
+    for sweep in 1:n_sweeps
+        spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, sweep, rng)
+        # println(size(time_averaged_desnity_field))
+        # println(size(state.ρ))
+        # p = plot_density(state.particles[1].position,param)
+        p0 = plot_density(state.ρ_avg, param; title="time averaged density")
+        p1 = plot_density(state.ρ, param)
+
+        if calc_correlations
+            p2 = plot_spatial_correlation(spatial_corr, param)
+            
+            if frame > 10
+                fit_params = fit_exponential(0:(sweep-1), time_corr)
+                push!(decay_times, fit_params[2])
+                p3 = plot_time_correlation(time_corr, sweep, fit_params)
+            else
+                p3 = plot_time_correlation(time_corr, sweep)
+            end
+            plot(p0,p1, p2, p3, size=(1200,1200), layout=(2,2))
+        else
+            plot(p0, p1, size=(1200,600), layout=(2,1))
+        end
+        next!(prg)
+    end
+    p0 = plot_density(state.ρ_avg, param; title="time averaged density")
+    p1 = plot_density(state.ρ, param)
+    p=plot(p0, p1, size=(1200,600), layout=(2,1))
+    display(p)
+
+    #
+    println("Simulation complete")
+end
+
+
+function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps, calc_correlations = false)
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_frame)
     # Initialize the animation
@@ -324,18 +371,21 @@ function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps)
         # p = plot_density(state.particles[1].position,param)
         p0 = plot_density(state.ρ_avg, param; title="time averaged density")
         p1 = plot_density(state.ρ, param)
-        p2 = plot_spatial_correlation(spatial_corr, param)
-        
-        if frame > 10
-            fit_params = fit_exponential(0:(frame-1), time_corr)
-            push!(decay_times, fit_params[2])
-            p3 = plot_time_correlation(time_corr, frame, fit_params)
+
+        if calc_correlations
+            p2 = plot_spatial_correlation(spatial_corr, param)
+            
+            if frame > 10
+                fit_params = fit_exponential(0:(frame-1), time_corr)
+                push!(decay_times, fit_params[2])
+                p3 = plot_time_correlation(time_corr, frame, fit_params)
+            else
+                p3 = plot_time_correlation(time_corr, frame)
+            end
+            plot(p0,p1, p2, p3, size=(1200,1200), layout=(2,2))
         else
-            p3 = plot_time_correlation(time_corr, frame)
+            plot(p0, p1, size=(1200,600), layout=(2,1))
         end
-        
-        plot(p0,p1, p2, p3, size=(1200,1200), layout=(2,2))
-        # plot(p1, p2, p3, size=(1800,600), layout=(1,3))
         next!(prg)
     end
     # for frame in 1:n_frame
@@ -356,12 +406,21 @@ function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps)
     # end
     # display(plot_object)
 
+    #plot final configuration
+    p0 = plot_density(state.ρ_avg, param; title="time averaged density")
+    p1 = plot_density(state.ρ, param)
+    p=plot(p0, p1, size=(1200,600), layout=(2,1))
+    display(p)
+
+    #
     println("Simulation complete, producing movie")
     name = @sprintf("%s.gif", file_name)
     gif(anim, name, fps = in_fps)
 
-    another_plot=plot_decay_time_evolution(decay_times)
-    display(another_plot)
+
+
+    # another_plot=plot_decay_time_evolution(decay_times)
+    # display(another_plot)
 end
 
 function plot_decay_time_evolution(decay_times)
