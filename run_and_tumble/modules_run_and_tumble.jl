@@ -86,39 +86,59 @@ module FP
             α = param.α
             t_end = state.t + Δt
             while state.t < t_end
-                n = rand(rng,1:param.N)
+                n_and_a = rand(rng,1:3*param.N)
+                n = (n_and_a-mod1(n_and_a,3)) ÷ 3 +1
                 particle = state.particles[n]
                 spot_index = particle.position[1]
                 left_index= mod1(spot_index-1,param.dims[1])
                 right_index = mod1(spot_index+1,param.dims[1])
-                p_left = calculate_jump_probability(particle.direction[1], param.D, V[left_index]-V[spot_index],T)
-                p_right = calculate_jump_probability(particle.direction[1], param.D, V[right_index]-V[spot_index],T)
-                p_tumble = 0 #α/2
-                # p_stay = α/2
 
+                action_index = mod1(n_and_a,3)
                 state.ρ[spot_index] -= 1
-
-                possible_moves = [p_left, p_right, p_tumble ]  # right, left, tumble
-                w_sum=sum(possible_moves)
-                choice = tower_sampling(possible_moves, w_sum, rng)
-                if choice==1
-                    # particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
-                    particle.position[1] = left_index
-                    # println("choice left")
-                elseif choice==2
-                    # particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
-                    particle.position[1] = right_index
-                    # println("choice right")
-                elseif choice==3
-                    particle.direction[1]*=-1
-                    # println("choice tumble")
+                candidate_spot_index = 0
+                if action_index == 1 # left
+                    candidate_spot_index = left_index
+                elseif action_index == 2 # right
+                    candidate_spot_index = right_index
+                else 
+                    candidate_spot_index = spot_index
+                end
+                p_candidate= calculate_jump_probability(particle.direction[1], param.D, V[candidate_spot_index]-V[spot_index],T)
+                p_stay = param.D
+                p_arr = [p_candidate, p_stay]
+                choice = tower_sampling(p_arr, sum(p_arr),rng)
+                if choice == 1
+                    particle.position[1] =  candidate_spot_index
                 end
                 new_position = particle.position[1]
                 state.ρ[new_position] += 1
 
+                # p_left = calculate_jump_probability(particle.direction[1], param.D, V[left_index]-V[spot_index],T)
+                # p_right = calculate_jump_probability(particle.direction[1], param.D, V[right_index]-V[spot_index],T)
+                # p_stay = calculate_jump_probability(particle.direction[1], param.D, 0, T)
+                # p_tumble = 0 #α/2
+                # # p_stay = α/2
+
+
+                # possible_moves = [p_left, p_right, p_stay ,p_tumble ]  # right, left, tumble
+                # w_sum=sum(possible_moves)
+                # choice = tower_sampling(possible_moves, w_sum, rng)
+                # if choice==1
+                #     # particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
+                #     particle.position[1] = left_index
+                #     # println("choice left")
+                # elseif choice==2
+                #     # particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
+                #     particle.position[1] = right_index
+                #     # println("choice right")
+                # elseif choice==3
+                #     particle.direction[1]*=-1
+                #     # println("choice tumble")
+                # end
+
                 
-                state.t += 1/(param.N*w_sum) # find correct time increment , in the previous simulation divided by w_sum
-                # state.t += Δt
+                # state.t += 1/(param.N*w_sum) # find correct time increment , in the previous simulation divided by w_sum
+                state.t += Δt
             end
             
         else
@@ -252,7 +272,7 @@ function plot_density(density,param; title = "Density")
         plot(x_range, density, 
              title=title, 
              xlabel="Position", ylabel=title, 
-             legend=false, lw=2)
+             legend=false, lw=2,seriestype=:scatter)
     elseif dim_num == 2
         Lx= param.dims[1]
         Ly= param.dims[2]
@@ -331,8 +351,8 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
         # println(size(time_averaged_desnity_field))
         # println(size(state.ρ))
         # p = plot_density(state.particles[1].position,param)
-        p0 = plot_density(state.ρ_avg, param; title="time averaged density")
-        p1 = plot_density(state.ρ, param)
+        # p0 = plot_density(state.ρ_avg, param; title="time averaged density")
+        # p1 = plot_density(state.ρ, param)
 
         if calc_correlations
             p2 = plot_spatial_correlation(spatial_corr, param)
@@ -346,7 +366,7 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
             end
             plot(p0,p1, p2, p3, size=(1200,1200), layout=(2,2))
         else
-            plot(p0, p1, size=(1200,600), layout=(2,1))
+            # plot(p0, p1, size=(1200,600), layout=(2,1))
         end
         next!(prg)
     end
