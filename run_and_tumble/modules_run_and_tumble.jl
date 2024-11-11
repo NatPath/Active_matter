@@ -73,8 +73,8 @@ module FP
         return state
     end
 
-    function calculate_jump_probability(direction,D,ΔV,T,ϵ=0)
-        p=(D+ϵ*direction)*min(1,exp(-ΔV*T))
+    function calculate_jump_probability(direction,D,ΔV,T,ϵ=0.9)
+        p=(D+ϵ*direction)*min(1,exp(-ΔV*T))/(D+ϵ)
         return p
     end
 
@@ -100,15 +100,22 @@ module FP
                     candidate_spot_index = left_index
                 elseif action_index == 2 # right
                     candidate_spot_index = right_index
-                else 
+                elseif action_index == 3 # tumble
                     candidate_spot_index = spot_index
                 end
-                p_candidate= calculate_jump_probability(particle.direction[1], param.D, V[candidate_spot_index]-V[spot_index],T)
-                p_stay = param.D
+                if action_index==3
+                    p_candidate=α
+                else
+                    p_candidate= calculate_jump_probability(particle.direction[1], param.D, V[candidate_spot_index]-V[spot_index],T)
+                end
+                p_stay = 1-p_candidate
                 p_arr = [p_candidate, p_stay]
                 choice = tower_sampling(p_arr, sum(p_arr),rng)
                 if choice == 1
                     particle.position[1] =  candidate_spot_index
+                    if action_index==3
+                        particle.direction[1]*=-1
+                    end
                 end
                 new_position = particle.position[1]
                 state.ρ[new_position] += 1
@@ -138,7 +145,8 @@ module FP
 
                 
                 # state.t += 1/(param.N*w_sum) # find correct time increment , in the previous simulation divided by w_sum
-                state.t += Δt
+                state.t += 1/param.N
+                #state.t += Δt
             end
             
         else
@@ -370,13 +378,22 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
         end
         next!(prg)
     end
-    p0 = plot_density(state.ρ_avg, param; title="time averaged density")
+    normalized_dist = state.ρ_avg/ sum(state.ρ_avg)
+    # p0 = plot_density(state.ρ_avg, param; title="time averaged density")
+    p0 = plot_density(normalized_dist, param; title="time averaged density")
     p1 = plot_density(state.ρ, param)
     p=plot(p0, p1, size=(1200,600), layout=(2,1))
     display(p)
 
     #
     println("Simulation complete")
+    
+    # proportion_vec = abs.(state.ρ_avg-(exp.(-state.V/state.T)))./exp.(-state.V/state.T)
+    exp_expression= exp.(-state.V/state.T)
+    boltzman_dist= exp_expression/ sum(exp_expression)
+    proportion_vec = normalized_dist - boltzman_dist
+    plot(proportion_vec; title="proportion_vec")
+
 end
 
 
