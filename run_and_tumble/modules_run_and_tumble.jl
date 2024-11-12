@@ -36,9 +36,9 @@ module FP
         direction = zeros(Float64, dim_num)
         for (i,dim) in enumerate(sys_params.dims)
             position[i] = rand(rng, 1:dim)
-            direction[i] = rand(rng,1:dim)
+            direction[i] = rand(rng,1:dim)*rand(rng,[-1,1])
         end
-        normalize!(direction)
+        direction = direction ./ norm(direction)
         Particle(position,direction)
     end
 
@@ -48,6 +48,7 @@ module FP
         particles::Array{Particle}
         ρ::Array{Int64}      # density field
         ρ_avg::Array{Float64} #time averaged density field
+        ρ_matrix_avg::Array{Float64}
         T::Float64                      # temperature
         V::Array{Float64}      # potential
     end
@@ -69,12 +70,13 @@ module FP
             ρ[CartesianIndex(indices...)] += 1
         end
         ρ_avg = Float64.(ρ)
-        state = State(t, particles, ρ, ρ_avg, T, V)
+        ρ_matrix_avg = ρ_avg * transpose(ρ_avg) 
+        state = State(t, particles, ρ, ρ_avg, ρ_matrix_avg, T, V)
         return state
     end
 
-    function calculate_jump_probability(direction,D,ΔV,T,ϵ=0.9)
-        p=(D+ϵ*direction)*min(1,exp(-ΔV*T))/(D+ϵ)
+    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,ϵ=0.9)
+        p=(D+ϵ*particle_direction*choice_direction)*min(1,exp(-ΔV*T))/(D+ϵ)
         return p
     end
 
@@ -98,15 +100,19 @@ module FP
                 candidate_spot_index = 0
                 if action_index == 1 # left
                     candidate_spot_index = left_index
+                    choice_direction = -1
                 elseif action_index == 2 # right
                     candidate_spot_index = right_index
+                    choice_direction = 1
                 elseif action_index == 3 # tumble
                     candidate_spot_index = spot_index
+                    choice_direction = 0
                 end
+
                 if action_index==3
                     p_candidate=α
                 else
-                    p_candidate= calculate_jump_probability(particle.direction[1], param.D, V[candidate_spot_index]-V[spot_index],T)
+                    p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T)
                 end
                 p_stay = 1-p_candidate
                 p_arr = [p_candidate, p_stay]
@@ -115,6 +121,7 @@ module FP
                     particle.position[1] =  candidate_spot_index
                     if action_index==3
                         particle.direction[1]*=-1
+                        # println("tumbled")
                     end
                 end
                 new_position = particle.position[1]
@@ -229,6 +236,8 @@ function update_and_compute_correlations!(state, param, t_gap, ρ_history, frame
     dim_num= length(param.dims)
     if dim_num==1
         state.ρ_avg = (state.ρ_avg * (frame-1)+state.ρ)/frame
+        ρ_matrix = state.ρ*transpose(state.ρ)
+        state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-1)+ρ_matrix)/frame
         # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
         if !calc_correlations
             return nothing, nothing
@@ -382,17 +391,24 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
     # p0 = plot_density(state.ρ_avg, param; title="time averaged density")
     p0 = plot_density(normalized_dist, param; title="time averaged density")
     p1 = plot_density(state.ρ, param)
+    outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+    p4= heatmap(state.ρ_matrix_avg - outer_prod_ρ , xlabel="x", ylabel="y", title="Correlation Matrix Heatmap", color=:viridis)
+
     p=plot(p0, p1, size=(1200,600), layout=(2,1))
     display(p)
+
+    p_corr= heatmap(state.ρ_matrix_avg - outer_prod_ρ , xlabel="x", ylabel="y", title="Correlation Matrix Heatmap", color=:viridis)
+    display(p_corr)
+    
 
     #
     println("Simulation complete")
     
     # proportion_vec = abs.(state.ρ_avg-(exp.(-state.V/state.T)))./exp.(-state.V/state.T)
-    exp_expression= exp.(-state.V/state.T)
-    boltzman_dist= exp_expression/ sum(exp_expression)
-    proportion_vec = normalized_dist - boltzman_dist
-    plot(proportion_vec; title="proportion_vec")
+    # exp_expression= exp.(-state.V/state.T)
+    # boltzman_dist= exp_expression/ sum(exp_expression)
+    # proportion_vec = normalized_dist - boltzman_dist
+    # plot(proportion_vec; title="proportion_vec")
 
 end
 

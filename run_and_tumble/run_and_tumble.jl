@@ -4,6 +4,7 @@ using FFTW
 using ProgressMeter
 using Statistics
 using LsqFit 
+using LinearAlgebra
 import Printf.@sprintf
 
 
@@ -12,10 +13,10 @@ rng = MersenneTwister(123)
 
 dim_num = 1
 D = 1                            # diffusion coefficient
-α = 0.9                          # rate of tumbling 
-L= 4
+α = 0.3                          # rate of tumbling 
+L= 8
 dims = ntuple(i->L, dim_num)     # system size
-ρ₀ =  1                     # density
+ρ₀ =  10                    # density
 T = 1.0                           # temperature   
 
 param = FP.setParam(α, dims, ρ₀, D)
@@ -90,14 +91,15 @@ v_linear_args = Dict("type"=> "linear", "slope" => 1, "shift"=>0)
 v_harmonic_args = Dict("type"=>"harmonic", "k" => 1, "m_sign"=>1, "center"=> L÷2)
 v_periodic_args = Dict("type"=>"periodic", "period" => L÷4, "magnitude"=>1, "phase"=> L÷2)
 v_random_args = Dict("type"=>"random", "scale"=>1 )
-V = choose_V(v_well_args)
+V = choose_V(v_harmonic_args)
 plot_boltzman_distribution(V)
 state = FP.setState(0, rng, param, T, V)
 
 
 # Increase the number of frames to see a more meaningful time correlation
-# make_movie!(state, param, 1, 2000, rng, "test_with_time_corr", 2)
-run_simulation!(state, param, 1, 100000, rng )
+# make_movie!(state, param, 1, 100, rng, "test_with_time_corr", 10)
+run_simulation!(state, param, 1, 1000000, rng )
+
 
 
 
