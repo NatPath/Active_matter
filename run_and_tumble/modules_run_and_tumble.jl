@@ -75,7 +75,7 @@ module FP
         return state
     end
 
-    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,ϵ=0.9)
+    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,ϵ=0.99)
         p=(D+ϵ*particle_direction*choice_direction)*min(1,exp(-ΔV*T))/(D+ϵ)
         return p
     end
