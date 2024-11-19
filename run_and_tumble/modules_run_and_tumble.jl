@@ -10,6 +10,7 @@ module FP
 
     struct Param # model parameters
         α::Float64  # rate of tumbling
+        β::Float64  # rate of potential fluctuation
         dims::Tuple{Vararg{Int}} # systen's dimensions
         ρ₀::Float64  # density
         N::Int64    # number of particles
@@ -17,11 +18,11 @@ module FP
     end
 
     #constructor
-    function setParam(α, dims, ρ₀, D)
+    function setParam(α ,β, dims, ρ₀, D)
 
         N = Int(round( ρ₀*prod(dims)))       # number of particles
 
-        param = Param(α, dims, ρ₀, N, D)
+        param = Param(α, β, dims, ρ₀, N, D)
         return param
     end
 
@@ -39,7 +40,18 @@ module FP
             direction[i] = rand(rng,1:dim)*rand(rng,[-1,1])
         end
         direction = direction ./ norm(direction)
+        print(direction)
         Particle(position,direction)
+    end
+
+    mutable struct Potential 
+        V::Array{Float64}      # potential
+        fluctuation_mask::Array{Float64}
+        fluctuation_sign::Int64
+        
+    end
+    function setPotential(V, fluctuation_mask)
+        return Potential(V, fluctuation_mask, 1)
     end
 
     mutable struct State
@@ -47,13 +59,16 @@ module FP
         #pos::Array{Int64, 1+dim_num}    # position vector
         particles::Array{Particle}
         ρ::Array{Int64}      # density field
+        ρ₊::Array{Int64}      # density field
+        ρ₋::Array{Int64}      # density field
         ρ_avg::Array{Float64} #time averaged density field
         ρ_matrix_avg::Array{Float64}
         T::Float64                      # temperature
-        V::Array{Float64}      # potential
+        # V::Array{Float64}      # potential
+        potential::Potential
     end
 
-    function setState(t, rng, param, T, V=zeros(Float64,param.dims))
+    function setState(t, rng, param, T, potential=setPotential(zeros(Float64,param.dims),zeros(Float64,param.dims)))
         N = param.N
         # initialize particles
         particles = Array{Particle}(undef,N)
@@ -63,40 +78,61 @@ module FP
 
         # Initialize the matrix with dimensions specified by a tuple
         ρ = zeros(Int64, param.dims...)
+        ρ₊ = zeros(Int64, param.dims...)
+        ρ₋ = zeros(Int64, param.dims...)
 
         # Iterate over the positions and update the matrix
         for n in 1:N
             indices = Tuple(particles[n].position[i] for i in 1:length(param.dims))
             ρ[CartesianIndex(indices...)] += 1
+            if particles[n].direction[1]==1
+                ρ₊[CartesianIndex(indices...)] += 1
+            elseif particles[n].direction[1] ==-1
+                ρ₋[CartesianIndex(indices...)] += 1
+            end
         end
         ρ_avg = Float64.(ρ)
         ρ_matrix_avg = ρ_avg * transpose(ρ_avg) 
-        state = State(t, particles, ρ, ρ_avg, ρ_matrix_avg, T, V)
+        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg, T, potential)
         return state
     end
 
-    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,ϵ=0.99)
-        p=(D+ϵ*particle_direction*choice_direction)*min(1,exp(-ΔV*T))/(D+ϵ)
+    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,ϵ=0.6, ΔV_max=0.4)
+        relative_direction = particle_direction*choice_direction
+        
+        # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+        if ΔV!=0
+            p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+        else
+            p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+        end
+        # if relative_direction==1
+        #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
+        # else
+        #     p=0
+        # end
         return p
     end
 
     function update!(Δt, param, state, rng)
 
         if length(param.dims) == 1
-            V = state.V
+            V = state.potential.V
             T = state.T
             α = param.α
+            β = param.β
             t_end = state.t + Δt
             while state.t < t_end
-                n_and_a = rand(rng,1:3*param.N)
-                n = (n_and_a-mod1(n_and_a,3)) ÷ 3 +1
+                n_and_a = rand(rng,1:4*param.N)
+                n = (n_and_a-mod1(n_and_a,4)) ÷ 4 +1
                 particle = state.particles[n]
                 spot_index = particle.position[1]
                 left_index= mod1(spot_index-1,param.dims[1])
                 right_index = mod1(spot_index+1,param.dims[1])
 
-                action_index = mod1(n_and_a,3)
+                action_index = mod1(n_and_a,4)
                 state.ρ[spot_index] -= 1
+                
                 candidate_spot_index = 0
                 if action_index == 1 # left
                     candidate_spot_index = left_index
@@ -104,13 +140,15 @@ module FP
                 elseif action_index == 2 # right
                     candidate_spot_index = right_index
                     choice_direction = 1
-                elseif action_index == 3 # tumble
+                else  # tumble or fluctuate potential
                     candidate_spot_index = spot_index
                     choice_direction = 0
                 end
 
                 if action_index==3
                     p_candidate=α
+                elseif action_index==4
+                    p_candidate=β
                 else
                     p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T)
                 end
@@ -119,39 +157,29 @@ module FP
                 choice = tower_sampling(p_arr, sum(p_arr),rng)
                 if choice == 1
                     particle.position[1] =  candidate_spot_index
+
+                    if particle.direction[1] == 1
+                        state.ρ₊[spot_index]-=1
+                        state.ρ₊[candidate_spot_index]+=1
+                    elseif particle.direction[1] ==-1
+                        state.ρ₋[spot_index]-=1
+                        state.ρ₋[candidate_spot_index]+=1
+                    end
+
                     if action_index==3
+                        state.ρ₊[spot_index]-= particle.direction[1]
+                        state.ρ₋[spot_index]+= particle.direction[1]
                         particle.direction[1]*=-1
                         # println("tumbled")
+                    end
+                    if action_index == 4
+                        state.potential.V += state.potential.fluctuation_mask*state.potential.fluctuation_sign
+                        state.potential.fluctuation_sign*=-1
                     end
                 end
                 new_position = particle.position[1]
                 state.ρ[new_position] += 1
 
-                # p_left = calculate_jump_probability(particle.direction[1], param.D, V[left_index]-V[spot_index],T)
-                # p_right = calculate_jump_probability(particle.direction[1], param.D, V[right_index]-V[spot_index],T)
-                # p_stay = calculate_jump_probability(particle.direction[1], param.D, 0, T)
-                # p_tumble = 0 #α/2
-                # # p_stay = α/2
-
-
-                # possible_moves = [p_left, p_right, p_stay ,p_tumble ]  # right, left, tumble
-                # w_sum=sum(possible_moves)
-                # choice = tower_sampling(possible_moves, w_sum, rng)
-                # if choice==1
-                #     # particle.position[1]=mod1(particle.position[1]-1,param.dims[1])
-                #     particle.position[1] = left_index
-                #     # println("choice left")
-                # elseif choice==2
-                #     # particle.position[1]=mod1(particle.position[1]+1,param.dims[1])
-                #     particle.position[1] = right_index
-                #     # println("choice right")
-                # elseif choice==3
-                #     particle.direction[1]*=-1
-                #     # println("choice tumble")
-                # end
-
-                
-                # state.t += 1/(param.N*w_sum) # find correct time increment , in the previous simulation divided by w_sum
                 state.t += 1/param.N
                 #state.t += Δt
             end
@@ -282,14 +310,56 @@ end
 #         throw(DomainError("Invalid input - dimension not supported yet"))
 #     end
 # end
-function plot_density(density,param; title = "Density")
+function plot_density(density, param, state; title="Density", show_directions=false)
     dim_num = length(size(density))
     if dim_num==1
-        x_range = 1:param.dims[1]
-        plot(x_range, density, 
-             title=title, 
-             xlabel="Position", ylabel=title, 
-             legend=false, lw=2,seriestype=:scatter)
+        if !show_directions
+            # Original plotting code
+            x_range = 1:param.dims[1]
+            # p = plot(x_range, density, 
+            #      title=title, 
+            #      xlabel="Position", ylabel=title, 
+            #      legend=false, lw=2, seriestype=:scatter)
+            p = plot(x_range, density,
+                title=title,
+                xlabel="Position",
+                ylabel="Density",
+                label="Density",
+                lw=2,
+                seriestype=:scatter,
+                color=:blue,
+                legend=:topleft)
+            
+            # Secondary axis for potential
+            plot!(twinx(), x_range, state.potential.V,
+                  ylabel="Potential",
+                  label="Potential",
+                  color=:red,
+                  alpha=0.3,
+                  linestyle=:dash,
+                  legend=:topright)
+        else
+            # Create subplot with total density, right-moving and left-moving particles
+            x_range = 1:param.dims[1]
+            p1 = plot(x_range, density, 
+                     title="Total Density", 
+                     xlabel="Position", ylabel="Density",
+                     legend=false, lw=2, seriestype=:scatter)
+            
+            p2 = plot(x_range, state.ρ₊,
+                     title="Right-moving (ρ₊)", 
+                     xlabel="Position", ylabel="Density",
+                     legend=false, lw=2, seriestype=:scatter,
+                     color=:red)
+            
+            p3 = plot(x_range, state.ρ₋,
+                     title="Left-moving (ρ₋)", 
+                     xlabel="Position", ylabel="Density",
+                     legend=false, lw=2, seriestype=:scatter,
+                     color=:blue)
+            
+            p = plot(p1, p2, p3, layout=(3,1), size=(600,600))
+        end
     elseif dim_num == 2
         Lx= param.dims[1]
         Ly= param.dims[2]
@@ -302,6 +372,7 @@ function plot_density(density,param; title = "Density")
     else
         throw(DomainError("Invalid input - dimension not supported yet"))
     end
+    return p
 end
 
 function plot_spatial_correlation(spatial_corr, param)
@@ -350,18 +421,24 @@ function plot_time_correlation(time_corr, frame, fit_params=nothing)
     return p
 end
 
-function initialize_simulation(state, param, n_frame)
+function initialize_simulation(state, param, n_frame, calc_correlations)
     state.t = 0
     prg = Progress(n_frame)
-    ρ_history = zeros((param.dims..., n_frame))
     decay_times = Float64[]
-    return prg, ρ_history, decay_times
+    if calc_correlations
+        ρ_history = zeros((param.dims..., n_frame))
+        return prg, ρ_history, decay_times
+    else
+        ρ_history = zeros((param.dims..., 1))
+        return prg, ρ_history, decay_times
+    end
 end
 
 
 function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations = false)
     println("Starting simulation")
-    prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps)
+    prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations)
+    
     # Initialize the animation
     for sweep in 1:n_sweeps
         spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, sweep, rng)
@@ -387,23 +464,19 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
         end
         next!(prg)
     end
-    normalized_dist = state.ρ_avg/ sum(state.ρ_avg)
-    # p0 = plot_density(state.ρ_avg, param; title="time averaged density")
-    p0 = plot_density(normalized_dist, param; title="time averaged density")
-    p1 = plot_density(state.ρ, param)
+    normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+    p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+    # p1 = plot_density(state.ρ, param, state; title="Current density", show_directions=false)
     outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-    p4= heatmap(state.ρ_matrix_avg - outer_prod_ρ , xlabel="x", ylabel="y", title="Correlation Matrix Heatmap", color=:viridis)
+    p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
+                 title="Correlation Matrix Heatmap", color=:viridis)
 
-    p=plot(p0, p1, size=(1200,600), layout=(2,1))
-    display(p)
-
-    p_corr= heatmap(state.ρ_matrix_avg - outer_prod_ρ , xlabel="x", ylabel="y", title="Correlation Matrix Heatmap", color=:viridis)
-    display(p_corr)
-    
+    p_final=plot(p0,p4, size=(1200,600))
+    display(p_final)
 
     #
     println("Simulation complete")
-    
+    return normalized_dist 
     # proportion_vec = abs.(state.ρ_avg-(exp.(-state.V/state.T)))./exp.(-state.V/state.T)
     # exp_expression= exp.(-state.V/state.T)
     # boltzman_dist= exp_expression/ sum(exp_expression)
@@ -413,67 +486,74 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
 end
 
 
-function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps, calc_correlations = false)
+function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps, show_directions = false)
     println("Starting simulation")
-    prg, ρ_history, decay_times = initialize_simulation(state, param, n_frame)
+    prg, ρ_history, decay_times = initialize_simulation(state, param, n_frame, true)
+    
     # Initialize the animation
     anim = @animate for frame in 1:n_frame
         spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, frame, rng)
-        # println(size(time_averaged_desnity_field))
-        # println(size(state.ρ))
-        # p = plot_density(state.particles[1].position,param)
-        p0 = plot_density(state.ρ_avg, param; title="time averaged density")
-        p1 = plot_density(state.ρ, param)
-
-        if calc_correlations
-            p2 = plot_spatial_correlation(spatial_corr, param)
+        
+        if show_directions
+            # Create two subplots side by side
+            p1 = plot(title="Particle Densities by Direction",
+                    xlabel="Position", ylabel="Density")
             
-            if frame > 10
-                fit_params = fit_exponential(0:(frame-1), time_corr)
-                push!(decay_times, fit_params[2])
-                p3 = plot_time_correlation(time_corr, frame, fit_params)
-            else
-                p3 = plot_time_correlation(time_corr, frame)
-            end
-            plot(p0,p1, p2, p3, size=(1200,1200), layout=(2,2))
+            # Plot right-moving particles
+            plot!(p1, 1:param.dims[1], state.ρ₊, 
+                label="Right-moving", color=:red, 
+                marker=:circle, markersize=4)
+            
+            # Plot left-moving particles on the same graph
+            plot!(p1, 1:param.dims[1], state.ρ₋, 
+                label="Left-moving", color=:blue, 
+                marker=:circle, markersize=4)
+            
+            # Plot total density
+            p2 = plot(1:param.dims[1], state.ρ,
+                    title="Total Density",
+                    xlabel="Position", ylabel="Density",
+                    label="Total", color=:black,
+                    marker=:circle, markersize=4)
+            
+            # Combine plots
+            plot(p1, p2, layout=(2,1), size=(800,800))
         else
-            plot(p0, p1, size=(1200,600), layout=(2,1))
+
+            normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+            p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+            # p1 = plot_density(state.ρ, param, state; title="Current density", show_directions=false)
+            outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+            p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
+                        title="Correlation Matrix Heatmap", color=:viridis)
+
+            plot(p0,p4, size=(1200,600))
+
         end
+        
         next!(prg)
     end
-    # for frame in 1:n_frame
-    #     spatial_corr, time_corr = update_and_compute_correlations(state, param, t_gap, ρ_history, frame, rng)
-    #     p1 = plot_density(state, param)
-    #     p2 = plot_spatial_correlation(spatial_corr, param)
-        
-    #     if frame > 10
-    #         fit_params = fit_exponential(0:(frame-1), time_corr)
-    #         push!(decay_times, fit_params[2])
-    #         p3 = plot_time_correlation(time_corr, frame, fit_params)
-    #     else
-    #         p3 = plot_time_correlation(time_corr, frame)
-    #     end
-        
-    #     plot_object=plot(p1, p2, p3, size=(1800,600), layout=(1,3))
-    #     next!(prg)
-    # end
-    # display(plot_object)
-
-    #plot final configuration
-    p0 = plot_density(state.ρ_avg, param; title="time averaged density")
-    p1 = plot_density(state.ρ, param)
-    p=plot(p0, p1, size=(1200,600), layout=(2,1))
-    display(p)
-
-    #
+    
     println("Simulation complete, producing movie")
     name = @sprintf("%s.gif", file_name)
     gif(anim, name, fps = in_fps)
 
+    # After movie is complete, show final statistics
+    println("Generating final statistics...")
+    
+    # Calculate and display final statistics
+    normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+    p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+    outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+    p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
+                 title="Correlation Matrix Heatmap", color=:viridis)
 
-
-    # another_plot=plot_decay_time_evolution(decay_times)
-    # display(another_plot)
+    # Display final plots
+    final_plots = plot(p0, p4, layout=(1,2), size=(1200,600))
+    display(final_plots)
+    
+    # Save final statistics plot
+    savefig(final_plots, replace(file_name, ".gif" => "_final_stats.png"))
 end
 
 function plot_decay_time_evolution(decay_times)
