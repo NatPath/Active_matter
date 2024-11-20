@@ -101,16 +101,16 @@ module FP
         relative_direction = particle_direction*choice_direction
         
         # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-        if ΔV!=0
-            p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-        else
-            p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-        end
-        # if relative_direction==1
-        #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
+        # if ΔV!=0
+        #     p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
         # else
-        #     p=0
+        #     p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
         # end
+        if relative_direction==1
+            p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
+        else
+            p=0
+        end
         return p
     end
 
@@ -468,7 +468,8 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
     p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
     # p1 = plot_density(state.ρ, param, state; title="Current density", show_directions=false)
     outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-    p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
+    corr_mat = state.ρ_matrix_avg-outer_prod_ρ
+    p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
                  title="Correlation Matrix Heatmap", color=:viridis)
 
     p_final=plot(p0,p4, size=(1200,600))
@@ -476,7 +477,7 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
 
     #
     println("Simulation complete")
-    return normalized_dist 
+    return normalized_dist, corr_mat  
     # proportion_vec = abs.(state.ρ_avg-(exp.(-state.V/state.T)))./exp.(-state.V/state.T)
     # exp_expression= exp.(-state.V/state.T)
     # boltzman_dist= exp_expression/ sum(exp_expression)

@@ -14,7 +14,7 @@ rng = MersenneTwister(123)
 dim_num = 1
 D = 1                           # diffusion coefficient
 α = 0.3                          # rate of tumbling 
-β = 0.1                          # potential fluctuation rate
+β = 0.05                          # potential fluctuation rate
 L= 32
 dims = ntuple(i->L, dim_num)     # system size
 ρ₀ =  1                    # density
@@ -117,7 +117,7 @@ state = FP.setState(0, rng, param, T, potential)
 
 # Increase the number of frames to see a more meaningful time correlation
 # make_movie!(state, param, 1, 10000, rng, "test_with_time_corr", 10)
-res_dist=run_simulation!(state, param, 1, 10000000, rng )
+res_dist, corr_mat=run_simulation!(state, param, 1, 3000000000, rng )
 # WHEN YOU GET BACK DO IT WITH OPPOSITE probability ratios (for delV==0 and not)
 
 
