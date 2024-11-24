@@ -12,7 +12,7 @@ include("modules_run_and_tumble.jl")
 rng = MersenneTwister(123)
 
 dim_num = 1
-D = 0                           # diffusion coefficient
+D = 1                           # diffusion coefficient
 α = 0.3                          # rate of tumbling 
 L= 64
 dims = ntuple(i->L, dim_num)     # system size

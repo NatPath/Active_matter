@@ -6,7 +6,6 @@ using LsqFit
 #Wrap everything with a module to allow redefinition of type
 module FP
     using LinearAlgebra
-    # dim_num::Int = 1
 
     struct Param # model parameters
         α::Float64  # rate of tumbling
