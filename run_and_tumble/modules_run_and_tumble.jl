@@ -435,32 +435,40 @@ function initialize_simulation(state, param, n_frame, calc_correlations)
 end
 
 
-function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations = false)
+function run_simulation!(state, param, t_gap, n_sweeps, rng; calc_correlations = false, show_times= [])
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations)
+
+
     
     # Initialize the animation
     for sweep in 1:n_sweeps
         spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, sweep, rng)
-        # println(size(time_averaged_desnity_field))
-        # println(size(state.ρ))
-        # p = plot_density(state.particles[1].position,param)
-        # p0 = plot_density(state.ρ_avg, param; title="time averaged density")
-        # p1 = plot_density(state.ρ, param)
+        if sweep in show_times
+            normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+            p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+            # p1 = plot_density(state.ρ, param, state; title="Current density", show_directions=false)
+            outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+            corr_mat = state.ρ_matrix_avg-outer_prod_ρ
+            p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
+                        title="Correlation Matrix Heatmap", color=:viridis)
+            middle_spot = param.dims[1]÷2
+            p5 = plot(corr_mat[middle_spot,:],title="correlation matrix cut for x=$(middle_spot)")
+            point_to_look_at = middle_spot+5
+            vline!(p4,[point_to_look_at],label="x=$(point_to_look_at)")
+            left_value=corr_mat[point_to_look_at,point_to_look_at-1]
+            right_value=corr_mat[point_to_look_at,point_to_look_at+1]
+            left_side=corr_mat[point_to_look_at, 1:point_to_look_at-1]
+            right_side=corr_mat[point_to_look_at, point_to_look_at+1:end]
 
-        if calc_correlations
-            p2 = plot_spatial_correlation(spatial_corr, param)
-            
-            if frame > 10
-                fit_params = fit_exponential(0:(sweep-1), time_corr)
-                push!(decay_times, fit_params[2])
-                p3 = plot_time_correlation(time_corr, sweep, fit_params)
-            else
-                p3 = plot_time_correlation(time_corr, sweep)
-            end
-            plot(p0,p1, p2, p3, size=(1200,1200), layout=(2,2))
-        else
-            # plot(p0, p1, size=(1200,600), layout=(2,1))
+            p6 = plot(vcat(left_side,[(left_value+right_value)/2],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
+            vline!(p6,[point_to_look_at],label="x=$(point_to_look_at)")
+            # p6 = plot(vcat(left_side,[corr_mat[point_to_look_at,point_to_look_at]],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
+            # p6= plot(corr_mat[point_to_look_at,:])
+
+            p_final=plot(p0,p4,p5,p6, size=(1800,800),plot_title="sweep $(sweep)")
+            display(p_final)
+
         end
         next!(prg)
     end
@@ -470,9 +478,22 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng, calc_correlations =
     outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
     corr_mat = state.ρ_matrix_avg-outer_prod_ρ
     p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
-                 title="Correlation Matrix Heatmap", color=:viridis)
+                title="Correlation Matrix Heatmap", color=:viridis)
+    middle_spot = param.dims[1]÷2
+    p5 = plot(corr_mat[middle_spot,:],title="correlation matrix cut for x=$(middle_spot)")
+    point_to_look_at = middle_spot+5
+    vline!(p4,[point_to_look_at],label="x=$(point_to_look_at)")
+    left_value=corr_mat[point_to_look_at,point_to_look_at-1]
+    right_value=corr_mat[point_to_look_at,point_to_look_at+1]
+    left_side=corr_mat[point_to_look_at, 1:point_to_look_at-1]
+    right_side=corr_mat[point_to_look_at, point_to_look_at+1:end]
 
-    p_final=plot(p0,p4, size=(1200,600))
+    p6 = plot(vcat(left_side,[(left_value+right_value)/2],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
+    vline!(p6,[point_to_look_at],label="x=$(point_to_look_at)")
+    # p6 = plot(vcat(left_side,[corr_mat[point_to_look_at,point_to_look_at]],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
+    # p6= plot(corr_mat[point_to_look_at,:])
+
+    p_final=plot(p0,p4,p5,p6, size=(1800,800),plot_title="sweep $(n_sweeps)")
     display(p_final)
 
     #
