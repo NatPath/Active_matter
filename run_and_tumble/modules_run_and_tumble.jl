@@ -6,6 +6,8 @@ using LsqFit
 #Wrap everything with a module to allow redefinition of type
 module FP
     using LinearAlgebra
+    using ..Potentials: Potential
+    export Param, setParam, Particle, setParticle, setState
 
     struct Param # model parameters
         α::Float64  # rate of tumbling
@@ -43,16 +45,6 @@ module FP
         Particle(position,direction)
     end
 
-    mutable struct Potential 
-        V::Array{Float64}      # potential
-        fluctuation_mask::Array{Float64}
-        fluctuation_sign::Int64
-        
-    end
-    function setPotential(V, fluctuation_mask)
-        return Potential(V, fluctuation_mask, 1)
-    end
-
     mutable struct State
         t::Float64              # time
         #pos::Array{Int64, 1+dim_num}    # position vector
@@ -65,9 +57,10 @@ module FP
         T::Float64                      # temperature
         # V::Array{Float64}      # potential
         potential::Potential
+
     end
 
-    function setState(t, rng, param, T, potential=setPotential(zeros(Float64,param.dims),zeros(Float64,param.dims)))
+    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims),zeros(Float64,param.dims)))
         N = param.N
         # initialize particles
         particles = Array{Particle}(undef,N)
