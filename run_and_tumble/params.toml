@@ -1,0 +1,19 @@
+# Physical parameters
+dim_num = 1
+D = 0.0                # diffusion coefficient
+α = 0.3                # rate of tumbling 
+L = 64                 # system size
+N = 100               # number of particles
+T = 1.0               # temperature   
+β′ = 0.03
+
+# Simulation parameters
+n_sweeps = 100000
+n_runs = 4            # number of parallel runs
+
+# Potential parameters
+potential_type = "smudge"
+potential_magnitude = 0.4
+
+# Output parameters
+save_dir = "saved_states"

@@ -16,14 +16,16 @@ module FP
         ρ₀::Float64  # density
         N::Int64    # number of particles
         D::Float64  #diffusion coefficient
+        potential_type::String 
+        potential_magnitude::Float64
     end
 
     #constructor
-    function setParam(α ,β, dims, ρ₀, D)
+    function setParam(α ,β, dims, ρ₀, D, potential_type, potential_magnitude)
 
         N = Int(round( ρ₀*prod(dims)))       # number of particles
 
-        param = Param(α, β, dims, ρ₀, N, D)
+        param = Param(α, β, dims, ρ₀, N, D, potential_type, potential_magnitude)
         return param
     end
 
@@ -41,7 +43,6 @@ module FP
             direction[i] = rand(rng,1:dim)*rand(rng,[-1,1])
         end
         direction = direction ./ norm(direction)
-        print(direction)
         Particle(position,direction)
     end
 
@@ -414,7 +415,6 @@ function plot_time_correlation(time_corr, frame, fit_params=nothing)
 end
 
 function initialize_simulation(state, param, n_frame, calc_correlations)
-    state.t = 0
     prg = Progress(n_frame)
     decay_times = Float64[]
     if calc_correlations
@@ -427,15 +427,35 @@ function initialize_simulation(state, param, n_frame, calc_correlations)
 end
 
 
-function run_simulation!(state, param, t_gap, n_sweeps, rng; calc_correlations = false, show_times= [])
+function run_simulation!(state, param, t_gap, n_sweeps, rng; 
+                        calc_correlations = false, 
+                        show_times = [], 
+                        save_times = [])
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations)
 
-
-    
     # Initialize the animation
     for sweep in 1:n_sweeps
         spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, sweep, rng)
+        
+        # Save state at specified times
+        if sweep in save_times
+            save_dir = "saved_states"
+            mkpath(save_dir)
+            filename = @sprintf("%s/state_L-%d_rho-%.1e_alpha-%.2f_beta-%.2f_D-%.1f_t-%.1e.jld2",
+                save_dir,
+                param.dims[1],    # System size
+                param.ρ₀,         # Density
+                param.α,          # Tumbling rate
+                param.β,          # Potential fluctuation rate
+                param.D,          # Diffusion coefficient
+                state.t          # Current time
+            )
+            @save filename state param potential
+            println("State saved at sweep $sweep to: ", filename)
+        end
+
+        # Your existing show_times code
         if sweep in show_times
             normalized_dist = state.ρ_avg / sum(state.ρ_avg)
             p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
@@ -462,6 +482,7 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng; calc_correlations =
             display(p_final)
 
         end
+        
         next!(prg)
     end
     normalized_dist = state.ρ_avg / sum(state.ρ_avg)
@@ -500,7 +521,10 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng; calc_correlations =
 end
 
 
-function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps, show_directions = false)
+function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps; 
+                    show_directions = false,
+                    show_times = [],
+                    save_times = [])
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_frame, true)
     
@@ -508,41 +532,72 @@ function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps, show_
     anim = @animate for frame in 1:n_frame
         spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, frame, rng)
         
-        if show_directions
-            # Create two subplots side by side
-            p1 = plot(title="Particle Densities by Direction",
-                    xlabel="Position", ylabel="Density")
-            
-            # Plot right-moving particles
-            plot!(p1, 1:param.dims[1], state.ρ₊, 
-                label="Right-moving", color=:red, 
-                marker=:circle, markersize=4)
-            
-            # Plot left-moving particles on the same graph
-            plot!(p1, 1:param.dims[1], state.ρ₋, 
-                label="Left-moving", color=:blue, 
-                marker=:circle, markersize=4)
-            
-            # Plot total density
-            p2 = plot(1:param.dims[1], state.ρ,
-                    title="Total Density",
-                    xlabel="Position", ylabel="Density",
-                    label="Total", color=:black,
-                    marker=:circle, markersize=4)
-            
-            # Combine plots
-            plot(p1, p2, layout=(2,1), size=(800,800))
-        else
+        # Save state at specified times
+        if frame in save_times
+            save_dir = "saved_states"
+            mkpath(save_dir)
+            filename = @sprintf("%s/state_L-%d_rho-%.1e_alpha-%.2f_beta-%.2f_D-%.1f_t-%.1e.jld2",
+                save_dir,
+                param.dims[1],    # System size
+                param.ρ₀,         # Density
+                param.α,          # Tumbling rate
+                param.β,          # Potential fluctuation rate
+                param.D,          # Diffusion coefficient
+                state.t          # Current time
+            )
+            @save filename state param potential
+            println("State saved at frame $frame to: ", filename)
+        end
 
+        # Show visualization at specified times
+        if frame in show_times
+            if show_directions
+                # Create two subplots side by side
+                p1 = plot(title="Particle Densities by Direction",
+                        xlabel="Position", ylabel="Density")
+                
+                # Plot right-moving particles
+                plot!(p1, 1:param.dims[1], state.ρ₊, 
+                    label="Right-moving", color=:red, 
+                    marker=:circle, markersize=4)
+                
+                # Plot left-moving particles on the same graph
+                plot!(p1, 1:param.dims[1], state.ρ₋, 
+                    label="Left-moving", color=:blue, 
+                    marker=:circle, markersize=4)
+                
+                # Plot total density
+                p2 = plot(1:param.dims[1], state.ρ,
+                        title="Total Density",
+                        xlabel="Position", ylabel="Density",
+                        label="Total", color=:black,
+                        marker=:circle, markersize=4)
+                
+                # Combine plots
+                plot(p1, p2, layout=(2,1), size=(800,800))
+            else
+                normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+                p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+                outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+                p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
+                            title="Correlation Matrix Heatmap", color=:viridis)
+
+                p_show = plot(p0, p4, size=(1200,600), plot_title="frame $(frame)")
+                display(p_show)
+            end
+        end
+        
+        # For the animation frame
+        if show_directions
+            # ... existing show_directions plotting code ...
+        else
             normalized_dist = state.ρ_avg / sum(state.ρ_avg)
             p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
-            # p1 = plot_density(state.ρ, param, state; title="Current density", show_directions=false)
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
             p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
                         title="Correlation Matrix Heatmap", color=:viridis)
 
-            plot(p0,p4, size=(1200,600))
-
+            plot(p0, p4, size=(1200,600))
         end
         
         next!(prg)

@@ -31,6 +31,8 @@ module Potentials
         elseif v_string == "smudge"
             location = v_args["location"]
             magnitude = v_args["magnitude"]
+            V[location] = magnitude
+            V[location-1] = magnitude/2
         elseif v_string =="modified_smudge"
             location = v_args["location"]
             magnitude = v_args["magnitude"]
