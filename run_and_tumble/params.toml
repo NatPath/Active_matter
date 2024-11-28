@@ -3,7 +3,7 @@ dim_num = 1
 D = 0.0                # diffusion coefficient
 α = 0.3                # rate of tumbling 
 L = 64                 # system size
-N = 100               # number of particles
+N = 100*L               # number of particles
 T = 1.0               # temperature   
 β′ = 0.03
 

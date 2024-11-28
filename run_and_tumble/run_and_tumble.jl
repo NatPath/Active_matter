@@ -12,6 +12,7 @@ using ArgParse
 
 include("potentials.jl")
 include("modules_run_and_tumble.jl")
+using .FP
 
 function parse_commandline()
     s = ArgParseSettings()
@@ -38,11 +39,11 @@ function get_default_params()
         "N" => 6400,
         "T" => 1.0,
         "β′" => 0.03,
-        "n_sweeps" => 10^2,
+        "n_sweeps" => 10^1,
         "potential_type" => "smudge",
         "potential_magnitude" => 0.4,
         "save_dir" => "saved_states",
-        "show_times" => [10^i for i in 1:5],  # Default visualization times
+        "show_times" => [j*10^i for i in 3:12 for j in 1:9],  # Default visualization times
         "save_times" => Int[]                 # Empty by default
     )
 end
