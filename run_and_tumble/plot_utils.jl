@@ -1,6 +1,7 @@
 module PlotUtils
 using Plots
-export plot_sweep, plot_density, plot_spatial_correlation, plot_time_correlation
+using LsqFit
+export plot_sweep, plot_density, plot_data_colapse, plot_spatial_correlation, plot_time_correlation
 function plot_sweep(sweep,state,param)
     normalized_dist = state.ρ_avg / sum(state.ρ_avg)
     p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
@@ -91,7 +92,112 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     end
     return p
 end
+# function plot_data_colapse(states_params)
+#     p = plot(title="Correlation Matrix Collapse: y²*corr(x,y) vs x/y", 
+#              xlabel="x/y", ylabel="y²*corr(x,y)")
+    
+#     for (state,param) in states_params
+#         for i in 8:1:param.dims[1]/5
+#             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+#             corr_mat = (state.ρ_matrix_avg-outer_prod_ρ)
+#             middle_spot = param.dims[1]÷2
+#             point_to_look_at = Int(middle_spot+i)
+            
+#             # Get correlation data
+#             corr_mat_collapsed = corr_mat[:,point_to_look_at]
+#             left_value = corr_mat_collapsed[point_to_look_at-1]
+#             right_value = corr_mat_collapsed[point_to_look_at+1]
+#             left_side = corr_mat_collapsed[1:point_to_look_at-1]
+#             right_side = corr_mat_collapsed[point_to_look_at+1:end]
+#             full_data = vcat(left_side, [(left_value+right_value)/2], right_side)
+            
+#             # Create scaled x-axis
+#             x_positions = 1:length(full_data)
+#             x_scaled = (x_positions .- middle_spot) ./ i
+            
+#             # Scale y values by i^2
+#             y_scaled = full_data .* i^2
+            
+#             # Filter data points within range
+#             mask = (-5 .<= x_scaled .<= 5)
+#             x_scaled = x_scaled[mask]
+#             y_scaled = y_scaled[mask]
 
+#             # Sort by x_scaled for proper line plotting
+#             idx = sortperm(x_scaled)
+            
+#             # Plot scaled data
+#             plot!(p, x_scaled[idx], y_scaled[idx], 
+#                   label="y=$i", 
+#                   linewidth=2)
+#         end
+#     end
+#     display(p)
+#     return p
+# end
+function plot_data_colapse(states_params)
+    # Initialize plot
+    p = plot(title="Correlation Matrix Collapse: y²*corr(x,y) vs x/y", 
+             xlabel="x/y", ylabel="y²*corr(x,y)",
+             xlims=(-5,5), grid=true)
+    
+    # Collect all scaled data points
+    all_x = Float64[]
+    all_y = Float64[]
+    
+    for (state,param) in states_params
+        for i in 16:1:param.dims[1]/5-1
+            outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+            corr_mat = (state.ρ_matrix_avg-outer_prod_ρ)
+            middle_spot = param.dims[1]÷2
+            point_to_look_at = Int(middle_spot+i)
+            
+            corr_mat_collapsed = corr_mat[:,point_to_look_at]
+            left_value = corr_mat_collapsed[point_to_look_at-1]
+            right_value = corr_mat_collapsed[point_to_look_at+1]
+            left_side = corr_mat_collapsed[1:point_to_look_at-1]
+            right_side = corr_mat_collapsed[point_to_look_at+1:end]
+            full_data = vcat(left_side, [(left_value+right_value)/2], right_side)
+            
+            x_positions = 1:length(full_data)
+            x_scaled = (x_positions .- middle_spot) ./ i
+            y_scaled = full_data .* i^2
+            
+            # Filter points within range
+            mask = (-5 .<= x_scaled .<= 5)
+            x_scaled = x_scaled[mask]
+            y_scaled = y_scaled[mask]
+            
+            # Store points for fitting
+            append!(all_x, x_scaled)
+            append!(all_y, y_scaled)
+            
+            # Plot data
+            idx = sortperm(x_scaled)
+            plot!(p, x_scaled[idx], y_scaled[idx], 
+                  label="y=$i", linewidth=2)
+        end
+    end
+    
+    # Define theoretical function
+    f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
+    
+    # Fit function to data
+    p0 = [1.0,0.0,0.0]  # Initial parameter guess
+    fit = curve_fit(f, all_x, all_y, p0)
+    
+    # Add theoretical curve
+    x_theory = range(-5, 5, length=1000)
+    plot!(p, x_theory, f(x_theory, fit.param), 
+          label="Theoretical", 
+          color=:black, 
+          linewidth=3, 
+          linestyle=:dash)
+    
+    display(p)
+    print(fit.param)
+    return p
+end
 function plot_spatial_correlation(spatial_corr, param)
     dim_num = length(param.dims)
     if dim_num == 1
