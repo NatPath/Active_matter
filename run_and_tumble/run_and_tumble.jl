@@ -38,8 +38,8 @@ function get_default_params()
         "L" => 64,
         "N" => 6400,
         "T" => 1.0,
-        "β′" => 0.03,
-        "n_sweeps" => 10^1,
+        "β′" => 0.3,
+        "n_sweeps" => 10^6,
         "potential_type" => "smudge",
         "potential_magnitude" => 0.4,
         "save_dir" => "saved_states",
@@ -124,13 +124,13 @@ function main()
     # Save final state
     save_dir = "saved_states"
     mkpath(save_dir)
-    filename = @sprintf("%s/potential-%s_L-%d_rho-%.1e_alpha-%.2f_beta-%.2f_D-%.1f_t-%.1e.jld2",
+    filename = @sprintf("%s/potential-%s_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%.1e.jld2",
         save_dir,
         param.potential_type,
         param.dims[1],    # System size
         param.ρ₀,         # Density
         param.α,          # Tumbling rate
-        param.β,          # Potential fluctuation rate
+        β′,          # Potential fluctuation rate
         param.D,          # Diffusion coefficient
         state.t          # Final time
     )
