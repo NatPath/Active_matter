@@ -30,8 +30,9 @@ function main()
     p=plot_data_colapse(states_params)
     display(p)
     
+    figures_dir = "results_figures"
     # Save plot
-    savefig(p,"data_collapse_plot.png")
+    savefig(p,"$(figures_dir)/data_collapse_plot.png")
     println("Plot saved as data_collapse_plot.png")
 end
 

@@ -92,49 +92,7 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     end
     return p
 end
-# function plot_data_colapse(states_params)
-#     p = plot(title="Correlation Matrix Collapse: y²*corr(x,y) vs x/y", 
-#              xlabel="x/y", ylabel="y²*corr(x,y)")
-    
-#     for (state,param) in states_params
-#         for i in 8:1:param.dims[1]/5
-#             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-#             corr_mat = (state.ρ_matrix_avg-outer_prod_ρ)
-#             middle_spot = param.dims[1]÷2
-#             point_to_look_at = Int(middle_spot+i)
-            
-#             # Get correlation data
-#             corr_mat_collapsed = corr_mat[:,point_to_look_at]
-#             left_value = corr_mat_collapsed[point_to_look_at-1]
-#             right_value = corr_mat_collapsed[point_to_look_at+1]
-#             left_side = corr_mat_collapsed[1:point_to_look_at-1]
-#             right_side = corr_mat_collapsed[point_to_look_at+1:end]
-#             full_data = vcat(left_side, [(left_value+right_value)/2], right_side)
-            
-#             # Create scaled x-axis
-#             x_positions = 1:length(full_data)
-#             x_scaled = (x_positions .- middle_spot) ./ i
-            
-#             # Scale y values by i^2
-#             y_scaled = full_data .* i^2
-            
-#             # Filter data points within range
-#             mask = (-5 .<= x_scaled .<= 5)
-#             x_scaled = x_scaled[mask]
-#             y_scaled = y_scaled[mask]
 
-#             # Sort by x_scaled for proper line plotting
-#             idx = sortperm(x_scaled)
-            
-#             # Plot scaled data
-#             plot!(p, x_scaled[idx], y_scaled[idx], 
-#                   label="y=$i", 
-#                   linewidth=2)
-#         end
-#     end
-#     display(p)
-#     return p
-# end
 function plot_data_colapse(states_params)
     # Initialize plot
     p = plot(title="Correlation Matrix Collapse: y²*corr(x,y) vs x/y", 
@@ -146,7 +104,13 @@ function plot_data_colapse(states_params)
     all_y = Float64[]
     
     for (state,param) in states_params
-        for i in 16:1:param.dims[1]/5-1
+        # initial_index = param.dims[1]÷10+1
+        # index_jump = 2
+        # end_index = param.dims[1]/6
+        initial_index = 8 
+        index_jump = 2
+        end_index = 16
+        for i in initial_index:index_jump:end_index
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
             corr_mat = (state.ρ_matrix_avg-outer_prod_ρ)
             middle_spot = param.dims[1]÷2

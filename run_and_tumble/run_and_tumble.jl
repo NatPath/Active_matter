@@ -24,6 +24,10 @@ function parse_commandline()
         "--continue"
             help = "Path to saved state file to continue from"
             required = false
+        "--continue-sweeps"
+            help = "Number of sweeps to continue for (overrides config file)"
+            arg_type = Int
+            required = false
     end
 
     return parse_args(s)
@@ -39,7 +43,7 @@ function get_default_params()
         "N" => 6400,
         "T" => 1.0,
         "β′" => 0.3,
-        "n_sweeps" => 10^6,
+        "n_sweeps" => 10^2,
         "potential_type" => "smudge",
         "potential_magnitude" => 0.4,
         "save_dir" => "saved_states",
@@ -67,11 +71,15 @@ function main()
             params = get_default_params()
         end
         
-        # Only use n_sweeps from config/defaults
+        # Check if continue-sweeps was provided, otherwise use n_sweeps from config/defaults
         defaults = get_default_params()
-        n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
-        
-        println("Continuing simulation for $n_sweeps more sweeps")
+        if haskey(args, "continue-sweeps") && !isnothing(args["continue-sweeps"])
+            n_sweeps = args["continue-sweeps"]
+            println("Continuing for specified $n_sweeps sweeps")
+        else
+            n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+            println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
+        end
         
     else
         # Original initialization code
@@ -99,7 +107,7 @@ function main()
         # Initialize new simulation
         dims = ntuple(i->L, dim_num)
         ρ₀ = N/L
-        β = β′/(ρ₀*L)
+        β = β′/N
         
         param = FP.setParam(α, β, dims, ρ₀, D, potential_type, potential_magnitude)
         v_smudge_args = Potentials.potential_args(
@@ -111,20 +119,20 @@ function main()
         state = FP.setState(0, rng, param, T, potential)
     end
 
-    # Common simulation code
     show_times = get(params, "show_times", defaults["show_times"])
     save_times = get(params, "save_times", defaults["save_times"])
+    β′ = get(params, "β′", defaults["β′"])
     # Make movie
-    #make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps, show_directions=false, show_times=show_times, save_times=save_times)
+    #make_movie!(state, param, n_frame, rng, file_name, in_fps, show_directions=false, show_times=show_times, save_times=save_times)
 
-    res_dist, corr_mat = run_simulation!(state, param, 1, n_sweeps, rng;
+    res_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
                                        show_times=show_times,
                                        save_times=save_times)
 
     # Save final state
     save_dir = "saved_states"
     mkpath(save_dir)
-    filename = @sprintf("%s/potential-%s_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%.1e.jld2",
+    filename = @sprintf("%s/potential-%s_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%d.jld2",
         save_dir,
         param.potential_type,
         param.dims[1],    # System size

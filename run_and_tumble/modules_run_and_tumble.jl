@@ -50,7 +50,7 @@ module FP
     end
 
     mutable struct State
-        t::Float64              # time
+        t::Int64 # time
         #pos::Array{Int64, 1+dim_num}    # position vector
         particles::Array{Particle}
         ρ::Array{Int64}      # density field
@@ -110,15 +110,17 @@ module FP
         return p
     end
 
-    function update!(Δt, param, state, rng)
+    function update!(param, state, rng)
 
         if length(param.dims) == 1
             V = state.potential.V
             T = state.T
             α = param.α
             β = param.β
+            Δt=1
             t_end = state.t + Δt
-            while state.t < t_end
+            t= state.t
+            while t < t_end
                 n_and_a = rand(rng,1:4*param.N)
                 n = (n_and_a-mod1(n_and_a,4)) ÷ 4 +1
                 particle = state.particles[n]
@@ -176,9 +178,10 @@ module FP
                 new_position = particle.position[1]
                 state.ρ[new_position] += 1
 
-                state.t += 1/param.N
+                t += 1/param.N
                 #state.t += Δt
             end
+            state.t += Δt
             
         else
             throw(DomainError("Invalid input - dimension not supported yet"))
@@ -255,8 +258,8 @@ function compute_time_correlation(ρ_history)
     return corr
 end
 
-function update_and_compute_correlations!(state, param, t_gap, ρ_history, frame, rng, calc_correlations=false)
-    FP.update!(t_gap, param, state, rng)
+function update_and_compute_correlations!(state, param,  ρ_history, frame, rng, calc_correlations=false)
+    FP.update!( param, state, rng)
     dim_num= length(param.dims)
     if dim_num==1
         state.ρ_avg = (state.ρ_avg * (frame-1)+state.ρ)/frame
@@ -301,7 +304,7 @@ function initialize_simulation(state, param, n_frame, calc_correlations)
 end
 
 
-function run_simulation!(state, param, t_gap, n_sweeps, rng; 
+function run_simulation!(state, param, n_sweeps, rng; 
                         calc_correlations = false, 
                         show_times = [], 
                         save_times = [])
@@ -309,8 +312,10 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng;
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations)
 
     # Initialize the animation
-    for sweep in 1:n_sweeps
-        spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, sweep, rng)
+    t_init = state.t
+    t_end = t_init + n_sweeps
+    for sweep in t_init:t_end
+        spatial_corr, time_corr = update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
         
         # Save state at specified times
         if sweep in save_times
@@ -342,7 +347,7 @@ function run_simulation!(state, param, t_gap, n_sweeps, rng;
 end
 
 
-function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps; 
+function make_movie!(state, param, n_frame, rng, file_name, in_fps; 
                     show_directions = false,
                     show_times = [],
                     save_times = [])
@@ -351,7 +356,7 @@ function make_movie!(state, param, t_gap, n_frame, rng, file_name, in_fps;
     
     # Initialize the animation
     anim = @animate for frame in 1:n_frame
-        spatial_corr, time_corr = update_and_compute_correlations!(state, param, t_gap, ρ_history, frame, rng)
+        spatial_corr, time_corr = update_and_compute_correlations!(state, param, ρ_history, frame, rng)
         
         # Save state at specified times
         if frame in save_times
