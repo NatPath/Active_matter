@@ -95,8 +95,8 @@ end
 
 function plot_data_colapse(states_params)
     # Initialize plot
-    p = plot(title="Correlation Matrix Collapse: y²*corr(x,y) vs x/y", 
-             xlabel="x/y", ylabel="y²*corr(x,y)",
+    p = plot(title="Correlation Matrix Collapse: y²*(corr(x,y)-N/L^2) vs x/y", 
+             xlabel="x/y", ylabel="y²*(corr(x,y)-N/L^2)",
              xlims=(-5,5), grid=true)
     
     # Collect all scaled data points
@@ -104,15 +104,17 @@ function plot_data_colapse(states_params)
     all_y = Float64[]
     
     for (state,param) in states_params
-        # initial_index = param.dims[1]÷10+1
-        # index_jump = 2
-        # end_index = param.dims[1]/6
-        initial_index = 8 
+        L = param.dims[1]
+        N = param.N
+        initial_index = param.dims[1]÷10+1
         index_jump = 2
-        end_index = 16
+        end_index = param.dims[1]/4
+        # initial_index = 8 
+        # index_jump = 1
+        # end_index = 16
         for i in initial_index:index_jump:end_index
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-            corr_mat = (state.ρ_matrix_avg-outer_prod_ρ)
+            corr_mat = (state.ρ_matrix_avg-outer_prod_ρ).+(N/L^2)
             middle_spot = param.dims[1]÷2
             point_to_look_at = Int(middle_spot+i)
             
@@ -125,7 +127,7 @@ function plot_data_colapse(states_params)
             
             x_positions = 1:length(full_data)
             x_scaled = (x_positions .- middle_spot) ./ i
-            y_scaled = full_data .* i^2
+            y_scaled = full_data .* i^2 
             
             # Filter points within range
             mask = (-5 .<= x_scaled .<= 5)

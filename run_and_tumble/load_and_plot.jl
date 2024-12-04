@@ -19,6 +19,7 @@ function main()
     # Parse arguments
     args = parse_commandline()
     
+    figures_dir = "results_figures"
     # Load saved state
     println("Loading state from: $(args["saved_state"])")
     @load args["saved_state"] state param potential
@@ -26,11 +27,14 @@ function main()
     # Create array of tuples for plot_data_colapse
     states_params = [(state, param)]
     
-    # Generate plot
+    # Generate data colapse plot
     p=plot_data_colapse(states_params)
     display(p)
     
-    figures_dir = "results_figures"
+    # Generate sweep plot
+    normalized_dist, corr_mat = plot_sweep(state.t, state, param)
+    savefig("$(figures_dir)/sweep_plot.png")
+    println("Plot saved as sweep_plot.png")
     # Save plot
     savefig(p,"$(figures_dir)/data_collapse_plot.png")
     println("Plot saved as data_collapse_plot.png")

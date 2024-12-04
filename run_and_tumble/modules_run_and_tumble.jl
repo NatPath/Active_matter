@@ -312,21 +312,21 @@ function run_simulation!(state, param, n_sweeps, rng;
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations)
 
     # Initialize the animation
-    t_init = state.t
-    t_end = t_init + n_sweeps
+    t_init = state.t+1
+    t_end = t_init + n_sweeps-1
     for sweep in t_init:t_end
         spatial_corr, time_corr = update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
-        
         # Save state at specified times
         if sweep in save_times
             save_dir = "saved_states"
             mkpath(save_dir)
-            filename = @sprintf("%s/state_L-%d_rho-%.1e_alpha-%.2f_beta-%.2f_D-%.1f_t-%.1e.jld2",
+            β′=param.β*param.N
+            filename = @sprintf("%s/state_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%d.jld2",
                 save_dir,
                 param.dims[1],    # System size
                 param.ρ₀,         # Density
                 param.α,          # Tumbling rate
-                param.β,          # Potential fluctuation rate
+                β′,          # Potential fluctuation rate
                 param.D,          # Diffusion coefficient
                 state.t          # Current time
             )
