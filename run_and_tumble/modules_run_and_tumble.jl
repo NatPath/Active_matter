@@ -93,20 +93,22 @@ module FP
         return state
     end
 
-    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,ϵ=0.6, ΔV_max=0.4)
+    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,ϵ=1, ΔV_max=0.4)
         relative_direction = particle_direction*choice_direction
         
+        p = D*min(1,exp(-(ΔV-relative_direction*ϵ)/T))
         # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
         # if ΔV!=0
         #     p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
         # else
         #     p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
         # end
-        if relative_direction==1
-            p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
-        else
-            p=0
-        end
+        # if relative_direction==1
+        #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
+        # else
+        #     p=0
+        #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
+        # end
         return p
     end
 
@@ -330,6 +332,7 @@ function run_simulation!(state, param, n_sweeps, rng;
                 param.D,          # Diffusion coefficient
                 state.t          # Current time
             )
+            potential = state.potential
             @save filename state param potential
             println("State saved at sweep $sweep to: ", filename)
         end

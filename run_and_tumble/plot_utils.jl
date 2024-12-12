@@ -2,10 +2,10 @@ module PlotUtils
 using Plots
 using LsqFit
 export plot_sweep, plot_density, plot_data_colapse, plot_spatial_correlation, plot_time_correlation
-function plot_sweep(sweep,state,param)
+function plot_sweep(sweep,state,param; label="", plot_directional=false)
     normalized_dist = state.ρ_avg / sum(state.ρ_avg)
     p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
-    # p1 = plot_density(state.ρ, param, state; title="Current density", show_directions=false)
+    p1 = plot_magnetization(state, param)
     outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
     corr_mat = state.ρ_matrix_avg-outer_prod_ρ
     p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
@@ -24,7 +24,7 @@ function plot_sweep(sweep,state,param)
     # p6 = plot(vcat(left_side,[corr_mat[point_to_look_at,point_to_look_at]],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
     # p6= plot(corr_mat[point_to_look_at,:])
 
-    p_final=plot(p0,p4,p5,p6, size=(1800,800),plot_title="sweep $(sweep)")
+    p_final=plot(p0,p1,p4,p5,p6, size=(1800,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
     display(p_final)
     return normalized_dist, corr_mat
 end
@@ -46,7 +46,7 @@ function plot_density(density, param, state; title="Density", show_directions=fa
                 lw=2,
                 seriestype=:scatter,
                 color=:blue,
-                legend=:topleft)
+                legend=:outerright)
             
             # Secondary axis for potential
             plot!(twinx(), x_range, state.potential.V,
@@ -55,7 +55,7 @@ function plot_density(density, param, state; title="Density", show_directions=fa
                   color=:red,
                   alpha=0.3,
                   linestyle=:dash,
-                  legend=:topright)
+                  legend=:outerright)
         else
             # Create subplot with total density, right-moving and left-moving particles
             x_range = 1:param.dims[1]
@@ -93,25 +93,33 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     return p
 end
 
-function plot_data_colapse(states_params)
-    # Initialize plot
-    p = plot(title="Correlation Matrix Collapse: y²*(corr(x,y)-N/L^2) vs x/y", 
-             xlabel="x/y", ylabel="y²*(corr(x,y)-N/L^2)",
-             xlims=(-5,5), grid=true)
+function plot_data_colapse(states_params_names, results_dir = "results_figures")
+    # Create combined plot
+    p_combined = plot(title="Combined Data Collapse",
+                     legend=:outerright,
+                     size=(1200,800))
+    all_x = []
+    all_y = []
     
-    # Collect all scaled data points
-    all_x = Float64[]
-    all_y = Float64[]
-    
-    for (state,param) in states_params
+    # Process each state individually first
+    for (idx, (state, param, label)) in enumerate(states_params_names)
+        p_individual = plot(title="Data Collapse - $label",
+                          legend=:outerright,
+                          size=(1000,600))
+        α = param.α
+        β′ = param.β * param.N
+        state_x = []
+        state_y = []
+        
         L = param.dims[1]
         N = param.N
-        initial_index = param.dims[1]÷10+1
-        index_jump = 2
-        end_index = param.dims[1]/4
-        # initial_index = 8 
-        # index_jump = 1
-        # end_index = 16
+        # initial_index = param.dims[1]÷10+1
+        # index_jump = 2
+        # end_index = param.dims[1]/4
+        initial_index = 6
+        index_jump = 1
+        end_index = 10
+        
         for i in initial_index:index_jump:end_index
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
             corr_mat = (state.ρ_matrix_avg-outer_prod_ρ).+(N/L^2)
@@ -127,42 +135,58 @@ function plot_data_colapse(states_params)
             
             x_positions = 1:length(full_data)
             x_scaled = (x_positions .- middle_spot) ./ i
-            y_scaled = full_data .* i^2 
+            y_scaled = full_data .* ((α*β′)*i^5) 
             
             # Filter points within range
             mask = (-5 .<= x_scaled .<= 5)
             x_scaled = x_scaled[mask]
             y_scaled = y_scaled[mask]
             
-            # Store points for fitting
+            # Store points for individual and combined fitting
+            append!(state_x, x_scaled)
+            append!(state_y, y_scaled)
             append!(all_x, x_scaled)
             append!(all_y, y_scaled)
             
-            # Plot data
-            idx = sortperm(x_scaled)
-            plot!(p, x_scaled[idx], y_scaled[idx], 
-                  label="y=$i", linewidth=2)
+            # Plot data on both individual and combined plots
+            idx_sort = sortperm(x_scaled)
+            plot!(p_individual, x_scaled[idx_sort], y_scaled[idx_sort], 
+                  label="y=$(i)", linewidth=2)
+            plot!(p_combined, x_scaled[idx_sort], y_scaled[idx_sort], 
+                  label="$(label) y=$(i)", linewidth=2)
         end
+        
+        # Fit individual state data
+        f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
+        p0 = [1.0, 0.0, 0.0]
+        fit_individual = curve_fit(f, state_x, state_y, p0)
+        
+        # Add theoretical curve to individual plot
+        x_theory = range(-5, 5, length=1000)
+        plot!(p_individual, x_theory, f(x_theory, fit_individual.param), 
+              label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
+        
+        # Save individual plot
+        savefig(p_individual, "$(results_dir)/data_collapse_$(label).png")
     end
     
-    # Define theoretical function
+    # Fit combined data
     f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
+    p0 = [1.0, 0.0, 0.0]
+    fit_combined = curve_fit(f, all_x, all_y, p0)
     
-    # Fit function to data
-    p0 = [1.0,0.0,0.0]  # Initial parameter guess
-    fit = curve_fit(f, all_x, all_y, p0)
-    
-    # Add theoretical curve
+    # Add theoretical curve to combined plot
     x_theory = range(-5, 5, length=1000)
-    plot!(p, x_theory, f(x_theory, fit.param), 
-          label="Theoretical", 
-          color=:black, 
-          linewidth=3, 
-          linestyle=:dash)
+    #plot!(p_combined, x_theory, f(x_theory, fit_combined.param), label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
     
-    display(p)
-    print(fit.param)
-    return p
+    # Save combined plot
+    savefig(p_combined, "$(results_dir)/data_collapse_combined.png")
+    
+    # Display combined plot
+    display(p_combined)
+    println("Combined fit parameters: ", fit_combined.param)
+    
+    return p_combined
 end
 function plot_spatial_correlation(spatial_corr, param)
     dim_num = length(param.dims)
@@ -174,7 +198,7 @@ function plot_spatial_correlation(spatial_corr, param)
              xlabel="Δx", ylabel="Correlation",
              legend=false, lw=2)
         # Define the range for Δx
-        # dx_range = range(-param.dims[1] ÷ 2, param.dims[1] ÷ 2 - 1, length=param.dims[1])
+        # dx_range = range(-param.dims[1] �� 2, param.dims[1] ÷ 2 - 1, length=param.dims[1])
         # # Plot the 1D spatial correlation
         # plot(dx_range, spatial_corr,
         #      title="1D Spatial Correlation",
@@ -206,6 +230,88 @@ function plot_time_correlation(time_corr, frame, fit_params=nothing)
               lw=2, ls=:dash, label="Fit")
         annotate!(p, [(frame/2, 0.8, text("τ = $(round(fit_params[2], digits=2))", 10))])
     end
+    
+    return p
+end
+function plot_directional_densities(state, param; title="Average Directional Densities")
+    x_range = 1:param.dims[1]
+    
+    # Create the plot with both densities
+    p = plot(
+        title=title,
+        xlabel="Position",
+        ylabel="Density",
+        legend=:outerright,
+        size=(1000,400)
+    )
+    
+    # Normalize the densities
+    ρ₊_avg = state.ρ₊ / sum(state.ρ₊)
+    ρ₋_avg = state.ρ₋ / sum(state.ρ₋)
+    
+    # Plot right-moving particles
+    plot!(p, x_range, ρ₊_avg,
+        label="Right-moving (ρ₊)",
+        color=:red,
+        lw=2,
+        marker=:circle,
+        markersize=4
+    )
+    
+    # Plot left-moving particles
+    plot!(p, x_range, ρ₋_avg,
+        label="Left-moving (ρ₋)",
+        color=:blue,
+        lw=2,
+        marker=:circle,
+        markersize=4
+    )
+    
+    # Add potential on secondary y-axis
+    plot!(twinx(), x_range, state.potential.V,
+        ylabel="Potential",
+        label="Potential",
+        color=:black,
+        alpha=0.3,
+        linestyle=:dash,
+        legend=:outerright
+    )
+    
+    return p
+end
+function plot_magnetization(state, param; title="Average Magnetization")
+    x_range = 1:param.dims[1]
+    
+    # Calculate magnetization (ρ₊ - ρ₋)/(ρ₊ + ρ₋)
+    magnetization = (state.ρ₊ - state.ρ₋) ./ (state.ρ₊ + state.ρ₋)
+    
+    # Create the plot
+    p = plot(
+        title=title,
+        xlabel="Position",
+        ylabel="Magnetization",
+        legend=:outerright,
+        size=(1000,400)
+    )
+    
+    # Plot magnetization
+    plot!(p, x_range, magnetization,
+        label="m = (ρ₊ - ρ₋)/(ρ₊ + ρ₋)",
+        color=:purple,
+        lw=2,
+        marker=:circle,
+        markersize=4
+    )
+    
+    # Add potential on secondary y-axis
+    plot!(twinx(), x_range, state.potential.V,
+        ylabel="Potential",
+        label="Potential",
+        color=:black,
+        alpha=0.3,
+        linestyle=:dash,
+        legend=:outerright
+    )
     
     return p
 end

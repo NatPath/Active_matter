@@ -12,7 +12,7 @@ module Potentials
         return Potential(V, fluctuation_mask, 1)
     end
 
-    function choose_potential(v_args,dims; boundary_walls= false)
+    function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus")
         V = zeros(Float64, dims)
         L = dims[1]
         middle = Int(L÷2)
@@ -75,8 +75,12 @@ module Potentials
         V_plot=plot(V)
         display(V_plot)
         fluctuating_mask = zeros(Float64,dims)
-        fluctuating_mask[middle] = -magnitude/2
-        fluctuating_mask[middle-1] = magnitude/2
+        if fluctuation_type == "plus-minus"
+            fluctuating_mask[middle] = -magnitude/2
+            fluctuating_mask[middle-1] = magnitude/2
+        elseif fluctuation_type == "potential"
+            fluctuating_mask = -V
+        end
         
         if boundary_walls
             V[1] = 10^5*magnitude

@@ -37,19 +37,39 @@ function get_default_params()
     # Default parameters when no config file is provided
     return Dict(
         "dim_num" => 1,
-        "D" => 0.0,
+        "D" => 1.0,
         "α" => 0.3,
         "L" => 64,
-        "N" => 6400,
+        "N" => 64*100,
         "T" => 1.0,
         "β′" => 0.03,
         "n_sweeps" => 10^7,
         "potential_type" => "smudge",
-        "potential_magnitude" => 0.4,
+        "fluctuation_type" => "plus-minus",
+        "potential_magnitude" => 2,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],  # Default visualization times
-        "save_times" => Int[]                 # Empty by default
+        "save_times" => Int[10^6]                 # Empty by default
+        
     )
+end
+
+function save_state(state,param,save_dir)
+    mkpath(save_dir)
+    β′ = param.β*param.N
+    filename = @sprintf("%s/potential-%s_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%d.jld2",
+        save_dir,
+        param.potential_type,
+        param.dims[1],    # System size
+        param.ρ₀,         # Density
+        param.α,          # Tumbling rate
+        β′,          # Potential fluctuation rate
+        param.D,          # Diffusion coefficient
+        state.t          # Final time
+    )
+    potential = state.potential 
+    @save filename state param potential
+    return filename
 end
 
 function main()
@@ -95,6 +115,7 @@ function main()
         defaults = get_default_params()
         dim_num = get(params, "dim_num", defaults["dim_num"])
         potential_type = get(params, "potential_type", defaults["potential_type"])
+        fluctuation_type = get(params, "fluctuation_type", defaults["fluctuation_type"])
         potential_magnitude = get(params, "potential_magnitude", defaults["potential_magnitude"])
         D = get(params, "D", defaults["D"])
         α = get(params, "α", defaults["α"])
@@ -115,7 +136,7 @@ function main()
             dims;   
             magnitude= potential_magnitude
         )
-        potential = Potentials.choose_potential(v_smudge_args,dims)
+        potential = Potentials.choose_potential(v_smudge_args,dims;fluctuation_type=fluctuation_type)
         state = FP.setState(0, rng, param, T, potential)
     end
 
@@ -125,25 +146,42 @@ function main()
     # Make movie
     #make_movie!(state, param, n_frame, rng, file_name, in_fps, show_directions=false, show_times=show_times, save_times=save_times)
 
-    res_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
-                                       show_times=show_times,
-                                       save_times=save_times)
+    # Register the cleanup function to run at exit
+    atexit() do
+        println("\nSaving current state...")
+        try
+            save_dir = "saved_states"
+            save_state(state, param, save_dir)
+            println("State saved successfully")
+        catch e
+            println("Error saving state: ", e)
+        end
+    end
 
-    # Save final state
+    # Add specific interrupt handler
+    Base.exit_on_sigint(false)  # Don't exit immediately on Ctrl-C
+    Base.sigatomic_begin()
+    ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)  # Disable Julia's default Ctrl-C handler
+    Base.sigatomic_end()
+
+    try
+        # Run the simulation
+        res_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
+                                           show_times=show_times,
+                                           save_times=save_times)
+    catch e
+        if isa(e, InterruptException)
+            println("\nInterrupt detected, initiating cleanup...")
+            exit()  # This will trigger atexit
+        else
+            rethrow(e)
+        end
+    end
+
+    # Normal exit save (this will still happen even if interrupted)
     save_dir = "saved_states"
-    mkpath(save_dir)
-    filename = @sprintf("%s/potential-%s_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%d.jld2",
-        save_dir,
-        param.potential_type,
-        param.dims[1],    # System size
-        param.ρ₀,         # Density
-        param.α,          # Tumbling rate
-        β′,          # Potential fluctuation rate
-        param.D,          # Diffusion coefficient
-        state.t          # Final time
-    )
-    
-    @save filename state param potential
+    save_dir = get(params, "save_dir", defaults["save_dir"])
+    filename = save_state(state,param,save_dir)
     println("Final state saved to: ", filename)
 
 end
