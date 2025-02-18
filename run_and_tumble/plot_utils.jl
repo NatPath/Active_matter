@@ -1,7 +1,17 @@
 module PlotUtils
 using Plots
 using LsqFit
-export plot_sweep, plot_density, plot_data_colapse, plot_spatial_correlation, plot_time_correlation
+export plot_sweep, plot_density, plot_data_colapse, plot_spatial_correlation 
+function remove_symmetric_part_reflection(matrix, x0)
+    n = size(matrix, 1)
+    antisymmetric_matrix = copy(matrix)
+    for x in 1:n
+        for y in 1:n
+            antisymmetric_matrix[x, y] = (matrix[x, y] - matrix[x, mod1((2*x0-y),n)]) / 2
+        end
+    end
+    return antisymmetric_matrix
+end
 function plot_sweep(sweep,state,param; label="", plot_directional=false)
     normalized_dist = state.ρ_avg / sum(state.ρ_avg)
     p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
@@ -10,21 +20,36 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
     corr_mat = state.ρ_matrix_avg-outer_prod_ρ
     p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
                 title="Correlation Matrix Heatmap", color=:viridis)
-    middle_spot = param.dims[1]÷2
+    L= param.dims[1]
+    middle_spot = L÷2
+    
     p5 = plot(corr_mat[middle_spot,:],title="correlation matrix cut for x=$(middle_spot)")
-    point_to_look_at = middle_spot+5
+    point_to_look_at = middle_spot+12
     vline!(p4,[point_to_look_at],label="x=$(point_to_look_at)")
     left_value=corr_mat[point_to_look_at,point_to_look_at-1]
     right_value=corr_mat[point_to_look_at,point_to_look_at+1]
     left_side=corr_mat[point_to_look_at, 1:point_to_look_at-1]
     right_side=corr_mat[point_to_look_at, point_to_look_at+1:end]
+    corr_mat_cut = vcat(left_side,[(left_value+right_value)/2],right_side)
 
-    p6 = plot(vcat(left_side,[(left_value+right_value)/2],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
+    p6 = plot(corr_mat_cut,title="correlation matrix cut for x=$(point_to_look_at) ")
+    #p6 = plot(vcat(left_side,[(left_value+right_value)/2],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
     vline!(p6,[point_to_look_at],label="x=$(point_to_look_at)")
     # p6 = plot(vcat(left_side,[corr_mat[point_to_look_at,point_to_look_at]],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
     # p6= plot(corr_mat[point_to_look_at,:])
+    corr_mat_sym = remove_symmetric_part_reflection(corr_mat,middle_spot)
+    # left_value_sym=corr_mat_sym[point_to_look_at,point_to_look_at-1]
+    # right_value_sym=corr_mat_sym[point_to_look_at,point_to_look_at+1]
+    # left_side_sym=corr_mat_sym[point_to_look_at, 1:point_to_look_at-1]
+    # right_side_sym =corr_mat_sym[point_to_look_at, point_to_look_at+1:end]
+    # corr_mat_sym_cut = vcat(left_side_sym,[(left_value_sym+right_value_sym)/2],right_side_sym)
 
-    p_final=plot(p0,p1,p4,p5,p6, size=(1800,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
+    corr_mat_sym[point_to_look_at,point_to_look_at] = (corr_mat_sym[point_to_look_at,point_to_look_at+1]+corr_mat_sym[point_to_look_at,point_to_look_at-1])/2
+    corr_mat_sym[point_to_look_at,L-point_to_look_at] = (corr_mat_sym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_sym[point_to_look_at,L-(point_to_look_at-1)])/2
+
+    p7 = plot(corr_mat_sym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
+    # p_final=plot(p0,p1,p4,p5,p6, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
+    p_final=plot(p0,p1,p4,p5,p6,p7, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
     display(p_final)
     return normalized_dist, corr_mat
 end
@@ -117,8 +142,8 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
         # index_jump = 2
         # end_index = param.dims[1]/4
         initial_index = 6
-        index_jump = 1
-        end_index = 10
+        index_jump = 2
+        end_index = 14 
         
         for i in initial_index:index_jump:end_index
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
@@ -133,9 +158,18 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
             right_side = corr_mat_collapsed[point_to_look_at+1:end]
             full_data = vcat(left_side, [(left_value+right_value)/2], right_side)
             
+            corr_mat_sym = remove_symmetric_part_reflection(corr_mat,middle_spot)
+
+            #for symmetric only part
+            # corr_mat_sym[point_to_look_at,point_to_look_at] = (corr_mat_sym[point_to_look_at,point_to_look_at+1]+corr_mat_sym[point_to_look_at,point_to_look_at-1])/2
+            # corr_mat_sym[point_to_look_at,L-point_to_look_at] = (corr_mat_sym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_sym[point_to_look_at,L-(point_to_look_at-1)])/2
+            # full_data=corr_mat_sym[point_to_look_at,1:end]
+            #
+
             x_positions = 1:length(full_data)
             x_scaled = (x_positions .- middle_spot) ./ i
-            y_scaled = full_data .* ((α*β′)*i^5) 
+            y_scaled = full_data .* i^2 
+            # y_scaled = full_data .* ((α*β′)*i^2) 
             
             # Filter points within range
             mask = (-5 .<= x_scaled .<= 5)
@@ -163,8 +197,8 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
         
         # Add theoretical curve to individual plot
         x_theory = range(-5, 5, length=1000)
-        plot!(p_individual, x_theory, f(x_theory, fit_individual.param), 
-              label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
+        # plot!(p_individual, x_theory, f(x_theory, fit_individual.param), 
+        #       label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
         
         # Save individual plot
         savefig(p_individual, "$(results_dir)/data_collapse_$(label).png")
@@ -218,21 +252,6 @@ function plot_spatial_correlation(spatial_corr, param)
     end
 end
 
-function plot_time_correlation(time_corr, frame, fit_params=nothing)
-    t = 0:(frame-1)
-    p = plot(t, time_corr, 
-             title="Time Correlation", 
-             xlabel="Δt", ylabel="C(Δt)", 
-             legend=false, lw=2, label="Data")
-    
-    if !isnothing(fit_params)
-        plot!(p, t, fit_params[1] .* exp.(-t ./ fit_params[2]) .+ fit_params[3], 
-              lw=2, ls=:dash, label="Fit")
-        annotate!(p, [(frame/2, 0.8, text("τ = $(round(fit_params[2], digits=2))", 10))])
-    end
-    
-    return p
-end
 function plot_directional_densities(state, param; title="Average Directional Densities")
     x_range = 1:param.dims[1]
     

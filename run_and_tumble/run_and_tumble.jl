@@ -38,14 +38,14 @@ function get_default_params()
     return Dict(
         "dim_num" => 1,
         "D" => 1.0,
-        "α" => 0.3,
+        "α" => 0.0,
         "L" => 64,
         "N" => 64*100,
         "T" => 1.0,
-        "β′" => 0.03,
-        "n_sweeps" => 10^7,
+        "β′" => 0.1,
+        "n_sweeps" => 10^6,
         "potential_type" => "smudge",
-        "fluctuation_type" => "plus-minus",
+        "fluctuation_type" => "zero-potential",
         "potential_magnitude" => 2,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],  # Default visualization times

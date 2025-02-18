@@ -78,8 +78,10 @@ module Potentials
         if fluctuation_type == "plus-minus"
             fluctuating_mask[middle] = -magnitude/2
             fluctuating_mask[middle-1] = magnitude/2
-        elseif fluctuation_type == "potential"
+        elseif fluctuation_type == "zero-potential"
             fluctuating_mask = -V
+        elseif fluctuation_type == "reflection"
+            fluctuating_mask =  -2*V
         end
         
         if boundary_walls
@@ -103,7 +105,7 @@ module Potentials
         v_smudge_args = Dict("type"=>"smudge","location" => L÷2 , "magnitude" => magnitude)
         v_extended_smudge_args = Dict("type"=>"smudge","location" => L÷2 ,"length" => 5, "magnitude" => magnitude)
         v_modified_smudge_args = Dict("type"=>"modified_smudge","location" => L÷2 , "magnitude" => magnitude)
-        v_delta_args = Dict("type"=>"delta", "location" => L÷2, "magnitude"=>10^3*magnitude)
+        v_delta_args = Dict("type"=>"delta", "location" => L÷2, "magnitude"=>10^0*magnitude)
         v_linear_args = Dict("type"=> "linear", "slope" => 1, "shift"=>0)
         v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center"=> L÷2)
         v_periodic_args = Dict("type"=>"periodic", "period" => L÷4, "magnitude"=>magnitude, "phase"=> L÷2)
