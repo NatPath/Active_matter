@@ -33,6 +33,13 @@ module Potentials
             magnitude = v_args["magnitude"]
             V[location] = magnitude
             V[location-1] = magnitude/2
+        elseif v_string == "2ratchet"
+            location = v_args["location"]
+            magnitude = v_args["magnitude"]
+            V[location+2] = magnitude
+            V[location+1] = magnitude/2
+            V[location-1] = magnitude
+            V[location-2] = magnitude/2
         elseif v_string =="modified_smudge"
             location = v_args["location"]
             magnitude = v_args["magnitude"]
@@ -103,6 +110,7 @@ module Potentials
         v_well_args = Dict("type"=>"well", "width"=>1, "magnitude"=> magnitude)
         v_zero_args = Dict("type"=>"zero")
         v_smudge_args = Dict("type"=>"smudge","location" => L÷2 , "magnitude" => magnitude)
+        v_2ratchet_args = Dict("type"=>"2ratchet","location" => L÷2 , "magnitude" => magnitude)
         v_extended_smudge_args = Dict("type"=>"smudge","location" => L÷2 ,"length" => 5, "magnitude" => magnitude)
         v_modified_smudge_args = Dict("type"=>"modified_smudge","location" => L÷2 , "magnitude" => magnitude)
         v_delta_args = Dict("type"=>"delta", "location" => L÷2, "magnitude"=>10^0*magnitude)
@@ -116,6 +124,8 @@ module Potentials
             return v_zero_args
         elseif v_string == "smudge"
             return v_smudge_args
+        elseif v_string =="2ratchet"
+            return v_2ratchet_args
         elseif v_string =="modified_smudge"
             return v_modified_smudge_args
         elseif v_string == "delta"

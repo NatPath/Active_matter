@@ -57,9 +57,10 @@ end
 function save_state(state,param,save_dir)
     mkpath(save_dir)
     β′ = param.β*param.N
-    filename = @sprintf("%s/potential-%s_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%d.jld2",
+    filename = @sprintf("%s/potential-%s_fluctuation-%s_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%d.jld2",
         save_dir,
         param.potential_type,
+        param.fluctuation_type,
         param.dims[1],    # System size
         param.ρ₀,         # Density
         param.α,          # Tumbling rate
@@ -130,7 +131,7 @@ function main()
         ρ₀ = N/L
         β = β′/N
         
-        param = FP.setParam(α, β, dims, ρ₀, D, potential_type, potential_magnitude)
+        param = FP.setParam(α, β, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude)
         v_smudge_args = Potentials.potential_args(
             potential_type,
             dims;   

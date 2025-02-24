@@ -20,15 +20,16 @@ module FP
         N::Int64    # number of particles
         D::Float64  #diffusion coefficient
         potential_type::String 
+        fluctuation_type::String
         potential_magnitude::Float64
     end
 
     #constructor
-    function setParam(α ,β, dims, ρ₀, D, potential_type, potential_magnitude)
+    function setParam(α ,β, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude)
 
         N = Int(round( ρ₀*prod(dims)))       # number of particles
 
-        param = Param(α, β, dims, ρ₀, N, D, potential_type, potential_magnitude)
+        param = Param(α, β, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude)
         return param
     end
 
@@ -124,13 +125,13 @@ module FP
             t= state.t
             while t < t_end
                 n_and_a = rand(rng,1:4*param.N)
-                n = (n_and_a-mod1(n_and_a,4)) ÷ 4 +1
+                action_index = mod1(n_and_a,4)
+                n = (n_and_a-action_index) ÷ 4 +1
                 particle = state.particles[n]
                 spot_index = particle.position[1]
                 left_index= mod1(spot_index-1,param.dims[1])
                 right_index = mod1(spot_index+1,param.dims[1])
 
-                action_index = mod1(n_and_a,4)
                 state.ρ[spot_index] -= 1
                 
                 candidate_spot_index = 0
