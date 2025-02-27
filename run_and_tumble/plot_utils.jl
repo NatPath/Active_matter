@@ -142,8 +142,8 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
         # index_jump = 2
         # end_index = param.dims[1]/4
         initial_index = 10
-        index_jump = 2
-        end_index = 20 
+        index_jump = 1
+        end_index = 15 
         
         for i in initial_index:index_jump:end_index
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
@@ -158,17 +158,17 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
             right_side = corr_mat_collapsed[point_to_look_at+1:end]
             full_data = vcat(left_side, [(left_value+right_value)/2], right_side)
             
-            corr_mat_sym = remove_symmetric_part_reflection(corr_mat,middle_spot)
+            corr_mat_antisym = remove_symmetric_part_reflection(corr_mat,middle_spot)
 
-            #for symmetric only part
-            corr_mat_sym[point_to_look_at,point_to_look_at] = (corr_mat_sym[point_to_look_at,point_to_look_at+1]+corr_mat_sym[point_to_look_at,point_to_look_at-1])/2
-            corr_mat_sym[point_to_look_at,L-point_to_look_at] = (corr_mat_sym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_sym[point_to_look_at,L-(point_to_look_at-1)])/2
-            full_data=corr_mat_sym[point_to_look_at,1:end]
+            #for antisymmetric only part
+            corr_mat_antisym[point_to_look_at,point_to_look_at] = (corr_mat_antisym[point_to_look_at,point_to_look_at+1]+corr_mat_antisym[point_to_look_at,point_to_look_at-1])/2
+            corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
+            full_data=corr_mat_antisym[point_to_look_at,1:end]
             #
 
             x_positions = 1:length(full_data)
             x_scaled = (x_positions .- middle_spot) ./ i
-            y_scaled = full_data .* i^2
+            y_scaled = full_data .* i^4
             # y_scaled = full_data .* ((α*β′)*i^2) 
             
             # Filter points within range
@@ -184,7 +184,7 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
             
             # Plot data on both individual and combined plots
             idx_sort = sortperm(x_scaled)
-            ylims!(p_combined,-10^3,10^3)
+            # ylims!(p_combined,-10^3,10^3)
             plot!(p_individual, x_scaled[idx_sort], y_scaled[idx_sort], 
                   label="y=$(i)", linewidth=2)
             plot!(p_combined, x_scaled[idx_sort], y_scaled[idx_sort], 
