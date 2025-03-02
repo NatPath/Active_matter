@@ -127,6 +127,7 @@ function save_state(state, param, save_dir)
         state.t)
     potential = state.potential 
     @save filename state param potential
+    println("Saved a state to $filename$")
     return filename
 end
 
@@ -175,7 +176,7 @@ end
                                                  calc_correlations=true,
                                                  show_times=params["show_times"],
                                                  save_times=params["save_times"])
-    return normalized_dist, corr_mat
+    return normalized_dist, corr_mat, state
 end
 
 # Main function.
@@ -183,19 +184,36 @@ function main()
     args = parse_commandline()
     num_runs = get(args, "num_runs", 1)
     
-    # When continuing from a saved state, parallel runs are not allowed.
-    if haskey(args, "continue") && !isnothing(args["continue"]) && num_runs > 1
-        error("Parallel runs are not supported when continuing from a saved state.")
-    end
-
     if num_runs > 1
+        if haskey(args, "continue") && !isnothing(args["continue"])
+            # # When continuing from a saved state, parallel runs are not allowed.
+            # error("Parallel runs are not supported when continuing from a saved state.")
+            println("Continuing from saved aggregation: $(args["continue"])")
+            @load args["continue"] state param potential
+            if haskey(args, "config") && !isnothing(args["config"])
+                println("Using configuration from file: $(args["config"])")
+                params = TOML.parsefile(args["config"])
+            else
+                println("No config file provided. Using default parameters.")
+                params = get_default_params()
+            end
+            defaults = get_default_params()
+            if haskey(args, "continue-sweeps") && !isnothing(args["continue-sweeps"])
+                n_sweeps = args["continue-sweeps"]
+                println("Continuing for specified $n_sweeps sweeps")
+            else
+                n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+                println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
+            end
+        end
         println("Running $num_runs independent simulations in parallel.")
         # Use different seeds for each independent simulation.
-        seeds = rand(1:num_runs*10000,num_runs)
+        seeds = rand(1:2^30,num_runs)
         results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
         # Aggregate results (here we average the correlation matrices).
         normalized_dists = [res[1] for res in results]
         corr_mats = [res[2] for res in results]
+        states = [res[3] for res in results]
         
         #avg_corr = mean(corr_mats, dims=1)
         #avg_dists = mean(normalized_dists,dims=1)
@@ -203,6 +221,11 @@ function main()
         avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
         stacked_dists = cat(normalized_dists..., dims=2)
         avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
+        total_t = states[1].t * num_runs
+        dummy_state = setDummyState(states[1],avg_dists,avg_corr,total_t)
+
+        dummy_state_save_dir = "dummy_states"
+        save_state(dummy_state,param,dummy_state_save_dir)
 
         
         # Save aggregated results to a separate file.
@@ -261,7 +284,9 @@ function main()
             param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
             v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
-            rng = MersenneTwister(123)
+            seed = rand(1:2^30)
+            #rng = MersenneTwister(123)
+            rng = MersenneTwister(seed)
             state = FP.setState(0, rng, param, T, potential)
         end
         

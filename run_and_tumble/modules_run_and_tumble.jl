@@ -64,7 +64,10 @@ module FP
         potential::Potential
 
     end
-
+    function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg, t)
+        dummy_state = State(t, state_to_imitate.particles, state_to_imitate.ρ,state_to_imitate.ρ₊,state_to_imitate.ρ₋, ρ_avg, ρ_matrix_avg, state_to_imitate.T, state_to_imitate.potential)
+        return dummy_state
+    end
     function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims),zeros(Float64,param.dims)))
         N = param.N
         # initialize particles
