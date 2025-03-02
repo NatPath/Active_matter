@@ -1,3 +1,8 @@
+############### run_and_tumble.jl ###############
+
+using Distributed
+using Printf
+using Dates
 using Plots
 using Random
 using FFTW
@@ -5,18 +10,30 @@ using ProgressMeter
 using Statistics
 using LsqFit 
 using LinearAlgebra
-import Printf.@sprintf
 using JLD2
 using TOML
 using ArgParse
 
+# First, on the main process, include all necessary files.
 include("potentials.jl")
 include("modules_run_and_tumble.jl")
+include("plot_utils.jl")
 using .FP
+using .PlotUtils
 
+# Ensure all worker processes load the same files and modules.
+@everywhere begin
+    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, TOML, ArgParse
+    include("potentials.jl")
+    include("modules_run_and_tumble.jl")
+    include("plot_utils.jl")
+    using .FP
+    using .PlotUtils
+end
+
+# Command-line parser with extended options for parallel runs.
 function parse_commandline()
     s = ArgParseSettings()
-
     @add_arg_table! s begin
         "--config"
             help = "Configuration file path"
@@ -28,165 +45,264 @@ function parse_commandline()
             help = "Number of sweeps to continue for (overrides config file)"
             arg_type = Int
             required = false
+        "--num_runs"
+            help = "Number of independent simulation runs to execute in parallel"
+            arg_type = Int
+            required = false
+            default = 1
     end
-
     return parse_args(s)
 end
+# Estimate the total run time by running a sample of sweeps.
+function estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    println("Estimating run time using $sample_size sweeps...")
+    # Clone the current state so that our sample does not affect the actual simulation.
+    state_copy = deepcopy(state)
+    t0 = time()
+    for i in 1:sample_size
+         FP.update!(param, state_copy, rng)
+    end
+    elapsed = time() - t0
+    avg_time = elapsed / sample_size
+    estimated_total = avg_time * n_sweeps
+    println("Average time per sweep: $(round(avg_time, digits=4)) sec")
+    println("Estimated total run time for $n_sweeps sweeps: $(round(estimated_total, digits=2)) sec")
+    return estimated_total
+end
 
-function get_default_params()
-    # Default parameters when no config file is provided
+# Default parameters (used when no config file is provided)
+@everywhere function get_default_params()
     return Dict(
         "dim_num" => 1,
         "D" => 1.0,
         "α" => 0.0,
-        "L" => 64,
-        "N" => 64*100,
+        "L" => 256,
+        "N" => 256*100,
         "T" => 1.0,
-        "β′" => 0.1,
+        "γ′" => 0.1,
+        "ϵ" => 0,
         "n_sweeps" => 10^6,
-        "potential_type" => "smudge",
+        "potential_type" => "2ratchet",
         "fluctuation_type" => "zero-potential",
         "potential_magnitude" => 2,
         "save_dir" => "saved_states",
-        "show_times" => [j*10^i for i in 3:12 for j in 1:9],  # Default visualization times
-        "save_times" => Int[10^6]                 # Empty by default
-        
+        "show_times" => [j*10^i for i in 3:12 for j in 1:9],
+        "save_times" => [j*10^i for i in 6:12 for j in 1:9]
     )
 end
 
-function save_state(state,param,save_dir)
+function save_aggregation(agg_res,param,total_sweeps,save_dir)
     mkpath(save_dir)
-    β′ = param.β*param.N
-    filename = @sprintf("%s/potential-%s_fluctuation-%s_L-%d_rho-%.1e_alpha-%.2f_betaprime-%.2f_D-%.1f_t-%d.jld2",
+    γ′ = param.γ * param.N
+    filename = @sprintf("%s/potential-%s_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
         save_dir,
         param.potential_type,
         param.fluctuation_type,
-        param.dims[1],    # System size
-        param.ρ₀,         # Density
-        param.α,          # Tumbling rate
-        β′,          # Potential fluctuation rate
-        param.D,          # Diffusion coefficient
-        state.t          # Final time
-    )
+        param.ϵ,
+        param.dims[1],
+        param.ρ₀,
+        param.α,
+        γ′,
+        param.D,
+        state.t)
     potential = state.potential 
     @save filename state param potential
     return filename
 end
 
-function main()
-    rng = MersenneTwister(123)
-    # Parse command line arguments
-    args = parse_commandline()
-    
-    # First check if we're continuing from a saved state
-    if haskey(args, "continue") && !isnothing(args["continue"])
-        println("Continuing from saved state: $(args["continue"])")
-        @load args["continue"] state param potential
-        
-        # Load configuration for remaining parameters
-        if haskey(args, "config") && !isnothing(args["config"])
-            println("Using configuration from file: $(args["config"])")
-            params = TOML.parsefile(args["config"])
-        else
-            println("No config file provided. Using default parameters.")
-            params = get_default_params()
-        end
-        
-        # Check if continue-sweeps was provided, otherwise use n_sweeps from config/defaults
-        defaults = get_default_params()
-        if haskey(args, "continue-sweeps") && !isnothing(args["continue-sweeps"])
-            n_sweeps = args["continue-sweeps"]
-            println("Continuing for specified $n_sweeps sweeps")
-        else
-            n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
-            println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
-        end
-        
-    else
-        # Original initialization code
-        if haskey(args, "config") && !isnothing(args["config"])
-            println("Using configuration from file: $(args["config"])")
-            params = TOML.parsefile(args["config"])
-        else
-            println("No config file provided. Using default parameters.")
-            params = get_default_params()
-        end
-        
-        # Extract parameters with fallback to defaults for missing values
-        defaults = get_default_params()
-        dim_num = get(params, "dim_num", defaults["dim_num"])
-        potential_type = get(params, "potential_type", defaults["potential_type"])
-        fluctuation_type = get(params, "fluctuation_type", defaults["fluctuation_type"])
-        potential_magnitude = get(params, "potential_magnitude", defaults["potential_magnitude"])
-        D = get(params, "D", defaults["D"])
-        α = get(params, "α", defaults["α"])
-        L = get(params, "L", defaults["L"])
-        N = get(params, "N", defaults["N"])
-        T = get(params, "T", defaults["T"])
-        β′ = get(params, "β′", defaults["β′"])
-        n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
-        
-        # Initialize new simulation
-        dims = ntuple(i->L, dim_num)
-        ρ₀ = N/L
-        β = β′/N
-        
-        param = FP.setParam(α, β, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude)
-        v_smudge_args = Potentials.potential_args(
-            potential_type,
-            dims;   
-            magnitude= potential_magnitude
-        )
-        potential = Potentials.choose_potential(v_smudge_args,dims;fluctuation_type=fluctuation_type)
-        state = FP.setState(0, rng, param, T, potential)
-    end
-
-    show_times = get(params, "show_times", defaults["show_times"])
-    save_times = get(params, "save_times", defaults["save_times"])
-    β′ = get(params, "β′", defaults["β′"])
-    # Make movie
-    #make_movie!(state, param, n_frame, rng, file_name, in_fps, show_directions=false, show_times=show_times, save_times=save_times)
-
-    # Register the cleanup function to run at exit
-    atexit() do
-        println("\nSaving current state...")
-        try
-            save_dir = "saved_states"
-            save_state(state, param, save_dir)
-            println("State saved successfully")
-        catch e
-            println("Error saving state: ", e)
-        end
-    end
-
-    # Add specific interrupt handler
-    Base.exit_on_sigint(false)  # Don't exit immediately on Ctrl-C
-    Base.sigatomic_begin()
-    ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)  # Disable Julia's default Ctrl-C handler
-    Base.sigatomic_end()
-
-    try
-        # Run the simulation
-        res_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
-                                           show_times=show_times,
-                                           save_times=save_times)
-    catch e
-        if isa(e, InterruptException)
-            println("\nInterrupt detected, initiating cleanup...")
-            exit()  # This will trigger atexit
-        else
-            rethrow(e)
-        end
-    end
-
-    # Normal exit save (this will still happen even if interrupted)
-    save_dir = "saved_states"
-    save_dir = get(params, "save_dir", defaults["save_dir"])
-    filename = save_state(state,param,save_dir)
-    println("Final state saved to: ", filename)
-
+# Original save_state function.
+function save_state(state, param, save_dir)
+    mkpath(save_dir)
+    γ′ = param.γ * param.N
+    filename = @sprintf("%s/potential-%s_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
+        save_dir,
+        param.potential_type,
+        param.fluctuation_type,
+        param.ϵ,
+        param.dims[1],
+        param.ρ₀,
+        param.α,
+        γ′,
+        param.D,
+        state.t)
+    potential = state.potential 
+    @save filename state param potential
+    return filename
 end
 
-# Run the main function
-main()
+# Function to set up and run one independent simulation.
+@everywhere function run_one_simulation_from_config(args, seed)
+    println("Starting simulation with seed $seed")
+    rng = MersenneTwister(seed)
+    defaults = get_default_params()
+    if haskey(args, "config") && !isnothing(args["config"])
+        println("Using configuration from file: $(args["config"])")
+        params = TOML.parsefile(args["config"])
+    else
+        println("No config file provided. Using default parameters.")
+        params = get_default_params()
+    end
+    # For parallel runs, disable any visualization or state saving I/O.
+    n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+    params["show_times"] = Int[]
+    params["save_times"] = Int[]
+    
+    # Set up simulation parameters.
+    dim_num            = get(params, "dim_num", defaults["dim_num"])
+    potential_type     = get(params, "potential_type", defaults["potential_type"])
+    fluctuation_type   = get(params, "fluctuation_type", defaults["fluctuation_type"])
+    potential_magnitude= get(params, "potential_magnitude", defaults["potential_magnitude"])
+    D                  = get(params, "D", defaults["D"])
+    α                  = get(params, "α", defaults["α"])
+    L                  = get(params, "L", defaults["L"])
+    N                  = get(params, "N", defaults["N"])
+    T                  = get(params, "T", defaults["T"])
+    γ′                 = get(params, "γ′", defaults["γ′"])
+    ϵ                  = get(params, "ϵ", defaults["ϵ"])
+    
+    dims = ntuple(i -> L, dim_num)
+    ρ₀ = N / L
+    γ = γ′ / N
 
+    # Initialize simulation parameters and state.
+    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+    v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
+    potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
+    state = FP.setState(0, rng, param, T, potential)
+    
+    # Run the simulation (calculating correlations).
+    normalized_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
+                                                 calc_correlations=true,
+                                                 show_times=params["show_times"],
+                                                 save_times=params["save_times"])
+    return normalized_dist, corr_mat
+end
+
+# Main function.
+function main()
+    args = parse_commandline()
+    num_runs = get(args, "num_runs", 1)
+    
+    # When continuing from a saved state, parallel runs are not allowed.
+    if haskey(args, "continue") && !isnothing(args["continue"]) && num_runs > 1
+        error("Parallel runs are not supported when continuing from a saved state.")
+    end
+
+    if num_runs > 1
+        println("Running $num_runs independent simulations in parallel.")
+        # Use different seeds for each independent simulation.
+        seeds = rand(1:num_runs*10000,num_runs)
+        results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
+        # Aggregate results (here we average the correlation matrices).
+        normalized_dists = [res[1] for res in results]
+        corr_mats = [res[2] for res in results]
+        
+        #avg_corr = mean(corr_mats, dims=1)
+        #avg_dists = mean(normalized_dists,dims=1)
+        stacked_corr = cat(corr_mats..., dims=3)  # Stack matrices along a new third dimension
+        avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
+        stacked_dists = cat(normalized_dists..., dims=2)
+        avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
+
+        
+        # Save aggregated results to a separate file.
+        save_dir = "saved_states_parallel"
+        mkpath(save_dir)
+        now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
+        filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
+        @save filename normalized_dists corr_mats avg_corr avg_dists
+        println("Parallel results saved to: $filename")
+    else
+        # Single-run mode.
+        if haskey(args, "continue") && !isnothing(args["continue"])
+            println("Continuing from saved state: $(args["continue"])")
+            @load args["continue"] state param potential
+            if haskey(args, "config") && !isnothing(args["config"])
+                println("Using configuration from file: $(args["config"])")
+                params = TOML.parsefile(args["config"])
+            else
+                println("No config file provided. Using default parameters.")
+                params = get_default_params()
+            end
+            defaults = get_default_params()
+            if haskey(args, "continue-sweeps") && !isnothing(args["continue-sweeps"])
+                n_sweeps = args["continue-sweeps"]
+                println("Continuing for specified $n_sweeps sweeps")
+            else
+                n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+                println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
+            end
+        else
+            if haskey(args, "config") && !isnothing(args["config"])
+                println("Using configuration from file: $(args["config"])")
+                params = TOML.parsefile(args["config"])
+            else
+                println("No config file provided. Using default parameters.")
+                params = get_default_params()
+            end
+            defaults = get_default_params()
+            dim_num            = get(params, "dim_num", defaults["dim_num"])
+            potential_type     = get(params, "potential_type", defaults["potential_type"])
+            fluctuation_type   = get(params, "fluctuation_type", defaults["fluctuation_type"])
+            potential_magnitude= get(params, "potential_magnitude", defaults["potential_magnitude"])
+            D                  = get(params, "D", defaults["D"])
+            α                  = get(params, "α", defaults["α"])
+            L                  = get(params, "L", defaults["L"])
+            N                  = get(params, "N", defaults["N"])
+            T                  = get(params, "T", defaults["T"])
+            γ′                 = get(params, "γ′", defaults["γ′"])
+            ϵ                  = get(params, "ϵ", defaults["ϵ"])
+            n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
+            
+            dims = ntuple(i -> L, dim_num)
+            ρ₀ = N / L
+            γ = γ′ / N
+            
+            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+            v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
+            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
+            rng = MersenneTwister(123)
+            state = FP.setState(0, rng, param, T, potential)
+        end
+        
+        show_times = get(params, "show_times", get_default_params()["show_times"])
+        save_times = get(params, "save_times", get_default_params()["save_times"])
+        
+        # Register an exit hook to save state at exit.
+        atexit() do
+            println("\nSaving current state...")
+            try
+                save_dir = get(params, "save_dir", get_default_params()["save_dir"])
+                save_state(state, param, save_dir)
+                println("State saved successfully")
+            catch e
+                println("Error saving state: ", e)
+            end
+        end
+
+        Base.exit_on_sigint(false)
+        Base.sigatomic_begin()
+        ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)
+        Base.sigatomic_end()
+        
+        try
+            res_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
+                                                 show_times=show_times,
+                                                 save_times=save_times,
+                                                 plot_flag=true)
+        catch e
+            if isa(e, InterruptException)
+                println("\nInterrupt detected, initiating cleanup...")
+                exit()
+            else
+                rethrow(e)
+            end
+        end
+        
+        save_dir = get(params, "save_dir", get_default_params()["save_dir"])
+        filename = save_state(state, param, save_dir)
+        println("Final state saved to: ", filename)
+    end
+end
+
+main()

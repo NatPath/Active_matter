@@ -12,12 +12,14 @@ function remove_symmetric_part_reflection(matrix, x0)
     end
     return antisymmetric_matrix
 end
+function plot_summary(density,correlations,)
+end
 function plot_sweep(sweep,state,param; label="", plot_directional=false)
     normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-    p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
-    p1 = plot_magnetization(state, param)
     outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
     corr_mat = state.ρ_matrix_avg-outer_prod_ρ
+    p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+    p1 = plot_magnetization(state, param)
     p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
                 title="Correlation Matrix Heatmap", color=:viridis)
     L= param.dims[1]
@@ -132,7 +134,7 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
                           legend=:outerright,
                           size=(1000,600))
         α = param.α
-        β′ = param.β * param.N
+        γ′ = param.γ * param.N
         state_x = []
         state_y = []
         
@@ -169,7 +171,7 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
             x_positions = 1:length(full_data)
             x_scaled = (x_positions .- middle_spot) ./ i
             y_scaled = full_data .* i^4
-            # y_scaled = full_data .* ((α*β′)*i^2) 
+            # y_scaled = full_data .* ((α*γ′)*i^2) 
             
             # Filter points within range
             mask = (-5 .<= x_scaled .<= 5)

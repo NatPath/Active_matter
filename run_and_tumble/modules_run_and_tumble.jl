@@ -1,4 +1,3 @@
-# At the top of the file, outside the FP module
 using Statistics
 using FFTW
 using LsqFit
@@ -14,7 +13,8 @@ module FP
 
     struct Param # model parameters
         α::Float64  # rate of tumbling
-        β::Float64  # rate of potential fluctuation
+        γ::Float64  # rate of potential fluctuation
+        ϵ::Float64  # activity
         dims::Tuple{Vararg{Int}} # systen's dimensions
         ρ₀::Float64  # density
         N::Int64    # number of particles
@@ -25,11 +25,11 @@ module FP
     end
 
     #constructor
-    function setParam(α ,β, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude)
+    function setParam(α, γ, ϵ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude)
 
         N = Int(round( ρ₀*prod(dims)))       # number of particles
 
-        param = Param(α, β, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude)
+        param = Param(α, γ, ϵ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude)
         return param
     end
 
@@ -94,7 +94,7 @@ module FP
         return state
     end
 
-    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,ϵ=0.0, ΔV_max=0.4)
+    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T; ϵ=0.0, ΔV_max=0.4)
         relative_direction = particle_direction*choice_direction
         
         p = D*min(1,exp(-(ΔV-relative_direction*ϵ)/T))
@@ -119,7 +119,7 @@ module FP
             V = state.potential.V
             T = state.T
             α = param.α
-            β = param.β
+            γ = param.γ
             Δt=1
             t_end = state.t + Δt
             t= state.t
@@ -149,9 +149,9 @@ module FP
                 if action_index==3
                     p_candidate=α
                 elseif action_index==4
-                    p_candidate=β
+                    p_candidate=γ
                 else
-                    p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T)
+                    p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T; ϵ=param.ϵ)
                 end
                 p_stay = 1-p_candidate
                 p_arr = [p_candidate, p_stay]
@@ -306,11 +306,16 @@ function initialize_simulation(state, param, n_frame, calc_correlations)
     end
 end
 
-
+function calculate_statistics(state)
+    normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+    outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+    corr_mat = state.ρ_matrix_avg-outer_prod_ρ
+    return normalized_dist, corr_mat
+end
 function run_simulation!(state, param, n_sweeps, rng; 
                         calc_correlations = false, 
                         show_times = [], 
-                        save_times = [])
+                        save_times = [],plot_flag = false)
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations)
 
@@ -327,13 +332,16 @@ function run_simulation!(state, param, n_sweeps, rng;
         end
 
         # Your existing show_times code
-        if sweep in show_times
-            plot_sweep(sweep, state, param)
+        if sweep in show_times && plot_flag
+            PlotUtils.plot_sweep(sweep, state, param)
+            
         end
         
         next!(prg)
     end
-    normalized_dist, corr_mat = plot_sweep(n_sweeps, state, param)
+    # normalized_dist, corr_mat = PlotUtils.plot_sweep(n_sweeps, state, param)
+    normalized_dist, corr_mat = calculate_statistics(state)
+    
     println("Simulation complete")
     return normalized_dist, corr_mat  
 end
