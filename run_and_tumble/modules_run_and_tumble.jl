@@ -9,7 +9,7 @@ module FP
     # using ..PlotUtils: plot_sweep 
     using ..Potentials: Potential
     using LinearAlgebra
-    export Param, setParam, Particle, setParticle, setState
+    export Param, setParam, Particle, setParticle, setDummyState, setState
 
     struct Param # model parameters
         α::Float64  # rate of tumbling

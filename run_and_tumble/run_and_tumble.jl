@@ -81,7 +81,7 @@ end
         "T" => 1.0,
         "γ′" => 0.1,
         "ϵ" => 0,
-        "n_sweeps" => 10^6,
+        "n_sweeps" => 2*10^3,
         "potential_type" => "2ratchet",
         "fluctuation_type" => "zero-potential",
         "potential_magnitude" => 2,
@@ -127,12 +127,12 @@ function save_state(state, param, save_dir)
         state.t)
     potential = state.potential 
     @save filename state param potential
-    println("Saved a state to $filename$")
+    println("Saved a state to $filename")
     return filename
 end
 
 # Function to set up and run one independent simulation.
-@everywhere function run_one_simulation_from_config(args, seed)
+@everywhere function run_one_simulation_from_config(args, seed ; n_sweeps)
     println("Starting simulation with seed $seed")
     rng = MersenneTwister(seed)
     defaults = get_default_params()
@@ -176,7 +176,7 @@ end
                                                  calc_correlations=true,
                                                  show_times=params["show_times"],
                                                  save_times=params["save_times"])
-    return normalized_dist, corr_mat, state
+    return normalized_dist, corr_mat, state, param
 end
 
 # Main function.
@@ -214,6 +214,7 @@ function main()
         normalized_dists = [res[1] for res in results]
         corr_mats = [res[2] for res in results]
         states = [res[3] for res in results]
+        params = [res[4] for res in results]
         
         #avg_corr = mean(corr_mats, dims=1)
         #avg_dists = mean(normalized_dists,dims=1)
@@ -222,10 +223,10 @@ function main()
         stacked_dists = cat(normalized_dists..., dims=2)
         avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
         total_t = states[1].t * num_runs
-        dummy_state = setDummyState(states[1],avg_dists,avg_corr,total_t)
+        dummy_state = FP.setDummyState(states[1],avg_dists,avg_corr,total_t)
 
         dummy_state_save_dir = "dummy_states"
-        save_state(dummy_state,param,dummy_state_save_dir)
+        save_state(dummy_state,params[1],dummy_state_save_dir)
 
         
         # Save aggregated results to a separate file.
@@ -255,6 +256,8 @@ function main()
                 n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
                 println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
             end
+            seed = rand(1:2^30)
+            rng = MersenneTwister(seed)
         else
             if haskey(args, "config") && !isnothing(args["config"])
                 println("Using configuration from file: $(args["config"])")

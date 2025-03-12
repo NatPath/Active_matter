@@ -26,7 +26,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
     middle_spot = L÷2
     
     p5 = plot(corr_mat[middle_spot,:],title="correlation matrix cut for x=$(middle_spot)")
-    point_to_look_at = middle_spot+12
+    point_to_look_at = middle_spot+middle_spot÷2
     vline!(p4,[point_to_look_at],label="x=$(point_to_look_at)")
     left_value=corr_mat[point_to_look_at,point_to_look_at-1]
     right_value=corr_mat[point_to_look_at,point_to_look_at+1]
@@ -143,9 +143,9 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
         # initial_index = param.dims[1]÷10+1
         # index_jump = 2
         # end_index = param.dims[1]/4
-        initial_index = 10
+        initial_index = 4
         index_jump = 1
-        end_index = 15 
+        end_index = 8
         
         for i in initial_index:index_jump:end_index
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
