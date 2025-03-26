@@ -81,7 +81,7 @@ end
         "T" => 1.0,
         "γ′" => 0.1,
         "ϵ" => 0,
-        "n_sweeps" => 2*10^3,
+        "n_sweeps" => 10^6,
         "potential_type" => "2ratchet",
         "fluctuation_type" => "zero-potential",
         "potential_magnitude" => 2,
@@ -132,7 +132,7 @@ function save_state(state, param, save_dir)
 end
 
 # Function to set up and run one independent simulation.
-@everywhere function run_one_simulation_from_config(args, seed ; n_sweeps)
+@everywhere function run_one_simulation_from_config(args, seed )
     println("Starting simulation with seed $seed")
     rng = MersenneTwister(seed)
     defaults = get_default_params()

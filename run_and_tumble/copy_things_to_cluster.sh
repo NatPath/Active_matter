@@ -1,0 +1,1 @@
+scp *.jl nativmr@tech-ui02.hep.technion.ac.il:/srv01/technion/nativmr/run_and_tumble
