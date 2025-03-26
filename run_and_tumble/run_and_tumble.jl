@@ -41,7 +41,7 @@ function parse_commandline()
         "--continue"
             help = "Path to saved state file to continue from"
             required = false
-        "--continue-sweeps"
+        "--continue_sweeps"
             help = "Number of sweeps to continue for (overrides config file)"
             arg_type = Int
             required = false
@@ -132,7 +132,68 @@ function save_state(state, param, save_dir)
 end
 
 # Function to set up and run one independent simulation.
-@everywhere function run_one_simulation_from_config(args, seed )
+@everywhere function run_one_simulation_from_state(param, state, seed,n_sweeps)
+    println("Continuing simulation with seed $seed for $n_sweeps")
+    rng = MersenneTwister(seed)
+    # defaults = get_default_params()
+    # if haskey(args, "config") && !isnothing(args["config"])
+    #     println("Using configuration from file: $(args["config"])")
+    #     params = TOML.parsefile(args["config"])
+    # else
+    #     println("No config file provided. Using default parameters.")
+    #     params = get_default_params()
+    # end
+    # # For parallel runs, disable any visualization or state saving I/O.
+    # n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+    show_times = Int[]
+    save_times = Int[]
+    
+    # # Set up simulation parameters.
+    # dim_num            = get(params, "dim_num", defaults["dim_num"])
+    # potential_type     = get(params, "potential_type", defaults["potential_type"])
+    # fluctuation_type   = get(params, "fluctuation_type", defaults["fluctuation_type"])
+    # potential_magnitude= get(params, "potential_magnitude", defaults["potential_magnitude"])
+    # D                  = get(params, "D", defaults["D"])
+    # α                  = get(params, "α", defaults["α"])
+    # L                  = get(params, "L", defaults["L"])
+    # N                  = get(params, "N", defaults["N"])
+    # T                  = get(params, "T", defaults["T"])
+    # γ′                 = get(params, "γ′", defaults["γ′"])
+    # ϵ                  = get(params, "ϵ", defaults["ϵ"])
+    
+    # dims = ntuple(i -> L, dim_num)
+    # ρ₀ = N / L
+    # γ = γ′ / N
+
+    # Initialize simulation parameters and state.
+    # param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+    # v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
+    # potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
+    # state = FP.setState(0, rng, param, T, potential)
+    dummy_state = setDummyState(state,state.ρ_avg,state.ρ_matrix_avg,state.t)
+    
+    # Run the simulation (calculating correlations).
+    normalized_dist, corr_mat = run_simulation!(dummy_state, param, n_sweeps, rng;
+                                                 calc_correlations=true,
+                                                 show_times=show_times,
+                                                 save_times=save_times)
+    return normalized_dist, corr_mat, dummy_state, param
+end
+# A very shitty function, find a cleaner way to do it! this is just a recepie for spagheti
+function n_sweeps_from_args(args)
+    defaults = get_default_params()
+    if haskey(args, "config") && !isnothing(args["config"])
+        println("Using configuration from file: $(args["config"])")
+        params = TOML.parsefile(args["config"])
+    else
+        println("No config file provided. Using default parameters.")
+        params = get_default_params()
+    end
+    # For parallel runs, disable any visualization or state saving I/O.
+    n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+    return n_sweeps
+end
+@everywhere function run_one_simulation_from_config(args, seed)
     println("Starting simulation with seed $seed")
     rng = MersenneTwister(seed)
     defaults = get_default_params()
@@ -183,7 +244,8 @@ end
 function main()
     args = parse_commandline()
     num_runs = get(args, "num_runs", 1)
-    
+    seeds = rand(1:2^30,num_runs)
+    println("Running $num_runs independent simulations in parallel.")
     if num_runs > 1
         if haskey(args, "continue") && !isnothing(args["continue"])
             # # When continuing from a saved state, parallel runs are not allowed.
@@ -198,18 +260,19 @@ function main()
                 params = get_default_params()
             end
             defaults = get_default_params()
-            if haskey(args, "continue-sweeps") && !isnothing(args["continue-sweeps"])
-                n_sweeps = args["continue-sweeps"]
+            if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
+                n_sweeps = args["continue_sweeps"]
                 println("Continuing for specified $n_sweeps sweeps")
             else
                 n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
                 println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
             end
+            results = pmap(seed -> run_one_simulation_from_state(param,state,seed,n_sweeps), seeds)
+        else
+            results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
+            n_sweeps=n_sweeps_from_args(args)
         end
-        println("Running $num_runs independent simulations in parallel.")
         # Use different seeds for each independent simulation.
-        seeds = rand(1:2^30,num_runs)
-        results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
         # Aggregate results (here we average the correlation matrices).
         normalized_dists = [res[1] for res in results]
         corr_mats = [res[2] for res in results]
@@ -222,7 +285,7 @@ function main()
         avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
         stacked_dists = cat(normalized_dists..., dims=2)
         avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
-        total_t = states[1].t * num_runs
+        total_t = n_sweeps*(num_runs-1)+states[1].t 
         dummy_state = FP.setDummyState(states[1],avg_dists,avg_corr,total_t)
 
         dummy_state_save_dir = "dummy_states"
@@ -330,7 +393,7 @@ function main()
         save_dir = get(params, "save_dir", get_default_params()["save_dir"])
         filename = save_state(state, param, save_dir)
         println("Final state saved to: ", filename)
-    end
+   end
 end
 
 main()
