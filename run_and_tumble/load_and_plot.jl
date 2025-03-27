@@ -34,7 +34,7 @@ function main()
         filename = replace(filename, ".jld2" => "")
         
         # Create legend label using relevant parameters
-        legend_label = "γ′=$(param.γ*param.N)"
+        legend_label = "γ′=(param.γ*param.N)"
         
         push!(states_params_names, (state, param, legend_label))
     end

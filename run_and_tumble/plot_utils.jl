@@ -143,9 +143,9 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
         # initial_index = param.dims[1]÷10+1
         # index_jump = 2
         # end_index = param.dims[1]/4
-        initial_index = 4
-        index_jump = 1
-        end_index = 8
+        initial_index = 10
+        index_jump = 2
+        end_index = 16
         
         for i in initial_index:index_jump:end_index
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
@@ -170,7 +170,7 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
 
             x_positions = 1:length(full_data)
             x_scaled = (x_positions .- middle_spot) ./ i
-            y_scaled = full_data .* i^4
+            y_scaled = full_data .* i
             # y_scaled = full_data .* ((α*γ′)*i^2) 
             
             # Filter points within range

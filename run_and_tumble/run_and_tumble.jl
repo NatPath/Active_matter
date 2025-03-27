@@ -72,19 +72,20 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
+    L= 256
     return Dict(
         "dim_num" => 1,
         "D" => 1.0,
         "α" => 0.0,
-        "L" => 256,
-        "N" => 256*100,
+        "L" => L,
+        "N" => L*100,
         "T" => 1.0,
-        "γ′" => 0.1,
+        "γ′" => 1,
         "ϵ" => 0,
-        "n_sweeps" => 10^6,
+        "n_sweeps" => 4*10^6,
         "potential_type" => "2ratchet",
         "fluctuation_type" => "zero-potential",
-        "potential_magnitude" => 2,
+        "potential_magnitude" => 16,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9]
@@ -174,7 +175,7 @@ end
     
     # Run the simulation (calculating correlations).
     normalized_dist, corr_mat = run_simulation!(dummy_state, param, n_sweeps, rng;
-                                                 calc_correlations=true,
+                                                 calc_correlations=false,
                                                  show_times=show_times,
                                                  save_times=save_times)
     return normalized_dist, corr_mat, dummy_state, param
@@ -234,7 +235,7 @@ end
     
     # Run the simulation (calculating correlations).
     normalized_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
-                                                 calc_correlations=true,
+                                                 calc_correlations=false,
                                                  show_times=params["show_times"],
                                                  save_times=params["save_times"])
     return normalized_dist, corr_mat, state, param
