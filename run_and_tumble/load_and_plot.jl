@@ -19,19 +19,23 @@ end
 function main()
     # Parse arguments
     args = parse_commandline()
-    figures_dir = "results_figures"
-    
+    joined_filename=join(args["saved_states"],"+")
+    joined_filename=replace(joined_filename,".jld2"=>"")
+    only_joined_filename=split(joined_filename,"/")|>last
+    figures_dir = "results_figures/$(only_joined_filename)"
+    mkpath(figures_dir)
     # Create array to store all states, params, and filenames
     states_params_names = []
+
     
     # Load each saved state
     for saved_state in args["saved_states"]
         println("Loading state from: $(saved_state)")
         @load saved_state state param potential
         
-        # Extract filename without extension and path for legend
-        filename = basename(saved_state)
-        filename = replace(filename, ".jld2" => "")
+        # # Extract filename without extension and path for legend
+        # filename = basename(saved_state)
+        # filename = replace(filename, ".jld2" => "")
         
         # Create legend label using relevant parameters
         legend_label = "γ′=(param.γ*param.N)"
@@ -47,8 +51,13 @@ function main()
     
     # Generate sweep plots for each state
     for (i, (state, param, label)) in enumerate(states_params_names)
+        filename = basename(args["saved_states"][i])
+        filename = replace(filename, ".jld2" => "")
+        only_filename = split(filename,"/")|>last
         normalized_dist, corr_mat = plot_sweep(state.t, state, param; label=label)
-        savefig("$(figures_dir)/sweep_plot_$(i).png")
+        specific_state_dir= "$(figures_dir)/$(only_filename)"
+        mkpath(specific_state_dir)
+        savefig("$(specific_state_dir)/sweep_plot_$(i).png")
         println("Plot saved as sweep_plot_$(i).png")
     end
 end
