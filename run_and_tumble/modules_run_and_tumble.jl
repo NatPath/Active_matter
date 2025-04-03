@@ -7,7 +7,7 @@ using .PlotUtils
 #Wrap everything with a module to allow redefinition of type
 module FP
     # using ..PlotUtils: plot_sweep 
-    using ..Potentials: Potential
+    using ..Potentials: AbstractPotential, potential_update!, Potential, MultiPotential, IndependentFluctuatingPoints
     using LinearAlgebra
     export Param, setParam, Particle, setParticle, setDummyState, setState
 
@@ -61,7 +61,7 @@ module FP
         ρ_matrix_avg::Array{Float64}
         T::Float64                      # temperature
         # V::Array{Float64}      # potential
-        potential::Potential
+        potential::AbstractPotential
 
     end
     function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg, t)
@@ -177,8 +177,9 @@ module FP
                         # println("tumbled")
                     end
                     if action_index == 4
-                        state.potential.V += state.potential.fluctuation_mask*state.potential.fluctuation_sign
-                        state.potential.fluctuation_sign*=-1
+                        potential_update!(state.potential,rng)
+                        # state.potential.V += state.potential.fluctuation_mask*state.potential.fluctuation_sign
+                        # state.potential.fluctuation_sign*=-1
                     end
                 end
                 new_position = particle.position[1]

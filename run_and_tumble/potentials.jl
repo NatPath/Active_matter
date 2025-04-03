@@ -1,54 +1,104 @@
 module Potentials
+    import Random: AbstractRNG
     using Plots
-    export Potential, potential_args, choose_potential
+    export AbstractPotential ,Potential, MultiPotential 
+    export potential_args, choose_potential, potential_update!
 
+    # Abstract type for polymorphism
+    abstract type AbstractPotential end
+
+    # Single potential struct
     mutable struct Potential
         V::Array{Float64}
         fluctuation_mask::Array{Float64}
         fluctuation_sign::Int64
     end
 
+    # Multi-potential container
+    mutable struct MultiPotential <: AbstractPotential
+        potentials::Vector{Potential}
+    end
+
+    mutable struct IndependentFluctuatingPoints <: AbstractPotential
+        V::Vector{Float64}
+        indices::Vector{Int}
+        magnitude::Float64
+    end
+
     function setPotential(V, fluctuation_mask)
         return Potential(V, fluctuation_mask, 1)
     end
 
-    function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus")
+
+    function setMultiPotential(potentials::Vector{Potential})
+        return MultiPotential(potentials)
+    end
+
+    function potential_update!(p::Potential)
+        p.V += p.fluctuation_mask .* p.fluctuation_sign
+        p.fluctuation_sign *= -1
+    end
+    function potential_update!(p::Potential, rng::AbstractRNG)
+        potential_update!(p)
+    end
+
+    function potential_update!(mp::MultiPotential, rng::AbstractRNG)
+        for pot in mp.potentials
+            potential_update!(pot, rng)
+        end
+    end
+
+    function potential_update!(p::IndependentFluctuatingPoints)
+        error("IndependentFluctuatingPoints requires an RNG. Use update!(p, rng) instead.")
+    end
+
+    function potential_update!(p::IndependentFluctuatingPoints, rng::AbstractRNG)
+        for i in p.indices
+            p.V[i] = (2*rand(rng)-1) * p.magnitude
+        end
+    end
+
+    function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus",rng)
+        if get(v_args,"multi",false)
+            n = get(v_args,"n",2)
+            base_args = deepcopy(v_args)
+            delete!(base_args,"multi")
+            delete!(base_args,"n")
+            potentials = [choose_potential(base_args, dims; boundary_walls, fluctuation_type) for _ in 1:n]
+            return setMultiPotential(potentials)
+        end
         V = zeros(Float64, dims)
         L = dims[1]
         middle = Int(L÷2)
         x = LinRange(0,L,L)
         v_string = v_args["type"]
-        magnitude=1
+        magnitude = get(v_args,"magnitude",1.0)
+
         if v_string == "well"
             for i in 1:L
                 #V[i] = exp(-((i - L/2)^2) / (2 * (2)^2))  # Gaussian potential centered in the middle
                 width = v_args["width"]
-                magnitude = v_args["magnitude"]
                 V[i] = i<= L/2 + width && i> L/2-width  ? magnitude : 0
             end
         elseif v_string == "zero"
             magnitude=1
         elseif v_string == "smudge"
             location = v_args["location"]
-            magnitude = v_args["magnitude"]
             V[location] = magnitude
             V[location-1] = magnitude/2
         elseif v_string == "2ratchet"
             location = v_args["location"]
-            magnitude = v_args["magnitude"]
             V[location+2] = magnitude
             V[location+1] = magnitude/2
             V[location-1] = magnitude
             V[location-2] = magnitude/2
         elseif v_string =="modified_smudge"
             location = v_args["location"]
-            magnitude = v_args["magnitude"]
             V[location] = magnitude
             V[location-1] = magnitude/4
             
         elseif v_string == "delta"
-            V[middle] = v_args["magnitude"]
-            magnitude = v_args["magnitude"]
+            V[middle] = magnitude
         elseif v_string == "linear"
             m = v_args["slope"]
             b = v_args["shift"]
@@ -77,7 +127,7 @@ module Potentials
             V = magnitude*rand(rng,dims...)
 
         else
-            error("unsupported V string")
+            error("unsupported potential type : $v_string ")
         end
         V_plot=plot(V)
         display(V_plot)
@@ -89,6 +139,12 @@ module Potentials
             fluctuating_mask = -V
         elseif fluctuation_type == "reflection"
             fluctuating_mask =  -2*V
+        elseif fluctuation_type == "independent-points"
+            points_indices = get(v_args, "points_indices", [L÷2-1,L÷2,L÷2+1])
+            for i in points_indices
+                V[i] = (2*rand(rng)-1) * magnitude
+            end
+            return IndependentFluctuatingPoints(V, points_indices, magnitude)
         end
         
         if boundary_walls

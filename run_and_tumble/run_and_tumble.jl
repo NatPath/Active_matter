@@ -82,9 +82,10 @@ end
         "T" => 1.0,
         "γ′" => 1,
         "ϵ" => 0,
-        "n_sweeps" => 4*10^6,
-        "potential_type" => "2ratchet",
-        "fluctuation_type" => "zero-potential",
+        "n_sweeps" => 2*10^7,
+        "potential_type" => "zero",
+        #"fluctuation_type" => "zero-potential",
+        "fluctuation_type" => "independent-points",
         "potential_magnitude" => 16,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],
@@ -230,7 +231,7 @@ end
     # Initialize simulation parameters and state.
     param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
     v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
-    potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
+    potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng)
     state = FP.setState(0, rng, param, T, potential)
     
     # Run the simulation (calculating correlations).
@@ -350,10 +351,10 @@ function main()
             
             param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
             v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
-            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
+            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng)
             state = FP.setState(0, rng, param, T, potential)
         end
         
