@@ -26,7 +26,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
     middle_spot = L÷2
     
     p5 = plot(corr_mat[middle_spot,:],title="correlation matrix cut for x=$(middle_spot)")
-    point_to_look_at = middle_spot+middle_spot÷2
+    point_to_look_at = middle_spot+middle_spot÷4
     vline!(p4,[point_to_look_at],label="x=$(point_to_look_at)")
     left_value=corr_mat[point_to_look_at,point_to_look_at-1]
     right_value=corr_mat[point_to_look_at,point_to_look_at+1]
@@ -120,9 +120,16 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     return p
 end
 
-function plot_data_colapse(states_params_names, results_dir = "results_figures")
+function plot_data_colapse(states_params_names,power_n,indices, results_dir = "results_figures")
+    # initial_index = param.dims[1]÷10+1
+    # index_jump = 2
+    # end_index = param.dims[1]/4
+    # initial_index = 50
+    # index_jump = 1
+    # end_index = 60
+    n = power_n
     # Create combined plot
-    p_combined = plot(title="Combined Data Collapse",
+    p_combined = plot(title="Combined Data Collapse C(x,y)*y^$n",
                      legend=:outerright,
                      size=(1200,800))
     all_x = []
@@ -140,15 +147,8 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
         
         L = param.dims[1]
         N = param.N
-        # initial_index = param.dims[1]÷10+1
-        # index_jump = 2
-        # end_index = param.dims[1]/4
-        initial_index = 10
-        index_jump = 2
-        end_index = 16
-        n = 1
         
-        for i in initial_index:index_jump:end_index
+        for i in indices
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
             corr_mat = (state.ρ_matrix_avg-outer_prod_ρ).+(N/L^2)
             middle_spot = param.dims[1]÷2
@@ -170,7 +170,7 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
             #
 
             x_positions = 1:length(full_data)
-            x_scaled = (x_positions .- middle_spot) ./ i
+            x_scaled = (x_positions .- middle_spot) ./ sqrt(i)
             y_scaled = full_data .* i^n
             # y_scaled = full_data .* ((α*γ′)*i^2) 
             
@@ -198,7 +198,7 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
         f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
         
         p0 = [1.0, 0.0, 0.0]
-        fit_individual = curve_fit(f, state_x, state_y, p0)
+        #fit_individual = curve_fit(f, state_x, state_y, p0)
         
         # Add theoretical curve to individual plot
         x_theory = range(-5, 5, length=1000)
@@ -206,24 +206,24 @@ function plot_data_colapse(states_params_names, results_dir = "results_figures")
         #       label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
         
         # Save individual plot
-        savefig(p_individual, "$(results_dir)/data_collapse_$(label).png")
+        savefig(p_individual, "$(results_dir)/data_collapse_$(label)_y^$(n).png")
     end
     
     # Fit combined data
     f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
     p0 = [1.0, 0.0, 0.0]
-    fit_combined = curve_fit(f, all_x, all_y, p0)
+    #fit_combined = curve_fit(f, all_x, all_y, p0)
     
     # Add theoretical curve to combined plot
     x_theory = range(-5, 5, length=1000)
     #plot!(p_combined, x_theory, f(x_theory, fit_combined.param), label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
     
     # Save combined plot
-    savefig(p_combined, "$(results_dir)/data_collapse_combined.png")
+    savefig(p_combined, "$(results_dir)/data_collapse_combined_y^$(n).png")
     
     # Display combined plot
     display(p_combined)
-    println("Combined fit parameters: ", fit_combined.param)
+    #println("Combined fit parameters: ", fit_combined.param)
     
     return p_combined
 end

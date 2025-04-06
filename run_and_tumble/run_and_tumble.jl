@@ -72,21 +72,21 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 256
+    L= 64
     return Dict(
         "dim_num" => 1,
         "D" => 1.0,
-        "α" => 0.0,
+        "α" => 0.3,
         "L" => L,
         "N" => L*100,
         "T" => 1.0,
-        "γ′" => 1,
-        "ϵ" => 0,
-        "n_sweeps" => 2*10^7,
-        "potential_type" => "zero",
+        "γ′" => 0.1,
+        "ϵ" => 0.6,
+        "n_sweeps" => 1*10^6,
+        "potential_type" => "smudge",
         #"fluctuation_type" => "zero-potential",
-        "fluctuation_type" => "independent-points",
-        "potential_magnitude" => 16,
+        "fluctuation_type" => "plus-minus",
+        "potential_magnitude" => 2,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9]

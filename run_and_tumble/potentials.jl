@@ -8,7 +8,7 @@ module Potentials
     abstract type AbstractPotential end
 
     # Single potential struct
-    mutable struct Potential
+    mutable struct Potential <: AbstractPotential
         V::Array{Float64}
         fluctuation_mask::Array{Float64}
         fluctuation_sign::Int64
