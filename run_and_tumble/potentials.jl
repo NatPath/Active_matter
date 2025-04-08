@@ -23,6 +23,7 @@ module Potentials
         V::Vector{Float64}
         indices::Vector{Int}
         magnitude::Float64
+        is_gaussian::Bool
     end
 
     function setPotential(V, fluctuation_mask)
@@ -54,9 +55,19 @@ module Potentials
 
     function potential_update!(p::IndependentFluctuatingPoints, rng::AbstractRNG)
         for i in p.indices
-            p.V[i] = (2*rand(rng)-1) * p.magnitude
+            if p.is_gaussian
+                p.V[i] = randn(rng,Float32) * p.magnitude
+            else
+                p.V[i] = (2*rand(rng)-1) * p.magnitude
+            end
         end
     end
+
+    # function potential_update!(p::IndependentFluctuatingPointsGaussian, rng::AbstractRNG)
+    #     for i in p.indices
+    #         p.V[i] = (2*rand(rng)-1) * p.magnitude
+    #     end
+    # end
 
     function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus",rng)
         if get(v_args,"multi",false)
@@ -144,7 +155,13 @@ module Potentials
             for i in points_indices
                 V[i] = (2*rand(rng)-1) * magnitude
             end
-            return IndependentFluctuatingPoints(V, points_indices, magnitude)
+            return IndependentFluctuatingPoints(V, points_indices, magnitude,false)
+        elseif fluctuation_type == "independent-points-gaussian"
+            points_indices = get(v_args, "points_indices", [L÷2-1,L÷2+1])
+            for i in points_indices
+                V[i] = randn(rng,Float32) * magnitude
+            end
+            return IndependentFluctuatingPoints(V, points_indices, magnitude,true)
         end
         
         if boundary_walls

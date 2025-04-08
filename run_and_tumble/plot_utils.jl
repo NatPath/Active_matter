@@ -166,11 +166,11 @@ function plot_data_colapse(states_params_names,power_n,indices, results_dir = "r
             #for antisymmetric only part
             corr_mat_antisym[point_to_look_at,point_to_look_at] = (corr_mat_antisym[point_to_look_at,point_to_look_at+1]+corr_mat_antisym[point_to_look_at,point_to_look_at-1])/2
             corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
-            full_data=corr_mat_antisym[point_to_look_at,1:end]
+            # full_data=corr_mat_antisym[point_to_look_at,1:end]
             #
 
             x_positions = 1:length(full_data)
-            x_scaled = (x_positions .- middle_spot) ./ sqrt(i)
+            x_scaled = (x_positions .- middle_spot) ./ (i)
             y_scaled = full_data .* i^n
             # y_scaled = full_data .* ((α*γ′)*i^2) 
             
@@ -187,7 +187,7 @@ function plot_data_colapse(states_params_names,power_n,indices, results_dir = "r
             
             # Plot data on both individual and combined plots
             idx_sort = sortperm(x_scaled)
-            # ylims!(p_combined,-10^3,10^3)
+           # ylims!(p_combined,-10^2,10^2)
             plot!(p_individual, x_scaled[idx_sort], y_scaled[idx_sort], 
                   label="y=$(i)", linewidth=2)
             plot!(p_combined, x_scaled[idx_sort], y_scaled[idx_sort], 
