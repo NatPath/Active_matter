@@ -72,7 +72,7 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 64
+    L= 64 
     return Dict(
         "dim_num" => 1,
         "D" => 1.0,
@@ -82,10 +82,9 @@ end
         "T" => 1.0,
         "γ′" => 1,
         "ϵ" => 0.0,
-        "n_sweeps" => 2*10^7+1,
-        "potential_type" => "zero",
-        #"fluctuation_type" => "zero-potential",
-        "fluctuation_type" => "independent-points",
+        "n_sweeps" => 2*10^7,
+        "potential_type" => "smudge",
+        "fluctuation_type" => "reflection",
         "potential_magnitude" => 16,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],
@@ -96,9 +95,10 @@ end
 function save_aggregation(agg_res,param,total_sweeps,save_dir)
     mkpath(save_dir)
     γ′ = param.γ * param.N
-    filename = @sprintf("%s/potential-%s_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
+    filename = @sprintf("%s/potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
         save_dir,
         param.potential_type,
+        param.potential_magnitude,
         param.fluctuation_type,
         param.ϵ,
         param.dims[1],
@@ -116,9 +116,10 @@ end
 function save_state(state, param, save_dir)
     mkpath(save_dir)
     γ′ = param.γ * param.N
-    filename = @sprintf("%s/potential-%s_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
+    filename = @sprintf("%s/potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
         save_dir,
         param.potential_type,
+        param.potential_magnitude,
         param.fluctuation_type,
         param.ϵ,
         param.dims[1],

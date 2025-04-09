@@ -39,17 +39,17 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
     vline!(p6,[point_to_look_at],label="x=$(point_to_look_at)")
     # p6 = plot(vcat(left_side,[corr_mat[point_to_look_at,point_to_look_at]],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
     # p6= plot(corr_mat[point_to_look_at,:])
-    corr_mat_sym = remove_symmetric_part_reflection(corr_mat,middle_spot)
+    corr_mat_antisym = remove_symmetric_part_reflection(corr_mat,middle_spot)
     # left_value_sym=corr_mat_sym[point_to_look_at,point_to_look_at-1]
     # right_value_sym=corr_mat_sym[point_to_look_at,point_to_look_at+1]
     # left_side_sym=corr_mat_sym[point_to_look_at, 1:point_to_look_at-1]
     # right_side_sym =corr_mat_sym[point_to_look_at, point_to_look_at+1:end]
     # corr_mat_sym_cut = vcat(left_side_sym,[(left_value_sym+right_value_sym)/2],right_side_sym)
 
-    corr_mat_sym[point_to_look_at,point_to_look_at] = (corr_mat_sym[point_to_look_at,point_to_look_at+1]+corr_mat_sym[point_to_look_at,point_to_look_at-1])/2
-    corr_mat_sym[point_to_look_at,L-point_to_look_at] = (corr_mat_sym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_sym[point_to_look_at,L-(point_to_look_at-1)])/2
+    corr_mat_antisym[point_to_look_at,point_to_look_at] = (corr_mat_antisym[point_to_look_at,point_to_look_at+1]+corr_mat_antisym[point_to_look_at,point_to_look_at-1])/2
+    corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
 
-    p7 = plot(corr_mat_sym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
+    p7 = plot(corr_mat_antisym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
     # p_final=plot(p0,p1,p4,p5,p6, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
     p_final=plot(p0,p1,p4,p5,p6,p7, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
     display(p_final)
@@ -175,9 +175,9 @@ function plot_data_colapse(states_params_names,power_n,indices, results_dir = "r
             # y_scaled = full_data .* ((α*γ′)*i^2) 
             
             # Filter points within range
-            mask = (-5 .<= x_scaled .<= 5)
-            x_scaled = x_scaled[mask]
-            y_scaled = y_scaled[mask]
+            # mask = (-5 .<= x_scaled .<= 5)
+            # x_scaled = x_scaled[mask]
+            # y_scaled = y_scaled[mask]
             
             # Store points for individual and combined fitting
             append!(state_x, x_scaled)
@@ -198,7 +198,7 @@ function plot_data_colapse(states_params_names,power_n,indices, results_dir = "r
         f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
         
         p0 = [1.0, 0.0, 0.0]
-        #fit_individual = curve_fit(f, state_x, state_y, p0)
+        # fit_individual = curve_fit(f, state_x, state_y, p0)
         
         # Add theoretical curve to individual plot
         x_theory = range(-5, 5, length=1000)
@@ -212,18 +212,18 @@ function plot_data_colapse(states_params_names,power_n,indices, results_dir = "r
     # Fit combined data
     f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
     p0 = [1.0, 0.0, 0.0]
-    #fit_combined = curve_fit(f, all_x, all_y, p0)
-    
+    # fit_combined = curve_fit(f, all_x, all_y, p0)
+    # println("Combined fit parameters: ", fit_combined.param)
+
     # Add theoretical curve to combined plot
-    x_theory = range(-5, 5, length=1000)
-    #plot!(p_combined, x_theory, f(x_theory, fit_combined.param), label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
+    # x_theory = range(-5, 5, length=1000)
+    # plot!(p_combined, x_theory, f(x_theory, fit_combined.param), label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
     
     # Save combined plot
     savefig(p_combined, "$(results_dir)/data_collapse_combined_y^$(n).png")
     
     # Display combined plot
     display(p_combined)
-    #println("Combined fit parameters: ", fit_combined.param)
     
     return p_combined
 end
