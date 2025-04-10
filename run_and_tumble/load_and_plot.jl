@@ -29,6 +29,9 @@ function parse_commandline()
         "--indices"
             help = "Range of indices in the format 'start:step:end'"
             default = "1:1:10"  # Default range if not provided
+        "--do_fit"
+            help = "Add a fit to the plots?"
+            action = :store_true
 
     end
     return parse_args(s)
@@ -42,7 +45,7 @@ function main()
     only_joined_filename=split(joined_filename,"/")|>last
     figures_dir = "results_figures/$(only_joined_filename)"
     mkpath(figures_dir)
-
+    do_fit = get(args,"do_fit", false)
     n = args["n"]
     indices= parse_range(args["indices"])
     # Create array to store all states, params, and filenames
@@ -65,10 +68,11 @@ function main()
     end
     
     # Generate data collapse plot with all states
-    p = plot_data_colapse(states_params_names,n,indices)  # You'll need to update this function to use labels
+    # whole_dir_path="$(figures_dir)/data_collapse_plot_y^$(n)_indices-$(args["indices"]).png"
+    p = plot_data_colapse(states_params_names,n,indices,figures_dir,do_fit)  
     display(p)
-    savefig(p, "$(figures_dir)/data_collapse_plot_y^$(n)_indices-$(args["indices"]).png")
-    println("Plot saved as data_collapse_plot.png")
+    # savefig(p, "$(figures_dir)/data_collapse_plot_y^$(n)_indices-$(args["indices"]).png")
+    # println("Plot saved as data_collapse_plot.png")
     
     # Generate sweep plots for each state
     for (i, (state, param, label)) in enumerate(states_params_names)

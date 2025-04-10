@@ -2,17 +2,17 @@ module PlotUtils
 using Plots
 using LsqFit
 export plot_sweep, plot_density, plot_data_colapse, plot_spatial_correlation 
+function remove_antisymmetric_part_reflection(matrix, x0)
+    n = size(matrix, 1)
+    indices = mod1.(2 * x0 .- (1:n), n)  # Compute the reflected indices for each row
+    symmetric_matrix = (matrix .+ matrix[:, indices]) ./ 2  # Vectorized computation
+    return symmetric_matrix
+end
 function remove_symmetric_part_reflection(matrix, x0)
     n = size(matrix, 1)
-    antisymmetric_matrix = copy(matrix)
-    for x in 1:n
-        for y in 1:n
-            antisymmetric_matrix[x, y] = (matrix[x, y] - matrix[x, mod1((2*x0-y),n)]) / 2
-        end
-    end
+    indices = mod1.(2 * x0 .- (1:n), n)  # Compute the reflected indices for each row
+    antisymmetric_matrix = (matrix .- matrix[:, indices]) ./ 2  # Vectorized computation
     return antisymmetric_matrix
-end
-function plot_summary(density,correlations,)
 end
 function plot_sweep(sweep,state,param; label="", plot_directional=false)
     normalized_dist = state.ρ_avg / sum(state.ρ_avg)
@@ -119,114 +119,199 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     end
     return p
 end
-
-function plot_data_colapse(states_params_names,power_n,indices, results_dir = "results_figures")
-    # initial_index = param.dims[1]÷10+1
-    # index_jump = 2
-    # end_index = param.dims[1]/4
-    # initial_index = 50
-    # index_jump = 1
-    # end_index = 60
+function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=false)
     n = power_n
-    # Create combined plot
-    p_combined = plot(title="Combined Data Collapse C(x,y)*y^$n",
-                     legend=:outerright,
-                     size=(1200,800))
     all_x = []
     all_y = []
-    
-    # Process each state individually first
+
+    p_combined = plot(title="Combined Data Collapse C(x,y)*y^$n", legend=:outerright, size=(1200,800))
+
     for (idx, (state, param, label)) in enumerate(states_params_names)
-        p_individual = plot(title="Data Collapse - $label",
-                          legend=:outerright,
-                          size=(1000,600))
         α = param.α
         γ′ = param.γ * param.N
-        state_x = []
-        state_y = []
-        
+
         L = param.dims[1]
         N = param.N
-        
+        # Setup output directories
+        full_dir = "$(results_dir)/full_data"
+        antisym_dir = "$(results_dir)/antisymmetric"
+        sym_dir = "$(results_dir)/symmetric"
+        mkpath(full_dir)
+        mkpath(antisym_dir)
+        mkpath(sym_dir)
+
+        p_full_combined = plot(title="Full Data Collapse - $label", legend=:outerright, size=(1000,600))
+        p_antisym_combined = plot(title="Antisymmetric Data Collapse - $label", legend=:outerright, size=(1000,600))
+        p_sym_combined = plot(title="Symmetric Data Collapse - $label", legend=:outerright, size=(1000,600))
+
         for i in indices
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-            corr_mat = (state.ρ_matrix_avg-outer_prod_ρ).+(N/L^2)
-            middle_spot = param.dims[1]÷2
-            point_to_look_at = Int(middle_spot+i)
-            
-            corr_mat_collapsed = corr_mat[:,point_to_look_at]
-            left_value = corr_mat_collapsed[point_to_look_at-1]
-            right_value = corr_mat_collapsed[point_to_look_at+1]
+            corr_mat = (state.ρ_matrix_avg - outer_prod_ρ) .+ (N / L^2)
+            middle_spot = L ÷ 2
+            point_to_look_at = Int(middle_spot + i)
+
+            corr_mat_collapsed = corr_mat[:, point_to_look_at]
+            left_value = corr_mat_collapsed[point_to_look_at - 1]
+            right_value = corr_mat_collapsed[point_to_look_at + 1]
             left_side = corr_mat_collapsed[1:point_to_look_at-1]
             right_side = corr_mat_collapsed[point_to_look_at+1:end]
-            full_data = vcat(left_side, [(left_value+right_value)/2], right_side)
-            
-            corr_mat_antisym = remove_symmetric_part_reflection(corr_mat,middle_spot)
+            full_data = vcat(left_side, [(left_value + right_value)/2], right_side)
 
-            #for antisymmetric only part
-            corr_mat_antisym[point_to_look_at,point_to_look_at] = (corr_mat_antisym[point_to_look_at,point_to_look_at+1]+corr_mat_antisym[point_to_look_at,point_to_look_at-1])/2
-            corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
-            # full_data=corr_mat_antisym[point_to_look_at,1:end]
-            #
+            corr_mat_antisym = remove_symmetric_part_reflection(corr_mat, middle_spot)
+            corr_mat_antisym[point_to_look_at, point_to_look_at] = (corr_mat_antisym[point_to_look_at, point_to_look_at + 1] + corr_mat_antisym[point_to_look_at, point_to_look_at - 1]) / 2
+            corr_mat_antisym[point_to_look_at, L - point_to_look_at] = (corr_mat_antisym[point_to_look_at, L - (point_to_look_at + 1)] + corr_mat_antisym[point_to_look_at, L - (point_to_look_at - 1)]) / 2
+            antisym_data = corr_mat_antisym[point_to_look_at, 1:end]
+
+            corr_mat_sym = remove_antisymmetric_part_reflection(corr_mat, middle_spot)
+            corr_mat_sym[point_to_look_at, point_to_look_at] = (corr_mat_sym[point_to_look_at, point_to_look_at + 1] + corr_mat_sym[point_to_look_at, point_to_look_at - 1]) / 2
+            corr_mat_sym[point_to_look_at, L - point_to_look_at] = (corr_mat_sym[point_to_look_at, L - (point_to_look_at + 1)] + corr_mat_sym[point_to_look_at, L - (point_to_look_at - 1)]) / 2
+            sym_data = corr_mat_sym[point_to_look_at, 1:end]
 
             x_positions = 1:length(full_data)
             x_scaled = (x_positions .- middle_spot) ./ (i)
-            y_scaled = full_data .* i^n
-            # y_scaled = full_data .* ((α*γ′)*i^2) 
-            
-            # Filter points within range
-            # mask = (-5 .<= x_scaled .<= 5)
-            # x_scaled = x_scaled[mask]
-            # y_scaled = y_scaled[mask]
-            
-            # Store points for individual and combined fitting
-            append!(state_x, x_scaled)
-            append!(state_y, y_scaled)
-            append!(all_x, x_scaled)
-            append!(all_y, y_scaled)
-            
-            # Plot data on both individual and combined plots
-            idx_sort = sortperm(x_scaled)
-           # ylims!(p_combined,-10^2,10^2)
-            plot!(p_individual, x_scaled[idx_sort], y_scaled[idx_sort], 
-                  label="y=$(i)", linewidth=2)
-            plot!(p_combined, x_scaled[idx_sort], y_scaled[idx_sort], 
-                  label="$(label) y=$(i)", linewidth=2)
-        end
-        
-        # Fit individual state data
-        f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
-        
-        p0 = [1.0, 0.0, 0.0]
-        # fit_individual = curve_fit(f, state_x, state_y, p0)
-        
-        # Add theoretical curve to individual plot
-        x_theory = range(-5, 5, length=1000)
-        # plot!(p_individual, x_theory, f(x_theory, fit_individual.param), 
-        #       label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
-        
-        # Save individual plot
-        savefig(p_individual, "$(results_dir)/data_collapse_$(label)_y^$(n).png")
-    end
-    
-    # Fit combined data
-    f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
-    p0 = [1.0, 0.0, 0.0]
-    # fit_combined = curve_fit(f, all_x, all_y, p0)
-    # println("Combined fit parameters: ", fit_combined.param)
 
-    # Add theoretical curve to combined plot
-    # x_theory = range(-5, 5, length=1000)
-    # plot!(p_combined, x_theory, f(x_theory, fit_combined.param), label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
-    
-    # Save combined plot
-    savefig(p_combined, "$(results_dir)/data_collapse_combined_y^$(n).png")
-    
-    # Display combined plot
+            for (data, p_combined_plot) in zip((full_data, antisym_data, sym_data), (p_full_combined, p_antisym_combined, p_sym_combined))
+                y_scaled = data .* i^n
+                mask = (-5 .<= x_scaled .<= 5)
+                x_filtered = x_scaled[mask]
+                y_filtered = y_scaled[mask]
+                plot!(p_combined_plot, x_filtered, y_filtered, label="y=$(i)", lw=2)
+            end
+
+            y_scaled = full_data .* i^n
+            mask = (-5 .<= x_scaled .<= 5)
+            x_filtered = x_scaled[mask]
+            y_filtered = y_scaled[mask]
+            append!(all_x, x_filtered)
+            append!(all_y, y_filtered)
+            plot!(p_combined, x_filtered, y_filtered, label="$(label) y=$(i)", linewidth=2)
+        end
+
+        savefig(p_full_combined, "$(full_dir)/data_collapse_$(n)_indices-$(indices).png")
+        savefig(p_antisym_combined, "$(antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
+        savefig(p_sym_combined, "$(sym_dir)/data_collapse_$(n)_indices-$(indices).png")
+    end
+
+    if do_fit
+        f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
+        p0 = [1.0, 0.0, 0.0]
+        fit_combined = curve_fit(f, all_x, all_y, p0)
+        x_theory = range(-5, 5, length=1000)
+        plot!(p_combined, x_theory, f(x_theory, fit_combined.param), 
+              label="Theoretical Fit", color=:black, linewidth=3, linestyle=:dash)
+    end
+
+    savefig(p_combined, joinpath(results_dir, "data_collapse_combined_y^$(n).png"))
     display(p_combined)
-    
     return p_combined
 end
+# function plot_data_colapse(states_params_names,power_n,indices, results_dir = "results_figures")
+#     # initial_index = param.dims[1]÷10+1
+#     # index_jump = 2
+#     # end_index = param.dims[1]/4
+#     # initial_index = 50
+#     # index_jump = 1
+#     # end_index = 60
+#     n = power_n
+#     # Create combined plot
+#     p_combined = plot(title="Combined Data Collapse C(x,y)*y^$n",
+#                      legend=:outerright,
+#                      size=(1200,800))
+#     all_x = []
+#     all_y = []
+    
+#     # Process each state individually first
+#     for (idx, (state, param, label)) in enumerate(states_params_names)
+#         p_individual = plot(title="Data Collapse - $label",
+#                           legend=:outerright,
+#                           size=(1000,600))
+#         α = param.α
+#         γ′ = param.γ * param.N
+#         state_x = []
+#         state_y = []
+        
+#         L = param.dims[1]
+#         N = param.N
+        
+#         for i in indices
+#             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+#             corr_mat = (state.ρ_matrix_avg-outer_prod_ρ).+(N/L^2)
+#             middle_spot = param.dims[1]÷2
+#             point_to_look_at = Int(middle_spot+i)
+            
+#             corr_mat_collapsed = corr_mat[:,point_to_look_at]
+#             left_value = corr_mat_collapsed[point_to_look_at-1]
+#             right_value = corr_mat_collapsed[point_to_look_at+1]
+#             left_side = corr_mat_collapsed[1:point_to_look_at-1]
+#             right_side = corr_mat_collapsed[point_to_look_at+1:end]
+#             full_data = vcat(left_side, [(left_value+right_value)/2], right_side)
+            
+#             corr_mat_antisym = remove_symmetric_part_reflection(corr_mat,middle_spot)
+
+#             #for antisymmetric only part
+#             corr_mat_antisym[point_to_look_at,point_to_look_at] = (corr_mat_antisym[point_to_look_at,point_to_look_at+1]+corr_mat_antisym[point_to_look_at,point_to_look_at-1])/2
+#             corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
+#             # full_data=corr_mat_antisym[point_to_look_at,1:end]
+#             #
+
+#             x_positions = 1:length(full_data)
+#             x_scaled = (x_positions .- middle_spot) ./ (i)
+#             y_scaled = full_data .* i^n
+#             # y_scaled = full_data .* ((α*γ′)*i^2) 
+            
+#             # Filter points within range
+#             # mask = (-5 .<= x_scaled .<= 5)
+#             # x_scaled = x_scaled[mask]
+#             # y_scaled = y_scaled[mask]
+            
+#             # Store points for individual and combined fitting
+#             append!(state_x, x_scaled)
+#             append!(state_y, y_scaled)
+#             append!(all_x, x_scaled)
+#             append!(all_y, y_scaled)
+            
+#             # Plot data on both individual and combined plots
+#             idx_sort = sortperm(x_scaled)
+#            # ylims!(p_combined,-10^2,10^2)
+#             plot!(p_individual, x_scaled[idx_sort], y_scaled[idx_sort], 
+#                   label="y=$(i)", linewidth=2)
+#             plot!(p_combined, x_scaled[idx_sort], y_scaled[idx_sort], 
+#                   label="$(label) y=$(i)", linewidth=2)
+#         end
+        
+#         # Fit individual state data
+#         f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
+        
+#         p0 = [1.0, 0.0, 0.0]
+#         # fit_individual = curve_fit(f, state_x, state_y, p0)
+        
+#         # Add theoretical curve to individual plot
+#         x_theory = range(-5, 5, length=1000)
+#         # plot!(p_individual, x_theory, f(x_theory, fit_individual.param), 
+#         #       label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
+        
+#         # Save individual plot
+#         savefig(p_individual, "$(results_dir)/data_collapse_$(label)_y^$(n).png")
+#     end
+    
+#     # Fit combined data
+#     f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
+#     p0 = [1.0, 0.0, 0.0]
+#     # fit_combined = curve_fit(f, all_x, all_y, p0)
+#     # println("Combined fit parameters: ", fit_combined.param)
+
+#     # Add theoretical curve to combined plot
+#     # x_theory = range(-5, 5, length=1000)
+#     # plot!(p_combined, x_theory, f(x_theory, fit_combined.param), label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
+    
+#     # Save combined plot
+#     savefig(p_combined, "$(results_dir)/data_collapse_combined_y^$(n).png")
+    
+#     # Display combined plot
+#     display(p_combined)
+    
+#     return p_combined
+# end
 function plot_spatial_correlation(spatial_corr, param)
     dim_num = length(param.dims)
     if dim_num == 1
