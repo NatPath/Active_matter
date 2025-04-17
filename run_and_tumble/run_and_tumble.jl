@@ -72,7 +72,7 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 64 
+    L= 32 
     return Dict(
         "dim_num" => 1,
         "D" => 1.0,
@@ -82,7 +82,7 @@ end
         "T" => 1.0,
         "γ′" => 1,
         "ϵ" => 0.0,
-        "n_sweeps" => 2*10^7,
+        "n_sweeps" => 8*10^3+1,
         "potential_type" => "smudge",
         "fluctuation_type" => "reflection",
         "potential_magnitude" => 16,
@@ -315,8 +315,8 @@ function main()
                 params = get_default_params()
             end
             defaults = get_default_params()
-            if haskey(args, "continue-sweeps") && !isnothing(args["continue-sweeps"])
-                n_sweeps = args["continue-sweeps"]
+            if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
+                n_sweeps = args["continue_sweeps"]
                 println("Continuing for specified $n_sweeps sweeps")
             else
                 n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
