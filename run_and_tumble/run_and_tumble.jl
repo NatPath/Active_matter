@@ -362,7 +362,7 @@ function main()
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
-            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng)
+            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng,true)
             state = FP.setState(0, rng, param, T, potential)
         end
         
