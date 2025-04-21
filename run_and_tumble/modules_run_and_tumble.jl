@@ -97,7 +97,7 @@ module FP
         return state
     end
 
-    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T; ϵ=0.6, ΔV_max=0.4)
+    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T; ϵ=0.0, ΔV_max=0.4)
         relative_direction = particle_direction*choice_direction
         
         p = D*min(1,exp(-(ΔV-relative_direction*ϵ)/T))
@@ -265,14 +265,16 @@ function compute_time_correlation(ρ_history)
     return corr
 end
 
-function update_and_compute_correlations!(state, param,  ρ_history, frame, rng, calc_correlations=false)
+function update_and_compute_correlations!(state, param,  ρ_history, frame, rng, calc_var_frequency=1000, calc_correlations=false)
     FP.update!( param, state, rng)
-    dim_num= length(param.dims)
-    if dim_num==1
-        state.ρ_avg = (state.ρ_avg * (frame-1)+state.ρ)/frame
-        ρ_matrix = state.ρ*transpose(state.ρ)
-        state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-1)+ρ_matrix)/frame
-        # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
+    if frame%calc_var_frequency==0
+    
+        dim_num= length(param.dims)
+        if dim_num==1
+            state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
+            ρ_matrix = state.ρ*transpose(state.ρ)
+            state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
+            # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
         if !calc_correlations
             return nothing, nothing
         else
@@ -282,19 +284,12 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
         end
         # spatial_corr = compute_spatial_correlation(zeros(size(state.ρ)))
         # time_corr = compute_spatial_correlation(zeros(size(ρ_history[:,1:frame])))
-    elseif dim_num==2
-        time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
-        if !calc_correlations
-            return nothing, nothing
+        elseif dim_num==2
+            time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
         else
-            ρ_history[:,:,frame] = state.ρ
-            spatial_corr = compute_spatial_correlation(state.ρ)
-            time_corr = compute_time_correlation(ρ_history[:,:,1:frame])
+            throw(DomainError("Invalid input - dimension not supported yet"))
         end
-    else
-        throw(DomainError("Invalid input - dimension not supported yet"))
     end
-    return spatial_corr, time_corr
 end
 
 
@@ -327,7 +322,7 @@ function run_simulation!(state, param, n_sweeps, rng;
     t_init = state.t+1
     t_end = t_init + n_sweeps-1
     for sweep in t_init:t_end
-        spatial_corr, time_corr = update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
+        update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
         # Save state at specified times
         if sweep in save_times
             save_dir = "saved_states"
@@ -360,7 +355,7 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
     
     # Initialize the animation
     anim = @animate for frame in 1:n_frame
-        spatial_corr, time_corr = update_and_compute_correlations!(state, param, ρ_history, frame, rng)
+        update_and_compute_correlations!(state, param, ρ_history, frame, rng)
         
         # Save state at specified times
         if frame in save_times
