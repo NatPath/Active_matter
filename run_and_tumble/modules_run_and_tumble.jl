@@ -275,15 +275,6 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
             ρ_matrix = state.ρ*transpose(state.ρ)
             state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
             # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
-        if !calc_correlations
-            return nothing, nothing
-        else
-            ρ_history[:,frame] = state.ρ
-            spatial_corr = compute_spatial_correlation(state.ρ)
-            time_corr = compute_time_correlation(ρ_history[:,1:frame])
-        end
-        # spatial_corr = compute_spatial_correlation(zeros(size(state.ρ)))
-        # time_corr = compute_spatial_correlation(zeros(size(ρ_history[:,1:frame])))
         elseif dim_num==2
             time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
         else
