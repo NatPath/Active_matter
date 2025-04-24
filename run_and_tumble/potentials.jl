@@ -69,7 +69,7 @@ module Potentials
     #     end
     # end
 
-    function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus",rng)
+    function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus",rng,plot_flag=false)
         if get(v_args,"multi",false)
             n = get(v_args,"n",2)
             base_args = deepcopy(v_args)
@@ -140,8 +140,10 @@ module Potentials
         else
             error("unsupported potential type : $v_string ")
         end
-        V_plot=plot(V)
-        display(V_plot)
+        if plot_flag
+            V_plot=plot(V)
+            display(V_plot)
+        end
         fluctuating_mask = zeros(Float64,dims)
         if fluctuation_type == "plus-minus"
             fluctuating_mask[middle] = -magnitude/2

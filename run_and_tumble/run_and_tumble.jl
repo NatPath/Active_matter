@@ -54,7 +54,7 @@ function parse_commandline()
     return parse_args(s)
 end
 # Estimate the total run time by running a sample of sweeps.
-function estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+@everywhere function estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
     println("Estimating run time using $sample_size sweeps...")
     # Clone the current state so that our sample does not affect the actual simulation.
     state_copy = deepcopy(state)
@@ -72,7 +72,11 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
+<<<<<<< HEAD
     L= 256 
+=======
+    L= 64 
+>>>>>>> 56bc72c6961d008a558fd145587feef14490e069
     return Dict(
         "dim_num" => 1,
         "D" => 1.0,
@@ -82,9 +86,15 @@ end
         "T" => 1.0,
         "γ′" => 1,
         "ϵ" => 0.0,
+<<<<<<< HEAD
         "n_sweeps" => 10^6,
         "potential_type" => "zero",
         "fluctuation_type" => "independent-points-discrete",
+=======
+        "n_sweeps" => 1*10^6+1000,
+        "potential_type" => "smudge",
+        "fluctuation_type" => "reflection",
+>>>>>>> 56bc72c6961d008a558fd145587feef14490e069
         "potential_magnitude" => 16,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],
@@ -174,7 +184,9 @@ end
     # potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
     # state = FP.setState(0, rng, param, T, potential)
     dummy_state = setDummyState(state,state.ρ_avg,state.ρ_matrix_avg,state.t)
-    
+    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    estimated_time_hours = estimated_time / 3600
+    println("Estimated run time for this simulation: $estimated_time_hours hours")
     # Run the simulation (calculating correlations).
     normalized_dist, corr_mat = run_simulation!(dummy_state, param, n_sweeps, rng;
                                                  calc_correlations=false,
@@ -234,7 +246,12 @@ end
     v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng)
     state = FP.setState(0, rng, param, T, potential)
-    
+   
+    #estimate run time
+    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    estimated_time_hours = estimated_time / 3600
+    println("Estimated run time for this simulation: $estimated_time_hours hours")
+
     # Run the simulation (calculating correlations).
     normalized_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
                                                  calc_correlations=false,
@@ -355,7 +372,7 @@ function main()
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
-            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng)
+            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng,true)
             state = FP.setState(0, rng, param, T, potential)
         end
         
