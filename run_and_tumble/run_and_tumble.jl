@@ -11,24 +11,28 @@ using Statistics
 using LsqFit 
 using LinearAlgebra
 using JLD2
-using TOML
+using YAML
 using ArgParse
 
 # First, on the main process, include all necessary files.
 include("potentials.jl")
 include("modules_run_and_tumble.jl")
 include("plot_utils.jl")
+include("save_utils.jl")
 using .FP
 using .PlotUtils
+using .SaveUtils
 
 # Ensure all worker processes load the same files and modules.
 @everywhere begin
-    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, TOML, ArgParse
+    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
     include("potentials.jl")
     include("modules_run_and_tumble.jl")
-    include("plot_utils.jl")
     using .FP
+    include("plot_utils.jl")
     using .PlotUtils
+    # include("save_utils.jl")
+    # using .SaveUtils
 end
 
 # Command-line parser with extended options for parallel runs.
@@ -67,6 +71,7 @@ end
     estimated_total = avg_time * n_sweeps
     println("Average time per sweep: $(round(avg_time, digits=4)) sec")
     println("Estimated total run time for $n_sweeps sweeps: $(round(estimated_total, digits=2)) sec")
+    flush(stdout)
     return estimated_total
 end
 
@@ -82,9 +87,9 @@ end
         "T" => 1.0,
         "γ′" => 1,
         "ϵ" => 0.0,
-        "n_sweeps" => 1*10^6+1000,
-        "potential_type" => "smudge",
-        "fluctuation_type" => "reflection",
+        "n_sweeps" => 1*10^6,
+        "potential_type" => "zero",
+        "fluctuation_type" => "independent-points-discrete",
         "potential_magnitude" => 16,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],
@@ -92,47 +97,6 @@ end
     )
 end
 
-function save_aggregation(agg_res,param,total_sweeps,save_dir)
-    mkpath(save_dir)
-    γ′ = param.γ * param.N
-    filename = @sprintf("%s/potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
-        save_dir,
-        param.potential_type,
-        param.potential_magnitude,
-        param.fluctuation_type,
-        param.ϵ,
-        param.dims[1],
-        param.ρ₀,
-        param.α,
-        γ′,
-        param.D,
-        state.t)
-    potential = state.potential 
-    @save filename state param potential
-    return filename
-end
-
-# Original save_state function.
-function save_state(state, param, save_dir)
-    mkpath(save_dir)
-    γ′ = param.γ * param.N
-    filename = @sprintf("%s/potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
-        save_dir,
-        param.potential_type,
-        param.potential_magnitude,
-        param.fluctuation_type,
-        param.ϵ,
-        param.dims[1],
-        param.ρ₀,
-        param.α,
-        γ′,
-        param.D,
-        state.t)
-    potential = state.potential 
-    @save filename state param potential
-    println("Saved a state to $filename")
-    return filename
-end
 
 # Function to set up and run one independent simulation.
 @everywhere function run_one_simulation_from_state(param, state, seed,n_sweeps)
@@ -189,7 +153,7 @@ function n_sweeps_from_args(args)
     defaults = get_default_params()
     if haskey(args, "config") && !isnothing(args["config"])
         println("Using configuration from file: $(args["config"])")
-        params = TOML.parsefile(args["config"])
+        params = YAML.load_file(args["config"])
     else
         println("No config file provided. Using default parameters.")
         params = get_default_params()
@@ -204,7 +168,7 @@ end
     defaults = get_default_params()
     if haskey(args, "config") && !isnothing(args["config"])
         println("Using configuration from file: $(args["config"])")
-        params = TOML.parsefile(args["config"])
+        params = YAML.load_file(args["config"])
     else
         println("No config file provided. Using default parameters.")
         params = get_default_params()
@@ -234,7 +198,7 @@ end
     # Initialize simulation parameters and state.
     param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
     v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
-    potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng)
+    potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng=rng)
     state = FP.setState(0, rng, param, T, potential)
    
     #estimate run time
@@ -264,7 +228,8 @@ function main()
             @load args["continue"] state param potential
             if haskey(args, "config") && !isnothing(args["config"])
                 println("Using configuration from file: $(args["config"])")
-                params = TOML.parsefile(args["config"])
+                params = YAML.load_file(args["config"])
+                # params = TOML.parsefile(args["config"])
             else
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
@@ -316,7 +281,8 @@ function main()
             @load args["continue"] state param potential
             if haskey(args, "config") && !isnothing(args["config"])
                 println("Using configuration from file: $(args["config"])")
-                params = TOML.parsefile(args["config"])
+                #params = TOML.parsefile(args["config"])
+                params = YAML.load_file(args["config"])
             else
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
@@ -334,7 +300,8 @@ function main()
         else
             if haskey(args, "config") && !isnothing(args["config"])
                 println("Using configuration from file: $(args["config"])")
-                params = TOML.parsefile(args["config"])
+                # params = TOML.parsefile(args["config"])
+                params = YAML.load_file(args["config"])
             else
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
@@ -362,7 +329,7 @@ function main()
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
-            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng,true)
+            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
             state = FP.setState(0, rng, param, T, potential)
         end
         
@@ -374,7 +341,7 @@ function main()
             println("\nSaving current state...")
             try
                 save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-                save_state(state, param, save_dir)
+                SaveUtils.save_state(state, param, save_dir)
                 println("State saved successfully")
             catch e
                 println("Error saving state: ", e)

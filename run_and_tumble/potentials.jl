@@ -23,7 +23,7 @@ module Potentials
         V::Vector{Float64}
         indices::Vector{Int}
         magnitude::Float64
-        is_gaussian::Bool
+        fluctuation_statistics::String
     end
 
     function setPotential(V, fluctuation_mask)
@@ -55,10 +55,12 @@ module Potentials
 
     function potential_update!(p::IndependentFluctuatingPoints, rng::AbstractRNG)
         for i in p.indices
-            if p.is_gaussian
+            if p.fluctuation_statistics == "gaussian"
                 p.V[i] = randn(rng,Float32) * p.magnitude
-            else
+            elseif p.fluctuation_statistics == "uniform"
                 p.V[i] = (2*rand(rng)-1) * p.magnitude
+            elseif p.fluctuation_statistics == "discrete"
+                p.V[i] = rand(rng,[-1,0,1]) * p.magnitude
             end
         end
     end
@@ -69,7 +71,7 @@ module Potentials
     #     end
     # end
 
-    function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus",rng,plot_flag=false)
+    function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus",rng, plot_flag=false)
         if get(v_args,"multi",false)
             n = get(v_args,"n",2)
             base_args = deepcopy(v_args)
@@ -152,18 +154,24 @@ module Potentials
             fluctuating_mask = -V
         elseif fluctuation_type == "reflection"
             fluctuating_mask =  -2*V
-        elseif fluctuation_type == "independent-points"
-            points_indices = get(v_args, "points_indices", [L÷2-1,L÷2,L÷2+1])
+        elseif fluctuation_type == "independent-points-discrete"
+            points_indices = get(v_args, "points_indices", [L÷2-1,L÷2+1])
+            for i in points_indices
+                V[i] = rand(rng,[-1,1]) * magnitude
+            end
+            return IndependentFluctuatingPoints(V, points_indices, magnitude,"discrete")
+        elseif fluctuation_type == "independent-points-uniform"
+            points_indices = get(v_args, "points_indices", [L÷2-1,L÷2+1])
             for i in points_indices
                 V[i] = (2*rand(rng)-1) * magnitude
             end
-            return IndependentFluctuatingPoints(V, points_indices, magnitude,false)
+            return IndependentFluctuatingPoints(V, points_indices, magnitude,"uniform")
         elseif fluctuation_type == "independent-points-gaussian"
             points_indices = get(v_args, "points_indices", [L÷2-1,L÷2+1])
             for i in points_indices
                 V[i] = randn(rng,Float32) * magnitude
             end
-            return IndependentFluctuatingPoints(V, points_indices, magnitude,true)
+            return IndependentFluctuatingPoints(V, points_indices, magnitude,"gaussian")
         end
         
         if boundary_walls
