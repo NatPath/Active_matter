@@ -59,7 +59,9 @@ module Potentials
                 p.V[i] = randn(rng,Float32) * p.magnitude
             elseif p.fluctuation_statistics == "uniform"
                 p.V[i] = (2*rand(rng)-1) * p.magnitude
-            elseif p.fluctuation_statistics == "discrete"
+            elseif p.fluctuation_statistics == "discrete_wo_0"
+                p.V[i] = rand(rng,[-1,1]) * p.magnitude
+            elseif p.fluctuation_statistics == "discrete_with_0"
                 p.V[i] = rand(rng,[-1,0,1]) * p.magnitude
             end
         end
@@ -160,6 +162,18 @@ module Potentials
                 V[i] = rand(rng,[-1,1]) * magnitude
             end
             return IndependentFluctuatingPoints(V, points_indices, magnitude,"discrete")
+        elseif fluctuation_type == "independent-points-discrete_wo_0"
+            points_indices = get(v_args, "points_indices", [L÷2-1,L÷2+1])
+            for i in points_indices
+                V[i] = rand(rng,[-1,1]) * magnitude
+            end
+            return IndependentFluctuatingPoints(V, points_indices, magnitude,"discrete")
+        elseif fluctuation_type == "independent-points-discrete_with_0"
+            points_indices = get(v_args, "points_indices", [L÷2-1,L÷2+1])
+            for i in points_indices
+                V[i] = rand(rng,[-1,0,1]) * magnitude
+            end
+            return IndependentFluctuatingPoints(V, points_indices, magnitude,"discrete_with_0")
         elseif fluctuation_type == "independent-points-uniform"
             points_indices = get(v_args, "points_indices", [L÷2-1,L÷2+1])
             for i in points_indices
