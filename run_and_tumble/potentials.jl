@@ -1,7 +1,7 @@
 module Potentials
     import Random: AbstractRNG
     using Plots
-    export AbstractPotential ,Potential, MultiPotential 
+    export AbstractPotential ,Potential, MultiPotential, IndependentFluctuatingPoints, ProfileSwitchPotential
     export potential_args, choose_potential, potential_update!
 
     # Abstract type for polymorphism
@@ -26,6 +26,26 @@ module Potentials
         fluctuation_statistics::String
     end
 
+    mutable struct ProfileSwitchPotential <: AbstractPotential
+        potentials::Vector{Potential}
+        probabilities::Vector{Float64}
+        V::Vector{Float64}
+        current::Int
+    end
+    # Utility: weighted sampling without dependencies
+    function weighted_sample(rng::AbstractRNG, weights::Vector{Float64})
+        total = sum(weights)
+        r = rand(rng) * total
+        cum = 0.0
+        for (i, w) in enumerate(weights)
+            cum += w
+            if r <= cum
+                return i
+            end
+        end
+        return length(weights)
+    end
+
     function setPotential(V, fluctuation_mask)
         return Potential(V, fluctuation_mask, 1)
     end
@@ -33,6 +53,13 @@ module Potentials
 
     function setMultiPotential(potentials::Vector{Potential})
         return MultiPotential(potentials)
+    end
+
+    function setProfileSwitchPotential(pots::Vector{Potential}; probs=nothing, rng::AbstractRNG)
+        n = length(pots)
+        probabilities = probs === nothing ? fill(1/n, n) : probs
+        idx = weighted_sample(rng, probabilities)
+        return ProfileSwitchPotential(pots, probabilities, deepcopy(pots[idx].V),idx)
     end
 
     function potential_update!(p::Potential)
@@ -67,6 +94,16 @@ module Potentials
         end
     end
 
+    function potential_update!(p::ProfileSwitchPotential)
+        error("ProfileSwitchPotential requires an RNG. Use potential_update!(p, rng).")
+    end
+
+    function potential_update!(p::ProfileSwitchPotential, rng::AbstractRNG)
+        # Randomly switch to a new profile
+        p.current = weighted_sample(rng, p.probabilities)
+        p.V = deepcopy(p.potentials[p.current].V)
+    end
+
     # function potential_update!(p::IndependentFluctuatingPointsGaussian, rng::AbstractRNG)
     #     for i in p.indices
     #         p.V[i] = (2*rand(rng)-1) * p.magnitude
@@ -74,6 +111,14 @@ module Potentials
     # end
 
     function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus",rng, plot_flag=false)
+        # if get(v_args, "fluctuation_type", "") == "profile_switch"
+        #     profiles = get(v_args, "profiles", error("'profiles' key required for profile_switch"))
+        #     probs    = get(v_args, "profile_probs", nothing)
+        #     pots = [choose_potential(pa, dims; boundary_walls=boundary_walls, fluctuation_type="zero-potential", rng=rng)
+        #             for pa in profiles]
+        #     println("did you get here?")
+        #     return setProfileSwitchPotential(pots; probs=probs, rng=rng)
+        # end
         if get(v_args,"multi",false)
             n = get(v_args,"n",2)
             base_args = deepcopy(v_args)
@@ -101,6 +146,18 @@ module Potentials
             location = v_args["location"]
             V[location] = magnitude
             V[location-1] = magnitude/2
+        elseif v_string == "minus_smudge"
+            location = v_args["location"]
+            V[location] = -magnitude
+            V[location-1] = -magnitude/2
+        elseif v_string == "left_smudge"
+            location = v_args["location"]
+            V[location-1] = magnitude
+            V[location] = magnitude/2
+        elseif v_string == "left_minus_smudge"
+            location = v_args["location"]
+            V[location-1] = -magnitude
+            V[location] = -magnitude/2
         elseif v_string == "2ratchet"
             location = v_args["location"]
             V[location+2] = magnitude
@@ -186,6 +243,16 @@ module Potentials
                 V[i] = randn(rng,Float32) * magnitude
             end
             return IndependentFluctuatingPoints(V, points_indices, magnitude,"gaussian")
+        elseif fluctuation_type == "profile_switch"
+            profiles = get(v_args, "potentials_profiles", "NoProfiles")
+            if profiles=="NoProfiles"
+                error("'potentials_profiles' key required for profile_switch")
+            end
+            probs    = get(v_args, "profile_probs", nothing)
+            pots = [choose_potential(pa, dims; boundary_walls=boundary_walls, fluctuation_type="zero-potential", rng=rng)
+                    for pa in profiles]
+            println("did you get here?")
+            return setProfileSwitchPotential(pots; probs=probs, rng=rng)
         end
         
         if boundary_walls
@@ -202,11 +269,14 @@ module Potentials
         display(plot(exp_expression/sum(exp_expression)))
     end
 
-    function potential_args(v_string, dims; magnitude = 0.4)
+    function potential_args(v_string, dims; magnitude = 0.4, simple=false)
         L = dims[1]
         v_well_args = Dict("type"=>"well", "width"=>1, "magnitude"=> magnitude)
         v_zero_args = Dict("type"=>"zero")
         v_smudge_args = Dict("type"=>"smudge","location" => L÷2 , "magnitude" => magnitude)
+        v_left_smudge_args = Dict("type"=>"left_smudge","location" => L÷2 , "magnitude" => magnitude)
+        v_minus_smudge_args = Dict("type"=>"minus_smudge","location" => L÷2 , "magnitude" => magnitude)
+        v_left_minus_smudge_args = Dict("type"=>"left_minus_smudge","location" => L÷2 , "magnitude" => magnitude)
         v_2ratchet_args = Dict("type"=>"2ratchet","location" => L÷2 , "magnitude" => magnitude)
         v_extended_smudge_args = Dict("type"=>"smudge","location" => L÷2 ,"length" => 5, "magnitude" => magnitude)
         v_modified_smudge_args = Dict("type"=>"modified_smudge","location" => L÷2 , "magnitude" => magnitude)
@@ -215,12 +285,22 @@ module Potentials
         v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center"=> L÷2)
         v_periodic_args = Dict("type"=>"periodic", "period" => L÷4, "magnitude"=>magnitude, "phase"=> L÷2)
         v_random_args = Dict("type"=>"random", "scale"=>magnitude )
+        if !simple
+            v_ratchet_PmLr = Dict("type"=>"zero","potentials_profiles"=>[potential_args("smudge",dims;magnitude=magnitude,simple=true),potential_args("left_smudge",dims;magnitude=magnitude,simple=true),potential_args("minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true)])
+        end
+
         if v_string== "well"
             return v_well_args
         elseif v_string=="zero"
             return v_zero_args
         elseif v_string == "smudge"
             return v_smudge_args
+        elseif v_string == "left_smudge"
+            return v_left_smudge_args
+        elseif v_string == "minus_smudge"
+            return v_minus_smudge_args
+        elseif v_string == "left_minus_smudge"
+            return v_left_minus_smudge_args
         elseif v_string =="2ratchet"
             return v_2ratchet_args
         elseif v_string =="modified_smudge"
@@ -235,6 +315,8 @@ module Potentials
             return v_periodic_args
         elseif v_string == "random"
             return v_random_args
+        elseif v_string == "ratchet_PmLr"
+            return v_ratchet_PmLr
         else
             error("unsupported V string")
         end
