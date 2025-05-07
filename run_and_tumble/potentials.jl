@@ -43,6 +43,7 @@ module Potentials
                 return i
             end
         end
+        println("if you got here, something is wrong")
         return length(weights)
     end
 
@@ -109,6 +110,14 @@ module Potentials
     #         p.V[i] = (2*rand(rng)-1) * p.magnitude
     #     end
     # end
+    function check_potential_switch(potential,rng)
+        counts= zeros(Int,length(potential.potentials))
+        for step in 1:10^9
+            potential_update!(potential,rng)
+            counts[potential.current]+=1
+        end
+        println("Profile frequencies: ", counts ./ sum(counts))
+    end
 
     function choose_potential(v_args,dims; boundary_walls= false, fluctuation_type="plus-minus",rng, plot_flag=false)
         # if get(v_args, "fluctuation_type", "") == "profile_switch"
@@ -251,8 +260,9 @@ module Potentials
             probs    = get(v_args, "profile_probs", nothing)
             pots = [choose_potential(pa, dims; boundary_walls=boundary_walls, fluctuation_type="zero-potential", rng=rng)
                     for pa in profiles]
-            println("did you get here?")
-            return setProfileSwitchPotential(pots; probs=probs, rng=rng)
+            potential = setProfileSwitchPotential(pots; probs=probs, rng=rng)
+            #check_potential_switch(potential,rng)
+            return potential
         end
         
         if boundary_walls
@@ -287,6 +297,7 @@ module Potentials
         v_random_args = Dict("type"=>"random", "scale"=>magnitude )
         if !simple
             v_ratchet_PmLr = Dict("type"=>"zero","potentials_profiles"=>[potential_args("smudge",dims;magnitude=magnitude,simple=true),potential_args("left_smudge",dims;magnitude=magnitude,simple=true),potential_args("minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true)])
+            #v_ratchet_PmLr = Dict("type"=>"zero","potentials_profiles"=>[potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("minus_smudge",dims;magnitude=magnitude,simple=true)])
         end
 
         if v_string== "well"

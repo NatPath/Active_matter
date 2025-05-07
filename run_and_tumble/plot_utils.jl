@@ -120,7 +120,7 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     end
     return p
 end
-function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=false)
+function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true)
     n = power_n
     all_x = []
     all_y = []
@@ -141,9 +141,9 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
         mkpath(antisym_dir)
         mkpath(sym_dir)
 
-        p_full_combined = plot(title="Full Data Collapse - $label", legend=:outerright, size=(1000,600))
-        p_antisym_combined = plot(title="Antisymmetric Data Collapse - $label", legend=:outerright, size=(1000,600))
-        p_sym_combined = plot(title="Symmetric Data Collapse - $label", legend=:outerright, size=(1000,600))
+        p_full_combined = plot(title="Full Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+        p_antisym_combined = plot(title="Antisymmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+        p_sym_combined = plot(title="Symmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
 
         for i in indices
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
