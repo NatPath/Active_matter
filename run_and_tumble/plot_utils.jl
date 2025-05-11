@@ -121,11 +121,11 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     return p
 end
 function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true)
-    n = power_n
+    n = Float64(power_n)
     all_x = []
     all_y = []
 
-    p_combined = plot(title="Combined Data Collapse C(x,y)*y^$n", legend=:outerright, size=(1200,800))
+    p_combined = plot(title="Combined Data Collapse f(x/y)=C(x,y)⋅y^$n", legend=:outerright, size=(1200,800))
 
     for (idx, (state, param, label)) in enumerate(states_params_names)
         α = param.α
@@ -141,9 +141,9 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
         mkpath(antisym_dir)
         mkpath(sym_dir)
 
-        p_full_combined = plot(title="Full Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-        p_antisym_combined = plot(title="Antisymmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-        p_sym_combined = plot(title="Symmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+        p_full_combined = plot(title="Full Data Collapse - f(x/y)=C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+        p_antisym_combined = plot(title="Antisymmetric Data Collapse - f(x/y)=C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+        p_sym_combined = plot(title="Symmetric Data Collapse - f(x/y)=C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
 
         for i in indices
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
@@ -177,6 +177,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 x_filtered = x_scaled[mask]
                 y_filtered = y_scaled[mask]
                 plot!(p_combined_plot, x_filtered, y_filtered, label="y=$(i)", lw=2)
+
             end
 
             y_scaled = full_data .* i^n
