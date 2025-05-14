@@ -182,11 +182,15 @@ module Potentials
             V[middle] = magnitude
         elseif v_string == "linear"
             m = v_args["slope"]
-            b = v_args["shift"]
-            linear_potential(m,b,x)= m*x.+b
-            V = linear_potential(m,b,x)
-
+            shift = v_args["shift"]
+            b = v_args["b"]
+            cut_at = v_args["cut_at"]
+            linear_potential(m,b,x)= m*(x.-shift).+b
+            # V = collect(linear_potential(m,b,x))
+            V[abs.(x.-shift) .> cut_at] .= 0
+            V[abs.(x.-shift) .<= cut_at] .= linear_potential(m, b, x[abs.(x.-shift) .<= cut_at])
             magnitude = m*L+b
+            print(V)
         elseif v_string == "harmonic"
             k = v_args["k"]
             m_sign = v_args["m_sign"]
@@ -279,24 +283,33 @@ module Potentials
         display(plot(exp_expression/sum(exp_expression)))
     end
 
-    function potential_args(v_string, dims; magnitude = 0.4, simple=false)
+    function potential_args(v_string, dims; magnitude = 0.4, simple=false,displacement = 0,cut_at=10^4)
         L = dims[1]
         v_well_args = Dict("type"=>"well", "width"=>1, "magnitude"=> magnitude)
         v_zero_args = Dict("type"=>"zero")
-        v_smudge_args = Dict("type"=>"smudge","location" => L÷2 , "magnitude" => magnitude)
-        v_left_smudge_args = Dict("type"=>"left_smudge","location" => L÷2 , "magnitude" => magnitude)
-        v_minus_smudge_args = Dict("type"=>"minus_smudge","location" => L÷2 , "magnitude" => magnitude)
-        v_left_minus_smudge_args = Dict("type"=>"left_minus_smudge","location" => L÷2 , "magnitude" => magnitude)
-        v_2ratchet_args = Dict("type"=>"2ratchet","location" => L÷2 , "magnitude" => magnitude)
-        v_extended_smudge_args = Dict("type"=>"smudge","location" => L÷2 ,"length" => 5, "magnitude" => magnitude)
-        v_modified_smudge_args = Dict("type"=>"modified_smudge","location" => L÷2 , "magnitude" => magnitude)
-        v_delta_args = Dict("type"=>"delta", "location" => L÷2, "magnitude"=>10^0*magnitude)
-        v_linear_args = Dict("type"=> "linear", "slope" => 1, "shift"=>0)
+        v_smudge_args = Dict("type"=>"smudge","location" => L÷2+displacement , "magnitude" => magnitude)
+        v_left_smudge_args = Dict("type"=>"left_smudge","location" => L÷2+displacement , "magnitude" => magnitude)
+        v_minus_smudge_args = Dict("type"=>"minus_smudge","location" => L÷2+displacement , "magnitude" => magnitude)
+        v_left_minus_smudge_args = Dict("type"=>"left_minus_smudge","location" => L÷2+displacement , "magnitude" => magnitude)
+        v_2ratchet_args = Dict("type"=>"2ratchet","location" => L÷2+displacement, "magnitude" => magnitude)
+        v_extended_smudge_args = Dict("type"=>"smudge","location" => L÷2+displacement,"length" => 5, "magnitude" => magnitude)
+        v_modified_smudge_args = Dict("type"=>"modified_smudge","location" => L÷2+displacement , "magnitude" => magnitude)
+        v_delta_args = Dict("type"=>"delta", "location" => L÷2+displacement, "magnitude"=>10^0*magnitude)
+        v_linear_args = Dict("type"=> "linear", "slope" => magnitude, "shift"=>L÷2+displacement,"b"=>0, "cut_at"=>cut_at)
         v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center"=> L÷2)
         v_periodic_args = Dict("type"=>"periodic", "period" => L÷4, "magnitude"=>magnitude, "phase"=> L÷2)
         v_random_args = Dict("type"=>"random", "scale"=>magnitude )
         if !simple
             v_ratchet_PmLr = Dict("type"=>"zero","potentials_profiles"=>[potential_args("smudge",dims;magnitude=magnitude,simple=true),potential_args("left_smudge",dims;magnitude=magnitude,simple=true),potential_args("minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true)])
+            v_ratchet_PmLr_mini = Dict("type"=>"zero","potentials_profiles"=>[potential_args("smudge",dims;magnitude=magnitude,simple=true),potential_args("left_smudge",dims;magnitude=magnitude,simple=true),potential_args("minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true)])
+            v_ratchet_mLmR = Dict("type"=>"zero","potentials_profiles"=>[potential_args("minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true)])
+            v_ratchet_pLpR = Dict("type"=>"zero","potentials_profiles"=>[potential_args("smudge",dims;magnitude=magnitude,simple=true),potential_args("left_smudge",dims;magnitude=magnitude,simple=true)])
+            v_ratchet_pLpR_gap = Dict("type"=>"zero","potentials_profiles"=>[potential_args("smudge",dims;magnitude=magnitude,simple=true,displacement=1),potential_args("left_smudge",dims;magnitude=magnitude,simple=true,displacement=-1)])
+            v_ratchet_mLmR_gap = Dict("type"=>"zero","potentials_profiles"=>[potential_args("minus_smudge",dims;magnitude=magnitude,simple=true,displacement=1),potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true,displacement=-1)])
+            v_linear_slides_cut1 = Dict("type"=>"zero","potentials_profiles"=>[potential_args("linear",dims;magnitude=magnitude,simple=true,cut_at=1),potential_args("linear",dims;magnitude=-magnitude,simple=true,cut_at=1)])
+            v_linear_slides_cut2 = Dict("type"=>"zero","potentials_profiles"=>[potential_args("linear",dims;magnitude=magnitude,simple=true,cut_at=2),potential_args("linear",dims;magnitude=-magnitude,simple=true,cut_at=2)])
+            v_linear_slides_cut3 = Dict("type"=>"zero","potentials_profiles"=>[potential_args("linear",dims;magnitude=magnitude,simple=true,cut_at=3),potential_args("linear",dims;magnitude=-magnitude,simple=true,cut_at=3)])
+            
             #v_ratchet_PmLr = Dict("type"=>"zero","potentials_profiles"=>[potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("minus_smudge",dims;magnitude=magnitude,simple=true)])
         end
 
@@ -328,6 +341,18 @@ module Potentials
             return v_random_args
         elseif v_string == "ratchet_PmLr"
             return v_ratchet_PmLr
+        elseif v_string == "ratchet_mLmR"
+            return v_ratchet_mLmR
+        elseif v_string == "ratchet_pLpR"
+            return v_ratchet_pLpR
+        elseif v_string == "ratchet_mLmR_gap"
+            return v_ratchet_mLmR_gap
+        elseif v_string == "linear_slides_cut1"
+            return v_linear_slides_cut1
+        elseif v_string == "linear_slides_cut2"
+            return v_linear_slides_cut2
+        elseif v_string == "linear_slides_cut3"
+            return v_linear_slides_cut3
         else
             error("unsupported V string")
         end

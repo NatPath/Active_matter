@@ -57,6 +57,7 @@ module FP
         ρ::Array{Int64}      # density field
         ρ₊::Array{Int64}      # density field
         ρ₋::Array{Int64}      # density field
+        #ρ_polarization_arr::Array{Int64}
         ρ_avg::Array{Float64} #time averaged density field
         ρ_matrix_avg::Array{Float64}
         T::Float64                      # temperature
@@ -64,10 +65,13 @@ module FP
         potential::AbstractPotential
 
     end
+
     function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg, t)
         dummy_state = State(t, state_to_imitate.particles, state_to_imitate.ρ,state_to_imitate.ρ₊,state_to_imitate.ρ₋, ρ_avg, ρ_matrix_avg, state_to_imitate.T, state_to_imitate.potential)
+        #dummy_state = State(t, state_to_imitate.particles, state_to_imitate.ρ,state_to_imitate.ρ₊,state_to_imitate.ρ₋, state_to_imitate.ρ_polarization_arr, ρ_avg, ρ_matrix_avg, state_to_imitate.T, state_to_imitate.potential)
         return dummy_state
     end
+
     function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims),zeros(Float64,param.dims)))
         N = param.N
         # initialize particles
@@ -152,6 +156,27 @@ module FP
                     p_candidate=α
                 elseif action_index==4
                     p_candidate=γ
+                elseif action_index==5  # tumble
+                    # Choose a random direction (including the current one)
+                    possible_directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]  # Unit vectors in 2D
+                    new_direction = rand(rng, possible_directions)
+
+                    # Update densities for the old direction
+                    if particle.direction[1] == 1
+                        state.ρ₊[spot_indices...] -= 1
+                    elseif particle.direction[1] == -1
+                        state.ρ₋[spot_indices...] -= 1
+                    end
+
+                    # Update the particle's direction
+                    particle.direction = new_direction
+
+                    # Update densities for the new direction
+                    if particle.direction[1] == 1
+                        state.ρ₊[spot_indices...] += 1
+                    elseif particle.direction[1] == -1
+                        state.ρ₋[spot_indices...] += 1
+                    end
                 else
                     p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T; ϵ=param.ϵ)
                 end
@@ -189,9 +214,98 @@ module FP
             end
             state.t += Δt
             
+        elseif length(param.dims) == 2
+            V = state.potential.V
+            T = state.T
+            α = param.α
+            γ = param.γ
+            Δt = 1
+            t_end = state.t + Δt
+            t = state.t
+            while t < t_end
+                n_and_a = rand(rng, 1:6*param.N)  # 6 actions: left, right, up, down, tumble, fluctuate
+                action_index = mod1(n_and_a, 6)
+                n = (n_and_a - action_index) ÷ 6 + 1
+                particle = state.particles[n]
+                spot_indices = particle.position
+                spot_horizontal_index = spot_indices[1]
+                spot_vertical_index = spot_indices[2]
+
+                # Calculate neighboring indices
+                left_index = (mod1(spot_horizontal_index - 1, param.dims[1]), spot_vertical_index)
+                right_index = (mod1(spot_horizontal_index + 1, param.dims[1]), spot_vertical_index)
+                down_index = (spot_horizontal_index, mod1(spot_vertical_index - 1, param.dims[2]))
+                up_index = (spot_horizontal_index, mod1(spot_vertical_index + 1, param.dims[2]))
+
+                state.ρ[spot_indices...] -= 1
+
+                candidate_spot_index = spot_indices
+                choice_direction = (0, 0)
+
+                # Determine action
+                if action_index == 1  # left
+                    candidate_spot_index = left_index
+                    choice_direction = (-1, 0)
+                elseif action_index == 2  # right
+                    candidate_spot_index = right_index
+                    choice_direction = (1, 0)
+                elseif action_index == 3  # down
+                    candidate_spot_index = down_index
+                    choice_direction = (0, -1)
+                elseif action_index == 4  # up
+                    candidate_spot_index = up_index
+                    choice_direction = (0, 1)
+                elseif action_index == 5  # tumble
+                    p_candidate = α
+                elseif action_index == 6  # fluctuate potential
+                    p_candidate = γ
+                else
+                    p_candidate = calculate_jump_probability(
+                        particle.direction, choice_direction, param.D,
+                        V[candidate_spot_index...] - V[spot_indices...], T; ϵ = param.ϵ
+                    )
+                end
+
+                if action_index <= 4
+                    p_candidate = calculate_jump_probability(
+                        particle.direction, choice_direction, param.D,
+                        V[candidate_spot_index...] - V[spot_indices...], T; ϵ = param.ϵ
+                    )
+                end
+
+                p_stay = 1 - p_candidate
+                p_arr = [p_candidate, p_stay]
+                choice = tower_sampling(p_arr, sum(p_arr), rng)
+
+                if choice == 1
+                    particle.position = candidate_spot_index
+
+                    if particle.direction[1] == 1
+                        state.ρ₊[spot_indices...] -= 1
+                        state.ρ₊[candidate_spot_index...] += 1
+                    elseif particle.direction[1] == -1
+                        state.ρ₋[spot_indices...] -= 1
+                        state.ρ₋[candidate_spot_index...] += 1
+                    end
+
+                    if action_index == 5  # tumble
+                        state.ρ₊[spot_indices...] -= particle.direction[1]
+                        state.ρ₋[spot_indices...] += particle.direction[1]
+                        particle.direction[1] *= -1
+                    end
+
+                    if action_index == 6  # fluctuate potential
+                        potential_update!(state.potential, rng)
+                    end
+                end
+
+                state.ρ[particle.position...] += 1
+                t += 1 / param.N
+            end
         else
             throw(DomainError("Invalid input - dimension not supported yet"))
         end
+        state.t += Δt
 
     end
 
@@ -311,6 +425,9 @@ function run_simulation!(state, param, n_sweeps, rng;
     # Initialize the animation
     t_init = state.t+1
     t_end = t_init + n_sweeps-1
+
+    #V statistics
+    # counts = zeros(Int,length(state.potential.potentials))
     for sweep in t_init:t_end
         update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
         # Save state at specified times

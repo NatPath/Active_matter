@@ -77,7 +77,7 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 32 
+    L= 64 
     return Dict(
         "dim_num" => 1,
         "D" => 1.0,
@@ -88,7 +88,7 @@ end
         "γ′" => 1,
         "ϵ" => 0.0,
         "n_sweeps" => 1*10^6,
-        "potential_type" => "ratchet_PmLr",
+        "potential_type" => "linear_slides_cut1",
         "fluctuation_type" => "profile_switch",
         "potential_magnitude" => 16,
         "save_dir" => "saved_states",
@@ -330,6 +330,7 @@ function main()
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
+            
             state = FP.setState(0, rng, param, T, potential)
         end
         
