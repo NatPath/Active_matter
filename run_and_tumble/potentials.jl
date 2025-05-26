@@ -191,6 +191,7 @@ module Potentials
             V[abs.(x.-shift) .<= cut_at] .= linear_potential(m, b, x[abs.(x.-shift) .<= cut_at])
             magnitude = m*L+b
             print(V)
+            
         elseif v_string == "harmonic"
             k = v_args["k"]
             m_sign = v_args["m_sign"]
@@ -295,7 +296,7 @@ module Potentials
         v_extended_smudge_args = Dict("type"=>"smudge","location" => L÷2+displacement,"length" => 5, "magnitude" => magnitude)
         v_modified_smudge_args = Dict("type"=>"modified_smudge","location" => L÷2+displacement , "magnitude" => magnitude)
         v_delta_args = Dict("type"=>"delta", "location" => L÷2+displacement, "magnitude"=>10^0*magnitude)
-        v_linear_args = Dict("type"=> "linear", "slope" => magnitude, "shift"=>L÷2+displacement,"b"=>0, "cut_at"=>cut_at)
+        v_linear_args = Dict("type"=> "linear", "slope" => magnitude, "shift"=>(L+1)÷2+displacement,"b"=>0, "cut_at"=>cut_at)
         v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center"=> L÷2)
         v_periodic_args = Dict("type"=>"periodic", "period" => L÷4, "magnitude"=>magnitude, "phase"=> L÷2)
         v_random_args = Dict("type"=>"random", "scale"=>magnitude )
@@ -345,6 +346,8 @@ module Potentials
             return v_ratchet_mLmR
         elseif v_string == "ratchet_pLpR"
             return v_ratchet_pLpR
+        elseif v_string == "ratchet_pLpR_gap"
+            return v_ratchet_pLpR_gap
         elseif v_string == "ratchet_mLmR_gap"
             return v_ratchet_mLmR_gap
         elseif v_string == "linear_slides_cut1"
