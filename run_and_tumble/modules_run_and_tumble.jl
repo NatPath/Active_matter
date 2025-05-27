@@ -54,12 +54,12 @@ module FP
         t::Int64 # time
         #pos::Array{Int64, 1+dim_num}    # position vector
         particles::Array{Particle}
-        ρ::Array{Int64}      # density field
-        ρ₊::Array{Int64}      # density field
-        ρ₋::Array{Int64}      # density field
+        ρ::AbstractArray{Int64}      # density field
+        ρ₊::AbstractArray{Int64}      # density field
+        ρ₋::AbstractArray{Int64}      # density field
         #ρ_polarization_arr::Array{Int64}
-        ρ_avg::Array{Float64} #time averaged density field
-        ρ_matrix_avg::Array{Float64}
+        ρ_avg::AbstractArray{Float64} #time averaged density field
+        ρ_matrix_avg::AbstractArray{Float64}
         T::Float64                      # temperature
         # V::Array{Float64}      # potential
         potential::AbstractPotential
@@ -72,6 +72,51 @@ module FP
         return dummy_state
     end
 
+    function populate_densities!(
+        ρ::AbstractArray{<:Integer},
+        ρ₊::AbstractArray{<:Integer},
+        ρ₋::AbstractArray{<:Integer},
+        particles::AbstractVector{Particle}
+    )
+        fill!(ρ,  0)
+        fill!(ρ₊, 0)
+        fill!(ρ₋, 0)
+    
+        for p in particles
+            pos = CartesianIndex(p.position...)            # CartesianIndex
+            ρ[pos] += 1
+            if p.direction[1] > 0
+                ρ₊[pos] += 1
+            elseif p.direction[1] < 0
+                ρ₋[pos] += 1
+            end
+        end
+    end
+
+    """
+    outer_density_2D(ρ::AbstractMatrix{T}) where T<:Number
+
+    Return the 4D tensor C[i,j,k,ℓ] = ρ[i,j] * ρ[k,ℓ], laid out
+    as an Array of size (Nx, Ny, Nx, Ny).
+    Internally does the vec–outer–reshape trick.
+    """
+    function outer_density_2D(ρ::AbstractMatrix{T}) where T<:Number
+        Nx, Ny = size(ρ)
+        v = vec(ρ)                  # length N = Nx*Ny
+        M = v * v'                  # N×N outer product
+        # reshape to a 4D Array (i,j,k,ℓ)
+        return reshape(M, Nx, Ny, Nx, Ny)
+    end
+
+    function full_corr_tensor(ρ::AbstractMatrix{T}) where T<:Number
+        Nx, Ny = size(ρ)
+        v = vec(ρ)          # length N = Nx*Ny
+        M = v * transpose(v)  # N×N outer product
+        return reshape(M, Nx, Ny, Nx, Ny)
+    end
+
+
+    
     function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims),zeros(Float64,param.dims)))
         N = param.N
         # initialize particles
@@ -79,30 +124,37 @@ module FP
         for n in 1:N
             particles[n]= setParticle(param, rng)
         end
-
+        dim = length(param.dims)
         # Initialize the matrix with dimensions specified by a tuple
         ρ = zeros(Int64, param.dims...)
         ρ₊ = zeros(Int64, param.dims...)
         ρ₋ = zeros(Int64, param.dims...)
-
+        populate_densities!(ρ,ρ₊,ρ₋,particles)
         # Iterate over the positions and update the matrix
-        for n in 1:N
-            indices = Tuple(particles[n].position[i] for i in 1:length(param.dims))
-            ρ[CartesianIndex(indices...)] += 1
-            if particles[n].direction[1]==1
-                ρ₊[CartesianIndex(indices...)] += 1
-            elseif particles[n].direction[1] ==-1
-                ρ₋[CartesianIndex(indices...)] += 1
-            end
-        end
+        # for n in 1:N
+        #     indices = Tuple(particles[n].position[i] for i in 1:length(param.dims))
+        #     ρ[CartesianIndex(indices...)] += 1
+        #     if particles[n].direction[1]==1
+        #         ρ₊[CartesianIndex(indices...)] += 1
+        #     elseif particles[n].direction[1] ==-1
+        #         ρ₋[CartesianIndex(indices...)] += 1
+        #     end
+        # end
         ρ_avg = Float64.(ρ)
-        ρ_matrix_avg = ρ_avg * transpose(ρ_avg) 
+        if dim == 1
+            ρ_matrix_avg = ρ_avg * transpose(ρ_avg) 
+        elseif dim ==2
+            ρ_matrix_avg = outer_density_2D(ρ_avg)
+            # ρ_matrix_avg = ρ .* reshape(ρ, 1, 1, size(ρ, 1), size(ρ, 2))
+            # ρ_matrix_avg = permutedims(ρ_matrix_avg, (3, 4, 1, 2))
+        end
         state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg, T, potential)
         return state
     end
 
     function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T; ϵ=0.0, ΔV_max=0.4)
-        relative_direction = particle_direction*choice_direction
+        # relative_direction = particle_direction*choice_direction
+        relative_direction = dot(particle_direction,choice_direction)
         p = D*min(1,exp(-(ΔV-relative_direction*ϵ)/T))
         return p
     end
@@ -227,59 +279,49 @@ module FP
                 action_index = mod1(n_and_a, 6)
                 n = (n_and_a - action_index) ÷ 6 + 1
                 particle = state.particles[n]
-                spot_indices = particle.position
-                spot_horizontal_index = spot_indices[1]
-                spot_vertical_index = spot_indices[2]
+                i,j = particle.position
 
                 # Calculate neighboring indices
-                left_index = (mod1(spot_horizontal_index - 1, param.dims[1]), spot_vertical_index)
-                right_index = (mod1(spot_horizontal_index + 1, param.dims[1]), spot_vertical_index)
-                down_index = (spot_horizontal_index, mod1(spot_vertical_index - 1, param.dims[2]))
-                up_index = (spot_horizontal_index, mod1(spot_vertical_index + 1, param.dims[2]))
+                Lx,Ly = param.dims
+                left = (mod1(i-1, Lx), j)
+                right = (mod1(i+1, Lx), j)
+                down = (i, mod1(j-1, Ly))
+                up = (i, mod1(j+1, Ly))
 
-                state.ρ[spot_indices...] -= 1
+                state.ρ[i,j] -= 1
 
-                candidate_spot_index = spot_indices
-                choice_direction = (0, 0)
 
                 # Determine action
                 if action_index == 1  # left
-                    candidate_spot_index = left_index
-                    choice_direction = (-1, 0)
+                    cand = left
+                    dirvec = [-1.0, 0.0]
+                    p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[left...]-V[i,j],T)
                 elseif action_index == 2  # right
-                    candidate_spot_index = right_index
-                    choice_direction = (1, 0)
+                    cand = right 
+                    dirvec = [1.0, 0.0]
+                    p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[right...]-V[i,j],T)
                 elseif action_index == 3  # down
-                    candidate_spot_index = down_index
-                    choice_direction = (0, -1)
+                    cand = down 
+                    dirvec = [0.0, -1.0]
+                    p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[down...]-V[i,j],T)
                 elseif action_index == 4  # up
-                    candidate_spot_index = up_index
-                    choice_direction = (0, 1)
+                    cand = up 
+                    dirvec = [0.0, 1.0]
+                    p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[up...]-V[i,j],T)
                 elseif action_index == 5  # tumble
-                    p_candidate = α
-                elseif action_index == 6  # fluctuate potential
-                    p_candidate = γ
-                else
-                    p_candidate = calculate_jump_probability(
-                        particle.direction, choice_direction, param.D,
-                        V[candidate_spot_index...] - V[spot_indices...], T; ϵ = param.ϵ
-                    )
+                    cand = (i,j)
+                    p_cand = α
+                else action_index == 6  # fluctuate potential
+                    cand = (i,j)
+                    p_cand = γ
                 end
 
-                if action_index <= 4
-                    p_candidate = calculate_jump_probability(
-                        particle.direction, choice_direction, param.D,
-                        V[candidate_spot_index...] - V[spot_indices...], T; ϵ = param.ϵ
-                    )
-                end
-
-                p_stay = 1 - p_candidate
-                p_arr = [p_candidate, p_stay]
+                p_stay = 1 - p_cand
+                p_arr = [p_cand, p_stay]
                 choice = tower_sampling(p_arr, sum(p_arr), rng)
 
                 if choice == 1
-                    particle.position = candidate_spot_index
-
+                    
                     if particle.direction[1] == 1
                         state.ρ₊[spot_indices...] -= 1
                         state.ρ₊[candidate_spot_index...] += 1
@@ -289,16 +331,15 @@ module FP
                     end
 
                     if action_index == 5  # tumble
-                        state.ρ₊[spot_indices...] -= particle.direction[1]
-                        state.ρ₋[spot_indices...] += particle.direction[1]
-                        particle.direction[1] *= -1
+                        v = randn(rng,2)
+                        p.direction .= v/norm(v)
                     end
 
                     if action_index == 6  # fluctuate potential
                         potential_update!(state.potential, rng)
                     end
+                    particle.position .= cand
                 end
-
                 state.ρ[particle.position...] += 1
                 t += 1 / param.N
             end
@@ -306,7 +347,6 @@ module FP
             throw(DomainError("Invalid input - dimension not supported yet"))
         end
         state.t += Δt
-
     end
 
     function tower_sampling(weights, w_sum, rng)
@@ -389,7 +429,10 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
             state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
             # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
         elseif dim_num==2
-            time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
+            state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
+            ρ_matrix = FP.outer_density_2D(state.ρ) 
+            state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
+            # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
         else
             throw(DomainError("Invalid input - dimension not supported yet"))
         end
