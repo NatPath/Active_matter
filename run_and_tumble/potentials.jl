@@ -294,21 +294,21 @@ module Potentials
                 V[middle+1,:] .= magnitude
                 V[middle-1,:] .= -magnitude
             elseif v_string == "2D_x_slide"
-                V[middle+1,middle] .= magnitude
-                V[middle-1,middle] .= -magnitude
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = -magnitude
             elseif v_string == "2D_y_slide"
-                V[middle,middle+1] .= magnitude
-                V[middle,middle-1] .= -magnitude
-            elseif v_string == "2D_xy_slide"
-                V[middle+1,middle] .= magnitude
-                V[middle-1,middle] .= -magnitude
-                V[middle,middle+1] .= magnitude
-                V[middle,middle-1] .= -magnitude
-            elseif v_string == "2D_xy_slide_rotated"
-                V[middle+1,middle] .= magnitude
-                V[middle-1,middle] .= -magnitude
-                V[middle,middle+1] .= -magnitude
-                V[middle,middle-1] .= magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = -magnitude
+            elseif v_string == "xy_slide"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = -magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = -magnitude
+            elseif v_string == "xy_slide_rotated"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = -magnitude
+                V[middle,middle+1] = -magnitude
+                V[middle,middle-1] = magnitude
             elseif v_string == "barrier"
                 x = LinRange(0, dims[1], dims[1])
                 y = LinRange(0, dims[2], dims[2])
@@ -329,6 +329,17 @@ module Potentials
                 fluctuating_mask .= 0
             elseif fluctuation_type == "reflection"
                 fluctuating_mask = -2 * V
+            elseif fluctuation_type == "profile_switch"
+                profiles = get(v_args, "potentials_profiles", "NoProfiles")
+                if profiles=="NoProfiles"
+                    error("'potentials_profiles' key required for profile_switch")
+                end
+                probs    = get(v_args, "profile_probs", nothing)
+                pots = [choose_potential(pa, dims; boundary_walls=boundary_walls, fluctuation_type="zero-potential", rng=rng)
+                        for pa in profiles]
+                potential = setProfileSwitchPotential(pots; probs=probs, rng=rng)
+                #check_potential_switch(potential,rng)
+                return potential
             else
                 error("unsupported fluctuation type")
             end
