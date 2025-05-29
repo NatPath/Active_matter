@@ -88,7 +88,7 @@ end
         "γ′" => 1.0,
         "ϵ" => 0.0,
         "n_sweeps" => 1*10^6,
-        "potential_type" => "well",
+        "potential_type" => "2D_wall_slide",
         "fluctuation_type" => "reflection",
         "potential_magnitude" => 16,
         "save_dir" => "saved_states",

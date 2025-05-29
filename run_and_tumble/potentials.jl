@@ -119,7 +119,7 @@ module Potentials
         println("Profile frequencies: ", counts ./ sum(counts))
     end
 
-    function choose_potential(v_args,dims; boundary_walls= true, fluctuation_type="plus-minus",rng, plot_flag=true)
+    function choose_potential(v_args,dims; boundary_walls = false, fluctuation_type="plus-minus",rng, plot_flag=true)
         # if get(v_args, "fluctuation_type", "") == "profile_switch"
         #     profiles = get(v_args, "profiles", error("'profiles' key required for profile_switch"))
         #     probs    = get(v_args, "profile_probs", nothing)
@@ -290,6 +290,25 @@ module Potentials
                         end
                     end
                 end
+            elseif v_string == "2D_x_wall_slide"
+                V[middle+1,:] .= magnitude
+                V[middle-1,:] .= -magnitude
+            elseif v_string == "2D_x_slide"
+                V[middle+1,middle] .= magnitude
+                V[middle-1,middle] .= -magnitude
+            elseif v_string == "2D_y_slide"
+                V[middle,middle+1] .= magnitude
+                V[middle,middle-1] .= -magnitude
+            elseif v_string == "2D_xy_slide"
+                V[middle+1,middle] .= magnitude
+                V[middle-1,middle] .= -magnitude
+                V[middle,middle+1] .= magnitude
+                V[middle,middle-1] .= -magnitude
+            elseif v_string == "2D_xy_slide_rotated"
+                V[middle+1,middle] .= magnitude
+                V[middle-1,middle] .= -magnitude
+                V[middle,middle+1] .= -magnitude
+                V[middle,middle-1] .= magnitude
             elseif v_string == "barrier"
                 x = LinRange(0, dims[1], dims[1])
                 y = LinRange(0, dims[2], dims[2])
@@ -370,6 +389,12 @@ module Potentials
             v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center_x"=> Lx÷2, "center_y"=> Ly÷2)
             v_periodic_args = Dict("type"=>"periodic", "period_x" => Lx÷4, "period_y" => Ly÷4, "magnitude"=>magnitude, "phase_x"=> dims[1]÷2, "phase_y"=> dims[2]÷2)
             v_random_args = Dict("type"=>"random", "scale"=>magnitude)
+            v_2D_wall_slide = Dict("type"=>"2D_wall_slide","magnitude"=>magnitude)
+            v_xy_slide = Dict("type"=>"xy_slide","magnitude"=>magnitude)
+            v_xy_slide_rotated = Dict("type"=>"xy_slide_rotated","magnitude"=>magnitude)
+            if !simple
+                v_xy_slides =Dict("type"=>"zero","potentials_profiles"=>[potential_args("xy_slide",dims;magnitude=magnitude,simple=true),potential_args("xy_slide",dims;magnitude=-magnitude,simple=true),potential_args("xy_slide_rotated",dims;magnitude=magnitude,simple=true),potential_args("xy_slide_rotated",dims;magnitude=-magnitude,simple=true)])
+            end
         else
             error("Unsupported number of dimensions: $dim. Only 1D and 2D cases are supported.")
         end
@@ -414,8 +439,16 @@ module Potentials
             return v_linear_slides_cut2
         elseif v_string == "linear_slides_cut3"
             return v_linear_slides_cut3
-        elseif v_string == "v_ratchet_PR_ML"
+        elseif v_string == "ratchet_PR_ML"
             return v_ratchet_PR_ML
+        elseif v_string == "2D_wall_slide"
+            return v_2D_wall_slide
+        elseif v_string =="xy_slide"
+            return v_xy_slide
+        elseif v_string =="xy_slide_rotated"
+            return v_xy_slide_rotated
+        elseif v_string =="xy_slides"
+            return v_xy_slides
         else
             error("unsupported V string")
         end
