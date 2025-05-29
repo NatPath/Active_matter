@@ -88,11 +88,11 @@ end
         "γ′" => 1.0,
         "ϵ" => 0.0,
         "n_sweeps" => 1*10^6,
-        "potential_type" => "zero",
+        "potential_type" => "well",
         "fluctuation_type" => "reflection",
         "potential_magnitude" => 16,
         "save_dir" => "saved_states",
-        "show_times" => [j*10^i for i in 3:12 for j in 1:9],
+        "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9]
     )
 end

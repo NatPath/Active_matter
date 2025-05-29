@@ -5,8 +5,10 @@ export save_aggregation, save_state
 function save_aggregation(agg_res,param,total_sweeps,save_dir)
     mkpath(save_dir)
     γ′ = param.γ * param.N
-    filename = @sprintf("%s/potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
+    dim = length(param.dims)
+    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
         save_dir,
+        dim,
         param.potential_type,
         param.potential_magnitude,
         param.fluctuation_type,
@@ -26,8 +28,10 @@ end
 function save_state(state, param, save_dir)
     mkpath(save_dir)
     γ′ = param.γ * param.N
-    filename = @sprintf("%s/potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
+    dim = length(param.dims)
+    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
         save_dir,
+        dim,
         param.potential_type,
         param.potential_magnitude,
         param.fluctuation_type,

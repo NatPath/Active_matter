@@ -16,45 +16,77 @@ function remove_symmetric_part_reflection(matrix, x0)
     return antisymmetric_matrix
 end
 function plot_sweep(sweep,state,param; label="", plot_directional=false)
-    normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-    outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-    corr_mat = state.ρ_matrix_avg-outer_prod_ρ
-    p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
-    p1 = plot_magnetization(state, param)
-    p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
-                title="Correlation Matrix Heatmap", color=:viridis)
-    L= param.dims[1]
-    middle_spot = L÷2
-    
-    p5 = plot(corr_mat[middle_spot,:],title="correlation matrix cut for x=$(middle_spot)")
-    point_to_look_at = middle_spot+middle_spot÷4
-    vline!(p4,[point_to_look_at],label="x=$(point_to_look_at)")
-    left_value=corr_mat[point_to_look_at,point_to_look_at-1]
-    right_value=corr_mat[point_to_look_at,point_to_look_at+1]
-    left_side=corr_mat[point_to_look_at, 1:point_to_look_at-1]
-    right_side=corr_mat[point_to_look_at, point_to_look_at+1:end]
-    corr_mat_cut = vcat(left_side,[(left_value+right_value)/2],right_side)
+    dim_num = length(param.dims)
+    if dim_num==1
+        normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+        outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+        corr_mat = state.ρ_matrix_avg-outer_prod_ρ
+        p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+        p1 = plot_magnetization(state, param)
+        p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
+                    title="Correlation Matrix Heatmap", color=:viridis)
+        L= param.dims[1]
+        middle_spot = L÷2
+        
+        p5 = plot(corr_mat[middle_spot,:],title="correlation matrix cut for x=$(middle_spot)")
+        point_to_look_at = middle_spot+middle_spot÷4
+        vline!(p4,[point_to_look_at],label="x=$(point_to_look_at)")
+        left_value=corr_mat[point_to_look_at,point_to_look_at-1]
+        right_value=corr_mat[point_to_look_at,point_to_look_at+1]
+        left_side=corr_mat[point_to_look_at, 1:point_to_look_at-1]
+        right_side=corr_mat[point_to_look_at, point_to_look_at+1:end]
+        corr_mat_cut = vcat(left_side,[(left_value+right_value)/2],right_side)
 
-    p6 = plot(corr_mat_cut,title="correlation matrix cut for x=$(point_to_look_at) ")
-    #p6 = plot(vcat(left_side,[(left_value+right_value)/2],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
-    vline!(p6,[point_to_look_at],label="x=$(point_to_look_at)")
-    # p6 = plot(vcat(left_side,[corr_mat[point_to_look_at,point_to_look_at]],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
-    # p6= plot(corr_mat[point_to_look_at,:])
-    corr_mat_antisym = remove_symmetric_part_reflection(corr_mat,middle_spot)
-    # left_value_sym=corr_mat_sym[point_to_look_at,point_to_look_at-1]
-    # right_value_sym=corr_mat_sym[point_to_look_at,point_to_look_at+1]
-    # left_side_sym=corr_mat_sym[point_to_look_at, 1:point_to_look_at-1]
-    # right_side_sym =corr_mat_sym[point_to_look_at, point_to_look_at+1:end]
-    # corr_mat_sym_cut = vcat(left_side_sym,[(left_value_sym+right_value_sym)/2],right_side_sym)
+        p6 = plot(corr_mat_cut,title="correlation matrix cut for x=$(point_to_look_at) ")
+        #p6 = plot(vcat(left_side,[(left_value+right_value)/2],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
+        vline!(p6,[point_to_look_at],label="x=$(point_to_look_at)")
+        # p6 = plot(vcat(left_side,[corr_mat[point_to_look_at,point_to_look_at]],right_side),title="correlation matrix cut for x=$(point_to_look_at) ")
+        # p6= plot(corr_mat[point_to_look_at,:])
+        corr_mat_antisym = remove_symmetric_part_reflection(corr_mat,middle_spot)
+        # left_value_sym=corr_mat_sym[point_to_look_at,point_to_look_at-1]
+        # right_value_sym=corr_mat_sym[point_to_look_at,point_to_look_at+1]
+        # left_side_sym=corr_mat_sym[point_to_look_at, 1:point_to_look_at-1]
+        # right_side_sym =corr_mat_sym[point_to_look_at, point_to_look_at+1:end]
+        # corr_mat_sym_cut = vcat(left_side_sym,[(left_value_sym+right_value_sym)/2],right_side_sym)
 
-    corr_mat_antisym[point_to_look_at,point_to_look_at] = (corr_mat_antisym[point_to_look_at,point_to_look_at+1]+corr_mat_antisym[point_to_look_at,point_to_look_at-1])/2
-    corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
+        corr_mat_antisym[point_to_look_at,point_to_look_at] = (corr_mat_antisym[point_to_look_at,point_to_look_at+1]+corr_mat_antisym[point_to_look_at,point_to_look_at-1])/2
+        corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
 
-    p7 = plot(corr_mat_antisym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
-    # p_final=plot(p0,p1,p4,p5,p6, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
-    p_final=plot(p0,p1,p4,p5,p6,p7, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
-    display(p_final)
-    return normalized_dist, corr_mat
+        p7 = plot(corr_mat_antisym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
+        # p_final=plot(p0,p1,p4,p5,p6, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
+        p_final=plot(p0,p1,p4,p5,p6,p7, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
+        display(p_final)
+        return normalized_dist, corr_mat
+    elseif dim_num == 2
+        # --- 2D plotting ---
+        dims = param.dims
+        ref = CartesianIndex(div(dims[1]+1,2), div(dims[2]+1,2))
+
+        # 1) Time-averaged density heatmap
+        normalized_dist = state.ρ_avg ./ sum(state.ρ_avg)
+        p1 = heatmap(normalized_dist',
+                     title="⟨ρ⟩ (t=$(sweep))",
+                     xlabel="x", ylabel="y",
+                     aspect_ratio=1,
+                     colorbar=true)
+
+        # 2) Correlation slice at reference
+        fix_term = param.N/(prod(param.dims)^2)
+        outer_slice = state.ρ_avg[ref].*state.ρ_avg
+        connected_slice = state.ρ_matrix_avg .- outer_slice
+        connected_corr_cut_fixed = corr_slice(connected_slice, ref) .+ fix_term
+        p2 = heatmap(connected_corr_cut_fixed',
+                     title="⟨ρ(ref)·ρ(x,y)⟩_c+N/A^2 slice at ($(ref[1]),$(ref[2]))",
+                     xlabel="x", ylabel="y",
+                     aspect_ratio=1,
+                     colorbar=true)
+
+        display(plot(p1, p2, layout=(1,2), size=(1000,400)))
+        return normalized_dist, connected_corr_cut_fixed
+
+    else
+        throw(DomainError("Only 1D or 2D plotting supported"))
+    end
 end
 function plot_density(density, param, state; title="Density", show_directions=false)
     dim_num = length(size(density))
@@ -206,113 +238,16 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
     display(p_combined)
     return p_combined
 end
-# function plot_data_colapse(states_params_names,power_n,indices, results_dir = "results_figures")
-#     # initial_index = param.dims[1]÷10+1
-#     # index_jump = 2
-#     # end_index = param.dims[1]/4
-#     # initial_index = 50
-#     # index_jump = 1
-#     # end_index = 60
-#     n = power_n
-#     # Create combined plot
-#     p_combined = plot(title="Combined Data Collapse C(x,y)*y^$n",
-#                      legend=:outerright,
-#                      size=(1200,800))
-#     all_x = []
-#     all_y = []
-    
-#     # Process each state individually first
-#     for (idx, (state, param, label)) in enumerate(states_params_names)
-#         p_individual = plot(title="Data Collapse - $label",
-#                           legend=:outerright,
-#                           size=(1000,600))
-#         α = param.α
-#         γ′ = param.γ * param.N
-#         state_x = []
-#         state_y = []
-        
-#         L = param.dims[1]
-#         N = param.N
-        
-#         for i in indices
-#             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-#             corr_mat = (state.ρ_matrix_avg-outer_prod_ρ).+(N/L^2)
-#             middle_spot = param.dims[1]÷2
-#             point_to_look_at = Int(middle_spot+i)
-            
-#             corr_mat_collapsed = corr_mat[:,point_to_look_at]
-#             left_value = corr_mat_collapsed[point_to_look_at-1]
-#             right_value = corr_mat_collapsed[point_to_look_at+1]
-#             left_side = corr_mat_collapsed[1:point_to_look_at-1]
-#             right_side = corr_mat_collapsed[point_to_look_at+1:end]
-#             full_data = vcat(left_side, [(left_value+right_value)/2], right_side)
-            
-#             corr_mat_antisym = remove_symmetric_part_reflection(corr_mat,middle_spot)
+"""
+    corr_slice(corr4, ref)
 
-#             #for antisymmetric only part
-#             corr_mat_antisym[point_to_look_at,point_to_look_at] = (corr_mat_antisym[point_to_look_at,point_to_look_at+1]+corr_mat_antisym[point_to_look_at,point_to_look_at-1])/2
-#             corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
-#             # full_data=corr_mat_antisym[point_to_look_at,1:end]
-#             #
-
-#             x_positions = 1:length(full_data)
-#             x_scaled = (x_positions .- middle_spot) ./ (i)
-#             y_scaled = full_data .* i^n
-#             # y_scaled = full_data .* ((α*γ′)*i^2) 
-            
-#             # Filter points within range
-#             # mask = (-5 .<= x_scaled .<= 5)
-#             # x_scaled = x_scaled[mask]
-#             # y_scaled = y_scaled[mask]
-            
-#             # Store points for individual and combined fitting
-#             append!(state_x, x_scaled)
-#             append!(state_y, y_scaled)
-#             append!(all_x, x_scaled)
-#             append!(all_y, y_scaled)
-            
-#             # Plot data on both individual and combined plots
-#             idx_sort = sortperm(x_scaled)
-#            # ylims!(p_combined,-10^2,10^2)
-#             plot!(p_individual, x_scaled[idx_sort], y_scaled[idx_sort], 
-#                   label="y=$(i)", linewidth=2)
-#             plot!(p_combined, x_scaled[idx_sort], y_scaled[idx_sort], 
-#                   label="$(label) y=$(i)", linewidth=2)
-#         end
-        
-#         # Fit individual state data
-#         f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
-        
-#         p0 = [1.0, 0.0, 0.0]
-#         # fit_individual = curve_fit(f, state_x, state_y, p0)
-        
-#         # Add theoretical curve to individual plot
-#         x_theory = range(-5, 5, length=1000)
-#         # plot!(p_individual, x_theory, f(x_theory, fit_individual.param), 
-#         #       label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
-        
-#         # Save individual plot
-#         savefig(p_individual, "$(results_dir)/data_collapse_$(label)_y^$(n).png")
-#     end
-    
-#     # Fit combined data
-#     f(x, p) = (p[1] * x ./ ((1 .+ p[2]*x.^2).^2)).+p[3]
-#     p0 = [1.0, 0.0, 0.0]
-#     # fit_combined = curve_fit(f, all_x, all_y, p0)
-#     # println("Combined fit parameters: ", fit_combined.param)
-
-#     # Add theoretical curve to combined plot
-#     # x_theory = range(-5, 5, length=1000)
-#     # plot!(p_combined, x_theory, f(x_theory, fit_combined.param), label="Theoretical", color=:black, linewidth=3, linestyle=:dash)
-    
-#     # Save combined plot
-#     savefig(p_combined, "$(results_dir)/data_collapse_combined_y^$(n).png")
-    
-#     # Display combined plot
-#     display(p_combined)
-    
-#     return p_combined
-# end
+Extract a 2D slice from a 4D correlation tensor at the reference
+Cartesian index `ref::CartesianIndex{2}`: returns `corr4[i0,j0,:,:]`.
+"""
+function corr_slice(corr4::AbstractArray{T,4}, ref::CartesianIndex{2}) where T
+    i0, j0 = Tuple(ref)
+    return corr4[i0, j0, :, :]
+end
 function plot_spatial_correlation(spatial_corr, param)
     dim_num = length(param.dims)
     if dim_num == 1
