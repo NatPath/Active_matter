@@ -91,15 +91,9 @@ end
         "T" => 1.0,
         "γ′" => 1,
         "ϵ" => 0.0,
-<<<<<<< HEAD
-        "n_sweeps" => 10^6,
-        "potential_type" => "zero",
-        "fluctuation_type" => "independent-points-discrete",
-=======
-        "n_sweeps" => 1*10^6+1000,
-        "potential_type" => "smudge",
-        "fluctuation_type" => "reflection",
->>>>>>> 56bc72c6961d008a558fd145587feef14490e069
+        "n_sweeps" => 1*10^6,
+        "potential_type" => "linear_slides_cut1",
+        "fluctuation_type" => "profile_switch",
         "potential_magnitude" => 16,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 3:12 for j in 1:9],
@@ -207,8 +201,8 @@ end
 
     # Initialize simulation parameters and state.
     param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
-    v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
-    potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng=rng)
+    v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
+    potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
     state = FP.setState(0, rng, param, T, potential)
    
     #estimate run time
@@ -335,11 +329,12 @@ function main()
             γ = γ′ / N
             
             param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
-            v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
+            v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
-            potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
+            potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
+            
             state = FP.setState(0, rng, param, T, potential)
         end
         
