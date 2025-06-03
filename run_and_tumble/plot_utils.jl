@@ -58,31 +58,122 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         display(p_final)
         return normalized_dist, corr_mat
     elseif dim_num == 2
-        # --- 2D plotting ---
+        # --- 2D plotting with y=0 cut ---
         dims = param.dims
-        ref = CartesianIndex(div(dims[1]+1,2), div(dims[2]+1,2))
+        y0 = div(dims[2] + 1, 2)               # middle index for y=0
 
-        # 1) Time-averaged density heatmap
+        # 1) Time‐averaged density heatmap
         normalized_dist = state.ρ_avg ./ sum(state.ρ_avg)
         p1 = heatmap(normalized_dist',
                      title="⟨ρ⟩ (t=$(sweep))",
                      xlabel="x", ylabel="y",
-                     aspect_ratio=1,
-                     colorbar=true)
+                     aspect_ratio=1, colorbar=true)
 
-        # 2) Correlation slice at reference
-        fix_term = param.N/(prod(param.dims)^2)
-        outer_slice = state.ρ_avg[ref].*state.ρ_avg
-        connected_slice = state.ρ_matrix_avg .- outer_slice
-        connected_corr_cut_fixed = corr_slice(connected_slice, ref) .+ fix_term
-        p2 = heatmap(connected_corr_cut_fixed',
-                     title="⟨ρ(ref)·ρ(x,y)⟩_c+N/A^2 slice at ($(ref[1]),$(ref[2]))",
-                     xlabel="x", ylabel="y",
-                     aspect_ratio=1,
-                     colorbar=true)
+        # 2) Extract correlation C(x1,y0; x2,y0)
+        fix_term = param.N / (prod(param.dims)^2)
+        slice2d = state.ρ_matrix_avg[:, y0, :, y0]     # dims[1]×dims[1]
+        mean_vec = state.ρ_avg[:, y0]
+        corr_mat2 = slice2d .- mean_vec * transpose(mean_vec) .+ fix_term
 
-        display(plot(p1, p2, layout=(1,2), size=(1000,400)))
-        return normalized_dist, connected_corr_cut_fixed
+        # Remove diagonal peaks by averaging neighboring values
+        for i in 1:dims[1]
+            left_idx = i == 1 ? dims[1] : i - 1
+            right_idx = i == dims[1] ? 1 : i + 1
+            corr_mat2[i, i] = (corr_mat2[i, left_idx] + corr_mat2[i, right_idx]) / 2
+        end
+
+        # 3) Plot full 2D correlation at y=0
+        p2 = heatmap(corr_mat2,
+                     title="C(x₁,y=0; x₂,y=0)",
+                     xlabel="x₁", ylabel="x₂",
+                     aspect_ratio=1, colorbar=true)
+
+        # 4) 1D cut at x₁ = 3/4·L₁
+        x_idx = Int(floor(3 * dims[1] / 4))
+        x_range = 1:dims[1]
+        line_data = corr_mat2[x_idx, :]
+        p3 = plot(x_range, line_data,
+                  title="C at x₁=3/4·L₁ (idx=$(x_idx))",
+                  xlabel="x₂", ylabel="C",
+                  legend=false, lw=2)
+
+        # 5) Same 1D cut but with middle region zeroed
+        line_data_zeroed = copy(line_data)
+        middle_x = div(dims[1] + 1, 2)
+        zero_indices = [middle_x-1, middle_x, middle_x+1]
+        line_data_zeroed[zero_indices] .= 0
+        
+        p4 = plot(x_range, line_data_zeroed,
+                  title="C at x₁=3/4·L₁ (middle zeroed)",
+                  xlabel="x₂", ylabel="C",
+                  legend=false, lw=2, color=:blue)
+        
+        # Mark the zeroed points
+        scatter!(p4, zero_indices, zeros(length(zero_indices)),
+                 color=:red, markersize=6, markershape=:x,
+                 label="Zeroed middle")
+        # 5) Same 1D cut but with middle region zeroed
+        line_data_zeroed = copy(line_data)
+        middle_x = div(dims[1] + 1, 2)
+        zero_indices = [middle_x-1, middle_x, middle_x+1]
+        line_data_zeroed[zero_indices] .= 0
+        
+        p4 = plot(x_range, line_data_zeroed,
+                  title="C at x₁=3/4·L₁ (middle zeroed)",
+                  xlabel="x₂", ylabel="C",
+                  legend=false, lw=2, color=:blue)
+        
+        # Mark the zeroed points
+        scatter!(p4, zero_indices, zeros(length(zero_indices)),
+                 color=:red, markersize=6, markershape=:x,
+                 label="Zeroed middle")
+
+        # 6) Diagonal correlation C(x,x; x',x') 
+        corr_diag = zeros(dims[1], dims[1])
+        for i in 1:dims[1], j in 1:dims[1]
+            corr_diag[i,j] = state.ρ_matrix_avg[i, i, j, j] - state.ρ_avg[i,i] * state.ρ_avg[j,j] + fix_term
+        end
+        
+        # Apply diagonal smoothing to diagonal correlation
+        for i in 1:dims[1]
+            left_idx = i == 1 ? dims[1] : i - 1
+            right_idx = i == dims[1] ? 1 : i + 1
+            corr_diag[i, i] = (corr_diag[i, left_idx] + corr_diag[i, right_idx]) / 2
+        end
+        
+        p5 = heatmap(corr_diag,
+                     title="C(x,x; x',x') - Diagonal",
+                     xlabel="x", ylabel="x'",
+                     aspect_ratio=1, colorbar=true)
+
+        # 7) 1D cut of diagonal at x = 3/4·L₁
+        diag_line_data = corr_diag[x_idx, :]
+        p6 = plot(x_range, diag_line_data,
+                  title="Diagonal C at x=3/4·L₁ (idx=$(x_idx))",
+                  xlabel="x'", ylabel="C",
+                  legend=false, lw=2, color=:green)
+
+        # 8) Same diagonal cut but with middle region zeroed
+        diag_line_zeroed = copy(diag_line_data)
+        diag_line_zeroed[zero_indices] .= 0
+        
+        p7 = plot(x_range, diag_line_zeroed,
+                  title="Diagonal C at x=3/4·L₁ (middle zeroed)",
+                  xlabel="x'", ylabel="C",
+                  legend=false, lw=2, color=:green)
+        
+        # Mark the zeroed points
+        scatter!(p7, zero_indices, zeros(length(zero_indices)),
+                 color=:red, markersize=6, markershape=:x,
+                 label="Zeroed middle")
+
+        # Layout: Row 1: density, Row 2: y=0 cuts, Row 3: diagonal cuts
+        display(plot(p1, plot(), plot(),        # Top row: density + empty spaces
+                     p2, p3, p4,               # Middle row: y=0 cuts  
+                     p5, p6, p7,               # Bottom row: diagonal cuts
+                     layout=(3,3), size=(1800,1200),
+                     plot_title="2D sweep $(sweep)"))
+        return normalized_dist, corr_mat2 
 
     else
         throw(DomainError("Only 1D or 2D plotting supported"))

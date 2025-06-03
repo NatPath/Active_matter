@@ -29,7 +29,7 @@ module Potentials
     mutable struct ProfileSwitchPotential <: AbstractPotential
         potentials::Vector{Potential}
         probabilities::Vector{Float64}
-        V::Vector{Float64}
+        V::AbstractArray{Float64}
         current::Int
     end
     # Utility: weighted sampling without dependencies
@@ -324,9 +324,11 @@ module Potentials
                 V_plot=heatmap(V, aspect_ratio=:equal, c=:viridis, xlabel="x", ylabel="y", title="2D Potential Map")
                 display(V_plot)
             end
-
+            println(fluctuation_type)
             if fluctuation_type == "no-fluctuation"
                 fluctuating_mask .= 0
+            elseif fluctuation_type == "zero-potential"
+                fluctuating_mask = -V
             elseif fluctuation_type == "reflection"
                 fluctuating_mask = -2 * V
             elseif fluctuation_type == "profile_switch"
@@ -400,7 +402,7 @@ module Potentials
             v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center_x"=> Lx÷2, "center_y"=> Ly÷2)
             v_periodic_args = Dict("type"=>"periodic", "period_x" => Lx÷4, "period_y" => Ly÷4, "magnitude"=>magnitude, "phase_x"=> dims[1]÷2, "phase_y"=> dims[2]÷2)
             v_random_args = Dict("type"=>"random", "scale"=>magnitude)
-            v_2D_wall_slide = Dict("type"=>"2D_wall_slide","magnitude"=>magnitude)
+            v_2D_x_wall_slide = Dict("type"=>"2D_x_wall_slide","magnitude"=>magnitude)
             v_xy_slide = Dict("type"=>"xy_slide","magnitude"=>magnitude)
             v_xy_slide_rotated = Dict("type"=>"xy_slide_rotated","magnitude"=>magnitude)
             if !simple
@@ -452,8 +454,8 @@ module Potentials
             return v_linear_slides_cut3
         elseif v_string == "ratchet_PR_ML"
             return v_ratchet_PR_ML
-        elseif v_string == "2D_wall_slide"
-            return v_2D_wall_slide
+        elseif v_string == "2D_x_wall_slide"
+            return v_2D_x_wall_slide
         elseif v_string =="xy_slide"
             return v_xy_slide
         elseif v_string =="xy_slide_rotated"
