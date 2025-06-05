@@ -1,4 +1,3 @@
-
 using JLD2
 using ArgParse
 include("modules_run_and_tumble.jl")
@@ -56,10 +55,21 @@ function main()
     normalized_dists = [stats[1] for stats in stats_arr]
     corr_mats = [stats[2] for stats in stats_arr]
 
-    stacked_corr = cat(corr_mats..., dims=3)  # Stack matrices along a new third dimension
-    avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
-    stacked_dists = cat(normalized_dists..., dims=2)
-    avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
+    # Handle different dimensions for stacking
+    if ndims(corr_mats[1]) == 2  # 1D case
+        stacked_corr = cat(corr_mats..., dims=3)  # Stack matrices along a new third dimension
+        avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
+        stacked_dists = cat(normalized_dists..., dims=2)
+        avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
+    elseif ndims(corr_mats[1]) == 4  # 2D case
+        stacked_corr = cat(corr_mats..., dims=5)  # Stack 4D tensors along 5th dimension
+        avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)  # Average over 5th dimension
+        stacked_dists = cat(normalized_dists..., dims=3)  # Stack 2D matrices along 3rd dimension
+        avg_dists = dropdims(mean(stacked_dists, dims=3), dims=3)  # Average over 3rd dimension
+    else
+        error("Unsupported correlation matrix dimensions: $(ndims(corr_mats[1]))")
+    end
+    
     dummy_state = FP.setDummyState(states[1],avg_dists,avg_corr,total_t)
 
     dummy_state_save_dir = "dummy_states_agg"

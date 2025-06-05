@@ -253,67 +253,145 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
     for (idx, (state, param, label)) in enumerate(states_params_names)
         α = param.α
         γ′ = param.γ * param.N
+        dim_num = length(param.dims)
 
-        L = param.dims[1]
-        N = param.N
-        # Setup output directories
-        full_dir = "$(results_dir)/full_data"
-        antisym_dir = "$(results_dir)/antisymmetric"
-        sym_dir = "$(results_dir)/symmetric"
-        mkpath(full_dir)
-        mkpath(antisym_dir)
-        mkpath(sym_dir)
+        if dim_num == 1
+            L = param.dims[1]
+            N = param.N
+            # Setup output directories
+            full_dir = "$(results_dir)/full_data"
+            antisym_dir = "$(results_dir)/antisymmetric"
+            sym_dir = "$(results_dir)/symmetric"
+            mkpath(full_dir)
+            mkpath(antisym_dir)
+            mkpath(sym_dir)
 
-        p_full_combined = plot(title="Full Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-        p_antisym_combined = plot(title="Antisymmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-        p_sym_combined = plot(title="Symmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+            p_full_combined = plot(title="Full Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+            p_antisym_combined = plot(title="Antisymmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+            p_sym_combined = plot(title="Symmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
 
-        for i in indices
-            outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-            corr_mat = (state.ρ_matrix_avg - outer_prod_ρ) .+ (N / L^2)
-            middle_spot = L ÷ 2
-            point_to_look_at = Int(middle_spot + i)
+            for i in indices
+                outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
+                corr_mat = (state.ρ_matrix_avg - outer_prod_ρ) .+ (N / L^2)
+                middle_spot = L ÷ 2
+                point_to_look_at = Int(middle_spot + i)
 
-            corr_mat_collapsed = corr_mat[:, point_to_look_at]
-            left_value = corr_mat_collapsed[point_to_look_at - 1]
-            right_value = corr_mat_collapsed[point_to_look_at + 1]
-            left_side = corr_mat_collapsed[1:point_to_look_at-1]
-            right_side = corr_mat_collapsed[point_to_look_at+1:end]
-            full_data = vcat(left_side, [(left_value + right_value)/2], right_side)
+                corr_mat_collapsed = corr_mat[:, point_to_look_at]
+                left_value = corr_mat_collapsed[point_to_look_at - 1]
+                right_value = corr_mat_collapsed[point_to_look_at + 1]
+                left_side = corr_mat_collapsed[1:point_to_look_at-1]
+                right_side = corr_mat_collapsed[point_to_look_at+1:end]
+                full_data = vcat(left_side, [(left_value + right_value)/2], right_side)
 
-            corr_mat_antisym = remove_symmetric_part_reflection(corr_mat, middle_spot)
-            corr_mat_antisym[point_to_look_at, point_to_look_at] = (corr_mat_antisym[point_to_look_at, point_to_look_at + 1] + corr_mat_antisym[point_to_look_at, point_to_look_at - 1]) / 2
-            corr_mat_antisym[point_to_look_at, L - point_to_look_at] = (corr_mat_antisym[point_to_look_at, L - (point_to_look_at + 1)] + corr_mat_antisym[point_to_look_at, L - (point_to_look_at - 1)]) / 2
-            antisym_data = corr_mat_antisym[point_to_look_at, 1:end]
+                corr_mat_antisym = remove_symmetric_part_reflection(corr_mat, middle_spot)
+                corr_mat_antisym[point_to_look_at, point_to_look_at] = (corr_mat_antisym[point_to_look_at, point_to_look_at + 1] + corr_mat_antisym[point_to_look_at, point_to_look_at - 1]) / 2
+                corr_mat_antisym[point_to_look_at, L - point_to_look_at] = (corr_mat_antisym[point_to_look_at, L - (point_to_look_at + 1)] + corr_mat_antisym[point_to_look_at, L - (point_to_look_at - 1)]) / 2
+                antisym_data = corr_mat_antisym[point_to_look_at, 1:end]
 
-            corr_mat_sym = remove_antisymmetric_part_reflection(corr_mat, middle_spot)
-            corr_mat_sym[point_to_look_at, point_to_look_at] = (corr_mat_sym[point_to_look_at, point_to_look_at + 1] + corr_mat_sym[point_to_look_at, point_to_look_at - 1]) / 2
-            corr_mat_sym[point_to_look_at, L - point_to_look_at] = (corr_mat_sym[point_to_look_at, L - (point_to_look_at + 1)] + corr_mat_sym[point_to_look_at, L - (point_to_look_at - 1)]) / 2
-            sym_data = corr_mat_sym[point_to_look_at, 1:end]
+                corr_mat_sym = remove_antisymmetric_part_reflection(corr_mat, middle_spot)
+                corr_mat_sym[point_to_look_at, point_to_look_at] = (corr_mat_sym[point_to_look_at, point_to_look_at + 1] + corr_mat_sym[point_to_look_at, point_to_look_at - 1]) / 2
+                corr_mat_sym[point_to_look_at, L - point_to_look_at] = (corr_mat_sym[point_to_look_at, L - (point_to_look_at + 1)] + corr_mat_sym[point_to_look_at, L - (point_to_look_at - 1)]) / 2
+                sym_data = corr_mat_sym[point_to_look_at, 1:end]
 
-            x_positions = 1:length(full_data)
-            x_scaled = (x_positions .- middle_spot) ./ (i)
+                x_positions = 1:length(full_data)
+                x_scaled = (x_positions .- middle_spot) ./ (i)
 
-            for (data, p_combined_plot) in zip((full_data, antisym_data, sym_data), (p_full_combined, p_antisym_combined, p_sym_combined))
-                y_scaled = data .* i^n
+                for (data, p_combined_plot) in zip((full_data, antisym_data, sym_data), (p_full_combined, p_antisym_combined, p_sym_combined))
+                    y_scaled = data .* i^n
+                    mask = (-5 .<= x_scaled .<= 5)
+                    x_filtered = x_scaled[mask]
+                    y_filtered = y_scaled[mask]
+                    plot!(p_combined_plot, x_filtered, y_filtered, label="y=$(i)", lw=2)
+                end
+
+                y_scaled = full_data .* i^n
                 mask = (-5 .<= x_scaled .<= 5)
                 x_filtered = x_scaled[mask]
                 y_filtered = y_scaled[mask]
-                plot!(p_combined_plot, x_filtered, y_filtered, label="y=$(i)", lw=2)
+                append!(all_x, x_filtered)
+                append!(all_y, y_filtered)
+                plot!(p_combined, x_filtered, y_filtered, label="$(label) y=$(i)", linewidth=2)
             end
 
-            y_scaled = full_data .* i^n
-            mask = (-5 .<= x_scaled .<= 5)
-            x_filtered = x_scaled[mask]
-            y_filtered = y_scaled[mask]
-            append!(all_x, x_filtered)
-            append!(all_y, y_filtered)
-            plot!(p_combined, x_filtered, y_filtered, label="$(label) y=$(i)", linewidth=2)
-        end
+            savefig(p_full_combined, "$(full_dir)/data_collapse_$(n)_indices-$(indices).png")
+            savefig(p_antisym_combined, "$(antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
+            savefig(p_sym_combined, "$(sym_dir)/data_collapse_$(n)_indices-$(indices).png")
+        elseif dim_num == 2
+            dims = param.dims
+            N = param.N
+            fix_term = N / (prod(dims)^2)
+            
+            # Setup output directories for 2D
+            x_axis_dir = "$(results_dir)/x_axis_cut"
+            diag_dir = "$(results_dir)/diagonal_cut"
+            mkpath(x_axis_dir)
+            mkpath(diag_dir)
 
-        savefig(p_full_combined, "$(full_dir)/data_collapse_$(n)_indices-$(indices).png")
-        savefig(p_antisym_combined, "$(antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
-        savefig(p_sym_combined, "$(sym_dir)/data_collapse_$(n)_indices-$(indices).png")
+            p_x_combined = plot(title="X-axis Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+            p_diag_combined = plot(title="Diagonal Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
+
+            y0 = div(dims[2] + 1, 2)  # middle y index
+            
+            for i in indices
+                # X-axis cut: C(x1,y0; x2,y0)
+                slice2d_x = state.ρ_matrix_avg[:, y0, :, y0]
+                mean_vec_x = state.ρ_avg[:, y0]
+                corr_mat_x = slice2d_x .- mean_vec_x * transpose(mean_vec_x) .+ fix_term
+                
+                # Apply diagonal smoothing
+                for j in 1:dims[1]
+                    left_idx = j == 1 ? dims[1] : j - 1
+                    right_idx = j == dims[1] ? 1 : j + 1
+                    corr_mat_x[j, j] = (corr_mat_x[j, left_idx] + corr_mat_x[j, right_idx]) / 2
+                end
+                
+                middle_spot = dims[1] ÷ 2
+                point_to_look_at = Int(middle_spot + i)
+                println(middle_spot)
+                x_axis_data = corr_mat_x[point_to_look_at, :]
+                
+                # Diagonal cut: C(x,x; x',x')
+                corr_diag = zeros(dims[1], dims[1])
+                for j in 1:dims[1], k in 1:dims[1]
+                    corr_diag[j,k] = state.ρ_matrix_avg[j, j, k, k] - state.ρ_avg[j,j] * state.ρ_avg[k,k] + fix_term
+                end
+                
+                # Apply diagonal smoothing to diagonal correlation
+                for j in 1:dims[1]
+                    left_idx = j == 1 ? dims[1] : j - 1
+                    right_idx = j == dims[1] ? 1 : j + 1
+                    corr_diag[j, j] = (corr_diag[j, left_idx] + corr_diag[j, right_idx]) / 2
+                end
+                
+                diag_data = corr_diag[point_to_look_at, :]
+                
+                # Scale and plot both cuts
+                x_positions = 1:length(x_axis_data)
+                x_scaled = (x_positions .- middle_spot) ./ i
+                
+                for (data, p_plot, cut_type) in zip((x_axis_data, diag_data), 
+                                                   (p_x_combined, p_diag_combined),
+                                                   ("x-axis", "diagonal"))
+                    y_scaled = data .* i^n
+                    mask = (-5 .<= x_scaled .<= 5)
+                    x_filtered = x_scaled[mask]
+                    y_filtered = y_scaled[mask]
+                    plot!(p_plot, x_filtered, y_filtered, label="$(label) y=$(i)", lw=2)
+                end
+                
+                # Add to combined plot (using x-axis cut)
+                y_scaled = x_axis_data .* i^n
+                mask = (-5 .<= x_scaled .<= 5)
+                x_filtered = x_scaled[mask]
+                y_filtered = y_scaled[mask]
+                append!(all_x, x_filtered)
+                append!(all_y, y_filtered)
+                plot!(p_combined, x_filtered, y_filtered, label="$(label) y=$(i)", linewidth=2)
+            end
+            
+            savefig(p_x_combined, "$(x_axis_dir)/data_collapse_$(n)_indices-$(indices).png")
+            savefig(p_diag_combined, "$(diag_dir)/data_collapse_$(n)_indices-$(indices).png")
+        end
     end
 
     if do_fit

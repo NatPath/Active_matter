@@ -1,1 +1,2 @@
-scp nativmr@tech-ui02.hep.technion.ac.il:/storage/ph_kafri/nativmr/run_and_tumble/dummy_states/potential-zero_Vscale-16.0_fluctuation-independent-points-discrete_wo_0_activity-0.00_L-256_rho-1.0e+02_alpha-0.00_gammap-1.00_D-1.0_t-*.jld2 ./dummy_states/
+#scp nativmr@tech-ui02.hep.technion.ac.il:/storage/ph_kafri/nativmr/run_and_tumble/dummy_states/2D_potential-xy_slides_Vscale-16.0_fluctuation-profile_switch_activity-0.00_L-32_rho-1.0e+02_alpha-0.00_gammap-32.00_D-1.0_t-*.jld2 ./dummy_states/passive_case/
+scp nativmr@tech-ui02.hep.technion.ac.il:/storage/ph_kafri/nativmr/run_and_tumble/saved_states_parallel/parallel_results_2025-06-04_19-51-30.jld2 ./saved_states_parallel/
