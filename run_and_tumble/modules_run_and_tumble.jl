@@ -454,8 +454,17 @@ end
 
 function calculate_statistics(state)
     normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-    outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-    corr_mat = state.ρ_matrix_avg-outer_prod_ρ
+    
+    # Handle different dimensions properly
+    if ndims(state.ρ_avg) == 1
+        outer_prod_ρ = state.ρ_avg * transpose(state.ρ_avg)
+    elseif ndims(state.ρ_avg) == 2
+        outer_prod_ρ = FP.outer_density_2D(state.ρ_avg)
+    else
+        throw(DomainError("Unsupported dimension: $(ndims(state.ρ_avg))"))
+    end
+    
+    corr_mat = state.ρ_matrix_avg - outer_prod_ρ
     return normalized_dist, corr_mat
 end
 function run_simulation!(state, param, n_sweeps, rng; 
