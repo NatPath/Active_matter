@@ -2,23 +2,137 @@ using JLD2
 using ArgParse
 using Statistics
 using Random
-include("modules_run_and_tumble.jl")
+using Dates
 include("save_utils.jl")
 include("potentials.jl")
+include("modules_run_and_tumble.jl")
 using .FP
 using .SaveUtils
 
 function parse_commandline()
     s = ArgParseSettings()
     @add_arg_table! s begin
-        "parallel_results_file"
-            help = "Path to the parallel results .jld2 file"
+        "input"
+            help = "Path to either a single parallel results .jld2 file or directory containing multiple files"
             required = true
         "--output_dir"
-            help = "Output directory for the recovered dummy state"
+            help = "Output directory for the recovered dummy states"
             default = "recovered_states"
+        "--batch"
+            help = "Process all .jld2 files in the input directory"
+            action = :store_true
+        "--match_mode"
+            help = "Match files from parallel_dir with broken_dir based on creation dates"
+            action = :store_true
+        "--parallel_dir"
+            help = "Directory containing parallel simulation results (recover_2D files)"
+            default = "saved_states_parallel/recover_2D"
+        "--broken_dir"
+            help = "Directory containing broken aggregated results with correct parameters"
+            default = "dummy_states/passive_case/to_recover"
+        "--time_tolerance"
+            help = "Maximum time difference in seconds for file matching"
+            arg_type = Int
+            default = 60
     end
     return parse_args(s)
+end
+
+function get_file_creation_time(filepath::String)
+    """
+    Get file creation time in seconds since epoch
+    """
+    return mtime(filepath)
+end
+
+function get_readable_date(filepath::String)
+    """
+    Get human readable creation date
+    """
+    return Dates.unix2datetime(mtime(filepath))
+end
+
+function match_files_by_date(parallel_dir::String, broken_dir::String, time_tolerance::Int)
+    """
+    Match files from two directories based on creation dates
+    Returns array of tuples: (broken_file_path, parallel_file_path, time_diff)
+    """
+    println("Matching files between:")
+    println("  Parallel dir: $parallel_dir")
+    println("  Broken dir: $broken_dir")
+    println("  Time tolerance: $time_tolerance seconds")
+    
+    # Get all .jld2 files from both directories
+    parallel_files = String[]
+    broken_files = String[]
+    
+    if !isdir(parallel_dir)
+        error("Parallel directory does not exist: $parallel_dir")
+    end
+    
+    if !isdir(broken_dir)
+        error("Broken directory does not exist: $broken_dir")
+    end
+    
+    for file in readdir(parallel_dir)
+        if endswith(file, ".jld2")
+            push!(parallel_files, joinpath(parallel_dir, file))
+        end
+    end
+    
+    for file in readdir(broken_dir)
+        if endswith(file, ".jld2")
+            push!(broken_files, joinpath(broken_dir, file))
+        end
+    end
+    
+    println("Found $(length(parallel_files)) parallel files")
+    println("Found $(length(broken_files)) broken files")
+    
+    # Create date-file pairs
+    parallel_dates = [(get_file_creation_time(f), f, get_readable_date(f)) for f in parallel_files]
+    broken_dates = [(get_file_creation_time(f), f, get_readable_date(f)) for f in broken_files]
+    
+    # Sort by date
+    sort!(parallel_dates, by=x->x[1])
+    sort!(broken_dates, by=x->x[1])
+    
+    println("\nMatching files by creation date...")
+    
+    matches = Tuple{String, String, Float64}[]
+    unmatched_broken = String[]
+    
+    for (broken_date, broken_file, broken_readable) in broken_dates
+        best_match = ""
+        best_match_readable = nothing
+        min_diff = Inf
+        
+        # Find closest parallel file within tolerance
+        for (parallel_date, parallel_file, parallel_readable) in parallel_dates
+            diff = abs(parallel_date - broken_date)
+            if diff < min_diff && diff <= time_tolerance
+                min_diff = diff
+                best_match = parallel_file
+                best_match_readable = parallel_readable
+            end
+        end
+        
+        if !isempty(best_match)
+            push!(matches, (broken_file, best_match, min_diff))
+            println("MATCH: $(basename(broken_file)) ↔ $(basename(best_match)) (diff: $(round(min_diff, digits=1))s)")
+            println("  Broken:   $broken_readable")
+            println("  Parallel: $best_match_readable")
+        else
+            push!(unmatched_broken, broken_file)
+            println("UNMATCHED: $(basename(broken_file)) - $broken_readable")
+        end
+    end
+    
+    println("\nMatching summary:")
+    println("  Matched pairs: $(length(matches))")
+    println("  Unmatched broken files: $(length(unmatched_broken))")
+    
+    return matches, unmatched_broken
 end
 
 function recover_4D_correlation(normalized_dists, corr_mats, param)
@@ -77,11 +191,14 @@ function recover_4D_correlation(normalized_dists, corr_mats, param)
     return avg_dists, avg_corr
 end
 
-function main()
-    args = parse_commandline()
+function process_single_file(parallel_results_file, output_dir)
+    """
+    Process a single parallel results file
+    """
+    println("Processing file: $parallel_results_file")
     
-    println("Loading parallel results from: $(args["parallel_results_file"])")
-    @load args["parallel_results_file"] normalized_dists corr_mats avg_corr avg_dists
+    # Load the parallel results
+    @load parallel_results_file normalized_dists corr_mats avg_corr avg_dists
     
     println("Analyzing loaded data...")
     println("Number of runs: ", length(normalized_dists))
@@ -94,26 +211,26 @@ function main()
     if isfile(dummy_state_file)
         println("Loading parameters from: $dummy_state_file")
         @load dummy_state_file state param potential
+        t = state.t
+        println("Loaded state time: $t")
+        
+        dims = param.dims
         println("Loaded param: L=$(param.dims), α=$(param.α), γ′=$(param.γ*param.N)")
+        rng = MersenneTwister(123)
+        v_args = Potentials.potential_args("xy_slides", dims; magnitude=16.0)
+        potential = Potentials.choose_potential(v_args, dims; fluctuation_type="profile_switch", rng=rng)
+        reference_state = FP.setState(state.t, rng, param, 1.0, potential)
+        state = reference_state
     else
         println("Warning: Could not find dummy state file, using default parameters")
-        # Fallback to creating minimal param structure
-        L = size(normalized_dists[1], 1)  # Assume square lattice
+        L = size(normalized_dists[1], 1)
         dims = (L, L)
         
         param = FP.setParam(
-            0.0,    # α
-            1.0,    # γ 
-            0.0,    # ϵ
-            dims,   # dims
-            100.0,  # ρ₀
-            1.0,    # D
-            "xy_slides",  # potential_type
-            "profile_switch",  # fluctuation_type
-            16.0    # potential_magnitude
+            0.0, 1.0, 0.0, dims, 100.0, 1.0,
+            "xy_slides", "profile_switch", 16.0
         )
         
-        # Create reference state and potential
         rng = MersenneTwister(123)
         v_args = Potentials.potential_args("xy_slides", dims; magnitude=16.0)
         potential = Potentials.choose_potential(v_args, dims; fluctuation_type="profile_switch", rng=rng)
@@ -125,25 +242,195 @@ function main()
     recovered_dists, recovered_corr = recover_4D_correlation(normalized_dists, corr_mats, param)
     
     # Create dummy state with recovered data
-    # Use the number of steps from the state struct
     nsteps = state.t
     dummy_state = FP.setDummyState(state, recovered_dists, recovered_corr, nsteps)
     
     # Save the recovered dummy state
-    output_dir = args["output_dir"]
     filename = save_state(dummy_state, param, output_dir)
     println("Recovered dummy state saved to: $filename")
     
-    # Print diagnostic information
-    println("\n=== RECOVERY DIAGNOSTIC ===")
-    println("Original avg_corr dimensions: ", size(avg_corr))
-    println("Recovered correlation dimensions: ", size(recovered_corr))
-    println("Is 4D tensor recovered: ", ndims(recovered_corr) == 4)
+    return filename
+end
+
+function process_directory(input_dir, output_dir)
+    """
+    Process all .jld2 files in a directory
+    """
+    println("Processing all .jld2 files in directory: $input_dir")
     
-    if ndims(recovered_corr) == 4
-        println("SUCCESS: 4D correlation tensor recovered!")
+    # Find all .jld2 files in the directory
+    jld2_files = filter(f -> endswith(f, ".jld2"), readdir(input_dir))
+    
+    if isempty(jld2_files)
+        println("No .jld2 files found in $input_dir")
+        return
+    end
+    
+    println("Found $(length(jld2_files)) .jld2 files to process")
+    
+    # Process each file
+    processed_files = String[]
+    failed_files = String[]
+    
+    for (i, filename) in enumerate(jld2_files)
+        filepath = joinpath(input_dir, filename)
+        println("\n=== Processing file $i/$(length(jld2_files)): $filename ===")
+        
+        try
+            output_filename = process_single_file(filepath, output_dir)
+            push!(processed_files, output_filename)
+            println("✓ Successfully processed: $filename")
+        catch e
+            println("✗ Failed to process $filename: $e")
+            push!(failed_files, filename)
+        end
+    end
+    
+    # Summary
+    println("\n=== BATCH PROCESSING SUMMARY ===")
+    println("Total files: $(length(jld2_files))")
+    println("Successfully processed: $(length(processed_files))")
+    println("Failed: $(length(failed_files))")
+    
+    if !isempty(failed_files)
+        println("Failed files:")
+        for f in failed_files
+            println("  - $f")
+        end
+    end
+end
+
+function process_matched_pair(broken_file::String, parallel_file::String, output_dir::String)
+    """
+    Process a matched pair: use parallel results with parameters from broken file
+    """
+    println("\nProcessing matched pair:")
+    println("  Parallel results: $(basename(parallel_file))")
+    println("  Parameters from: $(basename(broken_file))")
+    
+    # Load parallel results
+    @load parallel_file normalized_dists corr_mats
+    println("Loaded parallel results with $(length(normalized_dists)) runs")
+    
+    # Load parameters from broken file
+    @load broken_file state param potential
+    println("Loaded parameters: L=$(param.dims), α=$(param.α), γ′=$(param.γ*param.N)")
+    
+    # Recover the correlation tensor using the correct parameters
+    recovered_dists, recovered_corr = recover_4D_correlation(normalized_dists, corr_mats, param)
+    
+    # Create dummy state with recovered data and correct parameters
+    nsteps = state.t
+    dummy_state = FP.setDummyState(state, recovered_dists, recovered_corr, nsteps)
+    
+    # Save the recovered dummy state
+    filename = save_state(dummy_state, param, output_dir)
+    println("Recovered dummy state saved to: $filename")
+    
+    return filename
+end
+
+function process_matched_files(matches, output_dir::String)
+    """
+    Process all matched file pairs
+    """
+    println("\n=== PROCESSING MATCHED PAIRS ===")
+    
+    processed_files = String[]
+    failed_files = String[]
+    
+    for (i, (broken_file, parallel_file, time_diff)) in enumerate(matches)
+        println("\n--- Processing pair $i/$(length(matches)) ---")
+        
+        try
+            output_filename = process_matched_pair(broken_file, parallel_file, output_dir)
+            push!(processed_files, output_filename)
+            println("✓ Successfully processed pair $i")
+        catch e
+            println("✗ Failed to process pair $i: $e")
+            push!(failed_files, (broken_file, parallel_file))
+            println(e)
+        end
+    end
+    
+    # Summary
+    println("\n=== MATCHING PROCESSING SUMMARY ===")
+    println("Total matched pairs: $(length(matches))")
+    println("Successfully processed: $(length(processed_files))")
+    println("Failed: $(length(failed_files))")
+    
+    if !isempty(failed_files)
+        println("Failed pairs:")
+        for (broken, parallel) in failed_files
+            println("  - $(basename(broken)) ↔ $(basename(parallel))")
+        end
+    end
+    
+    return processed_files, failed_files
+end
+
+function main()
+    args = parse_commandline()
+    
+    input_path = args["input"]
+    output_dir = args["output_dir"]
+    batch_mode = args["batch"]
+    match_mode = args["match_mode"]
+    parallel_dir = args["parallel_dir"]
+    broken_dir = args["broken_dir"]
+    time_tolerance = args["time_tolerance"]
+    
+    # Create output directory if it doesn't exist
+    if !isdir(output_dir)
+        mkpath(output_dir)
+        println("Created output directory: $output_dir")
+    end
+    
+    if match_mode
+        # Match files by creation date and process pairs
+        matches, unmatched = match_files_by_date(parallel_dir, broken_dir, time_tolerance)
+        
+        if isempty(matches)
+            println("No file matches found!")
+            return
+        end
+        
+        # Save matching report
+        report_file = joinpath(output_dir, "matching_report.txt")
+        open(report_file, "w") do f
+            println(f, "File Matching Report - $(Dates.now())")
+            println(f, "="^50)
+            println(f, "Parallel directory: $parallel_dir")
+            println(f, "Broken directory: $broken_dir")
+            println(f, "Time tolerance: $time_tolerance seconds")
+            println(f, "")
+            println(f, "MATCHED PAIRS:")
+            for (i, (broken, parallel, diff)) in enumerate(matches)
+                println(f, "$i. $(basename(broken)) ↔ $(basename(parallel)) ($(round(diff, digits=1))s)")
+            end
+            println(f, "")
+            println(f, "UNMATCHED FILES:")
+            for broken in unmatched
+                println(f, "- $(basename(broken))")
+            end
+        end
+        println("Matching report saved to: $report_file")
+        
+        # Process matched pairs
+        processed, failed = process_matched_files(matches, output_dir)
+        
+    elseif batch_mode || isdir(input_path)
+        # Process directory
+        if !isdir(input_path)
+            error("Input path $input_path is not a directory")
+        end
+        process_directory(input_path, output_dir)
     else
-        println("WARNING: Could not recover 4D tensor. Data may be incomplete.")
+        # Process single file
+        if !isfile(input_path)
+            error("Input file $input_path does not exist")
+        end
+        process_single_file(input_path, output_dir)
     end
 end
 

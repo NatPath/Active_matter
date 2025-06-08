@@ -284,7 +284,7 @@ function main()
         mkpath(save_dir)
         now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
         filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
-        @save filename normalized_dists corr_mats avg_corr avg_dists
+        @save filename normalized_dists corr_mats avg_corr avg_dists params
         println("Parallel results saved to: $filename")
     else
         # Single-run mode.

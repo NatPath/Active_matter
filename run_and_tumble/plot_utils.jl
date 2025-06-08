@@ -333,6 +333,13 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             y0 = div(dims[2] + 1, 2)  # middle y index
             
             for i in indices
+                # Check for potential overflow before scaling
+                scaling_factor = Float64(i)^n
+                if scaling_factor > 1e10 || !isfinite(scaling_factor)
+                    println("Warning: Skipping i=$i due to overflow (scaling factor: $scaling_factor)")
+                    continue
+                end
+                
                 # X-axis cut: C(x1,y0; x2,y0)
                 slice2d_x = state.ρ_matrix_avg[:, y0, :, y0]
                 mean_vec_x = state.ρ_avg[:, y0]
@@ -347,7 +354,14 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 
                 middle_spot = dims[1] ÷ 2
                 point_to_look_at = Int(middle_spot + i)
-                println(middle_spot)
+                
+                # Handle boundary wrapping for point_to_look_at
+                if point_to_look_at > dims[1]
+                    point_to_look_at = point_to_look_at - dims[1]
+                elseif point_to_look_at < 1
+                    point_to_look_at = point_to_look_at + dims[1]
+                end
+                
                 x_axis_data = corr_mat_x[point_to_look_at, :]
                 
                 # Diagonal cut: C(x,x; x',x')
@@ -367,26 +381,53 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 
                 # Scale and plot both cuts
                 x_positions = 1:length(x_axis_data)
-                x_scaled = (x_positions .- middle_spot) ./ i
+                x_scaled = (x_positions .- middle_spot) ./ Float64(i)
                 
                 for (data, p_plot, cut_type) in zip((x_axis_data, diag_data), 
                                                    (p_x_combined, p_diag_combined),
                                                    ("x-axis", "diagonal"))
-                    y_scaled = data .* i^n
-                    mask = (-5 .<= x_scaled .<= 5)
-                    x_filtered = x_scaled[mask]
-                    y_filtered = y_scaled[mask]
-                    plot!(p_plot, x_filtered, y_filtered, label="$(label) y=$(i)", lw=2)
+                    y_scaled = data .* scaling_factor
+                    
+                    # Filter out non-finite values and extreme outliers
+                    finite_mask = isfinite.(y_scaled)
+                    range_mask = (-5 .<= x_scaled .<= 5)
+                    final_mask = finite_mask .& range_mask
+                    
+                    if sum(final_mask) > 0  # Only plot if we have valid data points
+                        x_filtered = x_scaled[final_mask]
+                        y_filtered = y_scaled[final_mask]
+                        
+                        # Additional outlier filtering based on reasonable y-range
+                        y_max = maximum(abs.(y_filtered))
+                        if y_max < 1e8  # Reasonable threshold
+                            plot!(p_plot, x_filtered, y_filtered, label="$(label) y=$(i)", lw=2)
+                        else
+                            println("Warning: Skipping $(cut_type) plot for i=$i due to extreme values (max: $y_max)")
+                        end
+                    else
+                        println("Warning: No valid data points for $(cut_type) plot at i=$i")
+                    end
                 end
                 
                 # Add to combined plot (using x-axis cut)
-                y_scaled = x_axis_data .* i^n
-                mask = (-5 .<= x_scaled .<= 5)
-                x_filtered = x_scaled[mask]
-                y_filtered = y_scaled[mask]
-                append!(all_x, x_filtered)
-                append!(all_y, y_filtered)
-                plot!(p_combined, x_filtered, y_filtered, label="$(label) y=$(i)", linewidth=2)
+                y_scaled = x_axis_data .* scaling_factor
+                finite_mask = isfinite.(y_scaled)
+                range_mask = (-5 .<= x_scaled .<= 5)
+                final_mask = finite_mask .& range_mask
+                
+                if sum(final_mask) > 0
+                    x_filtered = x_scaled[final_mask]
+                    y_filtered = y_scaled[final_mask]
+                    
+                    y_max = maximum(abs.(y_filtered))
+                    if y_max < 1e8
+                        append!(all_x, x_filtered)
+                        append!(all_y, y_filtered)
+                        plot!(p_combined, x_filtered, y_filtered, label="$(label) y=$(i)", linewidth=2)
+                    else
+                        println("Warning: Skipping combined plot for i=$i due to extreme values")
+                    end
+                end
             end
             
             savefig(p_x_combined, "$(x_axis_dir)/data_collapse_$(n)_indices-$(indices).png")
