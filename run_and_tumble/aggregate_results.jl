@@ -1,5 +1,6 @@
 using JLD2
 using ArgParse
+using Statistics
 include("modules_run_and_tumble.jl")
 include("save_utils.jl")
 using .FP
@@ -15,65 +16,74 @@ function parse_commandline()
     end
     return parse_args(s)
 end
-# function aggregate_results(simulation_results...)
-#     # Initialize an empty aggregated state
-#     aggregated_state = []
-
-#     # Iterate over each simulation result
-#     for result in simulation_results
-#         # Update the aggregated state
-#         if isempty(aggregated_state)
-#             aggregated_state = result
-#         else
-#             aggregated_state .+= result
-#         end
-#     end
-
-#     # Calculate the averages of the attributes
-#     aggregated_state ./= length(simulation_results)
-
-#     # Return the aggregated state
-#     return aggregated_state
-# end
 
 function main()
+    println("Starting aggregation of simulation results...")
+    
     args = parse_commandline()
+    
+    println("Processing $(length(args["saved_states"])) state files...")
+    
     states = []
     params = []
     normalized_dists = []
     corr_mats = []
     stats_arr = []
-    total_t=0
-    for saved_state in args["saved_states"]
-        @load saved_state state param potential
-        states = [states; state]
-        params = [params; param]
-        total_t+=state.t
-        stats = calculate_statistics(state)
-        stats_arr = [stats_arr ; stats]
+    total_t = 0
+    
+    for (i, saved_state) in enumerate(args["saved_states"])
+        println("  Loading file $i/$(length(args["saved_states"])): $(basename(saved_state))")
+        try
+            @load saved_state state param potential
+            states = [states; state]
+            params = [params; param]
+            total_t += state.t
+            stats = calculate_statistics(state)
+            stats_arr = [stats_arr; stats]
+        catch e
+            println("  ERROR: Failed to load $saved_state: $e")
+            continue
+        end
     end
+    
+    if isempty(states)
+        println("ERROR: No valid states loaded for aggregation")
+        exit(1)
+    end
+    
+    println("Successfully loaded $(length(states)) states")
+    println("Total simulation time: $total_t")
+    
     normalized_dists = [stats[1] for stats in stats_arr]
     corr_mats = [stats[2] for stats in stats_arr]
 
     # Handle different dimensions for stacking
+    println("Aggregating correlation matrices and densities...")
     if ndims(corr_mats[1]) == 2  # 1D case
-        stacked_corr = cat(corr_mats..., dims=3)  # Stack matrices along a new third dimension
-        avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
+        println("  Processing 1D correlation matrices")
+        stacked_corr = cat(corr_mats..., dims=3)
+        avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)
         stacked_dists = cat(normalized_dists..., dims=2)
         avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
     elseif ndims(corr_mats[1]) == 4  # 2D case
-        stacked_corr = cat(corr_mats..., dims=5)  # Stack 4D tensors along 5th dimension
-        avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)  # Average over 5th dimension
-        stacked_dists = cat(normalized_dists..., dims=3)  # Stack 2D matrices along 3rd dimension
-        avg_dists = dropdims(mean(stacked_dists, dims=3), dims=3)  # Average over 3rd dimension
+        println("  Processing 2D correlation matrices")
+        stacked_corr = cat(corr_mats..., dims=5)
+        avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)
+        stacked_dists = cat(normalized_dists..., dims=3)
+        avg_dists = dropdims(mean(stacked_dists, dims=3), dims=3)
     else
         error("Unsupported correlation matrix dimensions: $(ndims(corr_mats[1]))")
     end
     
-    dummy_state = FP.setDummyState(states[1],avg_dists,avg_corr,total_t)
+    println("Creating aggregated dummy state...")
+    dummy_state = FP.setDummyState(states[1], avg_dists, avg_corr, total_t)
 
     dummy_state_save_dir = "dummy_states_agg"
-    save_state(dummy_state,params[1],dummy_state_save_dir)
-
+    println("Saving aggregated state to: $dummy_state_save_dir")
+    
+    saved_filename = save_state(dummy_state, params[1], dummy_state_save_dir)
+    println("✓ SUCCESS: Aggregated state saved as: $saved_filename")
+    println("Aggregation completed successfully!")
 end
+
 main()

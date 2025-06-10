@@ -23,6 +23,13 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         corr_mat = state.ρ_matrix_avg-outer_prod_ρ
         p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
         p1 = plot_magnetization(state, param)
+        
+        # Add potential profile plot
+        p_pot = plot(1:param.dims[1], state.potential.V,
+                    title="Potential Profile",
+                    xlabel="Position", ylabel="V(x)",
+                    legend=false, lw=2, color=:red)
+        
         p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
                     title="Correlation Matrix Heatmap", color=:viridis)
         L= param.dims[1]
@@ -54,7 +61,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         p7 = plot(corr_mat_antisym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
         # p_final=plot(p0,p1,p4,p5,p6, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
-        p_final=plot(p0,p1,p4,p5,p6,p7, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
+        p_final=plot(p0,p1,p_pot,p4,p5,p6,p7, size=(2100,1500),plot_title="sweep $(sweep)",layout=grid(3,3))
         display(p_final)
         return normalized_dist, corr_mat
     elseif dim_num == 2
@@ -68,6 +75,13 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                      title="⟨ρ⟩ (t=$(sweep))",
                      xlabel="x", ylabel="y",
                      aspect_ratio=1, colorbar=true)
+
+        # Add 2D potential profile heatmap
+        p_pot = heatmap(state.potential.V',
+                       title="Potential V(x,y)",
+                       xlabel="x", ylabel="y",
+                       aspect_ratio=1, colorbar=true,
+                       color=:reds)
 
         # 2) Extract correlation C(x1,y0; x2,y0)
         fix_term = param.N / (prod(param.dims)^2)
@@ -167,8 +181,8 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                  color=:red, markersize=6, markershape=:x,
                  label="Zeroed middle")
 
-        # Layout: Row 1: density, Row 2: y=0 cuts, Row 3: diagonal cuts
-        display(plot(p1, plot(), plot(),        # Top row: density + empty spaces
+        # Layout: Row 1: density + potential, Row 2: y=0 cuts, Row 3: diagonal cuts
+        display(plot(p1, p_pot, plot(),        # Top row: density + potential + empty space
                      p2, p3, p4,               # Middle row: y=0 cuts  
                      p5, p6, p7,               # Bottom row: diagonal cuts
                      layout=(3,3), size=(1800,1200),
