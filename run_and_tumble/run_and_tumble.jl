@@ -77,7 +77,7 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 16 
+    L= 64 
     return Dict(
         "dim_num" => 2,
         "D" => 1.0,
@@ -85,12 +85,12 @@ end
         "L" => L,
         "N" => L*100,
         "T" => 1.0,
-        "γ′" => 1.0,
+        "γ′" => 1,
         "ϵ" => 0.0,
-        "n_sweeps" => 1*10^1,
+        "n_sweeps" => 1*10^5,
         "potential_type" => "xy_slides",
         "fluctuation_type" => "profile_switch",
-        "potential_magnitude" => 16,
+        "potential_magnitude" => 16.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9]
@@ -333,7 +333,7 @@ function main()
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
             
             dims = ntuple(i -> L, dim_num)
-            ρ₀ = N / L
+            ρ₀ = N / prod(dims)
             γ = γ′ / N
             
             param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)

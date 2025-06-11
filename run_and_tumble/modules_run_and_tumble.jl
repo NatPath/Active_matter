@@ -28,6 +28,7 @@ module FP
     function setParam(α, γ, ϵ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude)
 
         N = Int(round( ρ₀*prod(dims)))       # number of particles
+        println(" params set with N = $N, γ = $γ, γ′=$(γ*N)")
 
         param = Param(α, γ, ϵ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude)
         return param
@@ -322,17 +323,19 @@ module FP
 
                 if choice == 1
                     
-                    if particle.direction[1] == 1
-                        state.ρ₊[spot_indices...] -= 1
-                        state.ρ₊[candidate_spot_index...] += 1
-                    elseif particle.direction[1] == -1
-                        state.ρ₋[spot_indices...] -= 1
-                        state.ρ₋[candidate_spot_index...] += 1
-                    end
+                    # if particle.direction[1] == 1
+                    #     println("did you get here?")
+                    #     state.ρ₊[candidate_spot_index...] -= 1
+                    #     state.ρ₊[candidate_spot_index...] += 1
+                    # elseif particle.direction[1] == -1
+                    #     println("did you get here?")
+                    #     state.ρ₋[candidate_spot_index...] -= 1
+                    #     state.ρ₋[candidate_spot_index...] += 1
+                    # end
 
                     if action_index == 5  # tumble
                         v = randn(rng,2)
-                        p.direction .= v/norm(v)
+                        particle.direction .= v/norm(v)
                     end
 
                     if action_index == 6  # fluctuate potential
