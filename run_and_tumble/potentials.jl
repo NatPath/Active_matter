@@ -138,7 +138,7 @@ module Potentials
         end
         V = zeros(Float64, dims)
         L = dims[1]
-        middle = Int(L÷2)
+        middle = Int(L÷2)+1
         v_string = v_args["type"]
         magnitude = get(v_args,"magnitude",1.0)
         dim = length(dims)
@@ -212,7 +212,18 @@ module Potentials
             elseif v_string == "random"
                 magnitude= v_args["scale"]
                 V = magnitude*rand(rng,dims...)
-
+            elseif v_string == "step_potential"
+                step = v_args["step"]
+                V[1:step] .= magnitude/2
+                V[step+1:end] .= -magnitude/2
+            elseif v_string == "step_potential_left"
+                step = v_args["step"]
+                V[1:step] .= magnitude
+                V[step+1:end] .= 0
+            elseif v_string == "step_potential_left"
+                step = v_args["step"]
+                V[1:step] .= 0
+                V[step+1:end] .= magnitude
             end
 
             if plot_flag
@@ -379,6 +390,7 @@ module Potentials
             v_linear_args = Dict("type"=> "linear", "slope" => magnitude, "shift"=>L÷2+displacement,"b"=>0, "cut_at"=>cut_at)
             v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center"=> L÷2)
             v_periodic_args = Dict("type"=>"periodic", "period" => L÷4, "magnitude"=>magnitude, "phase"=> L÷2)
+            v_step_args = Dict("type"=>"step_potential", "step"=>L÷2+displacement, "magnitude"=>magnitude)
             v_random_args = Dict("type"=>"random", "scale"=>magnitude )
             if !simple
                 v_ratchet_PmLr = Dict("type"=>"zero","potentials_profiles"=>[potential_args("smudge",dims;magnitude=magnitude,simple=true),potential_args("left_smudge",dims;magnitude=magnitude,simple=true),potential_args("minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true)])
@@ -436,6 +448,8 @@ module Potentials
             return v_harmonic_args
         elseif v_string == "periodic"
             return v_periodic_args
+        elseif v_string == "step_potential"
+            return v_step_args
         elseif v_string == "random"
             return v_random_args
         elseif v_string == "ratchet_PmLr"

@@ -24,11 +24,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
         p1 = plot_magnetization(state, param)
         
-        # Add potential profile plot
-        p_pot = plot(1:param.dims[1], state.potential.V,
-                    title="Potential Profile",
-                    xlabel="Position", ylabel="V(x)",
-                    legend=false, lw=2, color=:red)
+        # Remove potential profile plot for 1D case
         
         p4 = heatmap(corr_mat, xlabel="x", ylabel="y", 
                     title="Correlation Matrix Heatmap", color=:viridis)
@@ -60,8 +56,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         corr_mat_antisym[point_to_look_at,L-point_to_look_at] = (corr_mat_antisym[point_to_look_at,L-(point_to_look_at+1)]+corr_mat_antisym[point_to_look_at,L-(point_to_look_at-1)])/2
 
         p7 = plot(corr_mat_antisym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
-        # p_final=plot(p0,p1,p4,p5,p6, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
-        p_final=plot(p0,p1,p_pot,p4,p5,p6,p7, size=(2100,1500),plot_title="sweep $(sweep)",layout=grid(3,3))
+        p_final=plot(p0,p1,p4,p5,p6,p7, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
         display(p_final)
         return normalized_dist, corr_mat
     elseif dim_num == 2
@@ -87,7 +82,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         fix_term = param.N / (prod(param.dims)^2)
         slice2d = state.ρ_matrix_avg[:, y0, :, y0]     # dims[1]×dims[1]
         mean_vec = state.ρ_avg[:, y0]
-        corr_mat2 = slice2d .- mean_vec * transpose(mean_vec) .+ fix_term
+        corr_mat2 = slice2d .- (mean_vec * transpose(mean_vec)) .+ fix_term
 
         # Remove diagonal peaks by averaging neighboring values
         for i in 1:dims[1]
