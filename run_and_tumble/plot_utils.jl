@@ -121,21 +121,29 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         scatter!(p4, zero_indices, zeros(length(zero_indices)),
                  color=:red, markersize=6, markershape=:x,
                  label="Zeroed middle")
-        # 5) Same 1D cut but with middle region zeroed
-        line_data_zeroed = copy(line_data)
+        # 5.1) Positive half of y=0 cut (from middle to end)
         middle_x = div(dims[1] + 1, 2)
-        zero_indices = [middle_x-1, middle_x, middle_x+1]
-        line_data_zeroed[zero_indices] .= 0
-        
-        p4 = plot(x_range, line_data_zeroed,
-                  title="C at x₁=3/4·L₁ (middle zeroed)",
-                  xlabel="x₂", ylabel="C",
+        positive_x_range = middle_x:dims[1]
+        positive_line_data = line_data[middle_x:end]
+        positive_x_positions = positive_x_range .- middle_x .+ 1
+        p3_pos = plot(positive_x_positions, positive_line_data,
+                  title="C at x₁=3/4·L₁ (Positive Half)",
+                  xlabel="Distance from center", ylabel="C",
+                  legend=false, lw=2, color=:orange)
+        # 5.2) Same positive half but with middle region zeroed
+        positive_line_data_zeroed = copy(positive_line_data)
+        zero_indices_pos = [1,2]
+        positive_line_data_zeroed[zero_indices_pos] .= 0
+        p4_pos = plot(positive_x_positions, positive_line_data_zeroed,
+                  title="C at x₁=3/4·L₁ (Positive Half, middle zeroed)",
+                  xlabel="Distance from center", ylabel="C",
                   legend=false, lw=2, color=:blue)
-        
-        # Mark the zeroed points
-        scatter!(p4, zero_indices, zeros(length(zero_indices)),
+        # Mark the zeroed points in positive half
+        scatter!(p4_pos, positive_x_positions[zero_indices_pos], 
+                 zeros(sum(zero_indices_pos)),
                  color=:red, markersize=6, markershape=:x,
                  label="Zeroed middle")
+        
 
         # 6) Diagonal correlation C(x,x; x',x') 
         corr_diag = zeros(dims[1], dims[1])
@@ -175,12 +183,41 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         scatter!(p7, zero_indices, zeros(length(zero_indices)),
                  color=:red, markersize=6, markershape=:x,
                  label="Zeroed middle")
+        # 8.1) Positive half of diagonal cut (from middle to end)
+        positive_diag_x_positions = positive_x_positions
+        positive_diag_line_data = diag_line_data[middle_x:end]
+        p6_pos = plot(positive_diag_x_positions, positive_diag_line_data,
+                  title="Diagonal C at x=3/4·L₁ (Positive Half)",
+                  ixlabel="Distance from center", ylabel="C",
+                  legend=false, lw=2, color=:purple)
+        # 8.2) Same positive half but with middle region zeroed
+        positive_diag_line_data_zeroed = copy(positive_diag_line_data)
+        positive_diag_line_data_zeroed[zero_indices_pos] .= 0
+        p7_pos = plot(positive_diag_x_positions, positive_diag_line_data_zeroed,
+                  title="Diagonal C at x=3/4·L₁ (Positive Half, middle zeroed)",
+                  xlabel="Distance from center", ylabel="C",
+                  legend=false, lw=2, color=:purple)
+        # Mark the zeroed points in positive half
+        scatter!(p7_pos, positive_diag_x_positions[zero_indices_pos], 
+                 zeros(sum(zero_indices_pos)),
+                 color=:red, markersize=6, markershape=:x,
+                 label="Zeroed middle")
 
-        # Layout: Row 1: density + potential, Row 2: y=0 cuts, Row 3: diagonal cuts
-        display(plot(p1, p_pot, plot(),        # Top row: density + potential + empty space
-                     p2, p3, p4,               # Middle row: y=0 cuts  
-                     p5, p6, p7,               # Bottom row: diagonal cuts
-                     layout=(3,3), size=(1800,1200),
+        # Remove the old x-axis correlation plots since they were incorrectly implemented
+        # Layout: Row 1: density + potential, Row 2: y=0 cuts, Row 3: diagonal cuts, Row 4: positive half cuts
+        # fix the layout
+        # Create empty plots for organization
+        p_empty1 = plot(axis=false, showaxis=false, grid=false, title="")
+        p_empty2 = plot(axis=false, showaxis=false, grid=false, title="")
+        p_empty3 = plot(axis=false, showaxis=false, grid=false, title="")
+
+        # Layout with 15 plots total (5 rows x 3 columns)
+        display(plot(p1, p_pot, p_empty1,           # Row 1: density, potential, empty
+                     p2, p3, p4,                    # Row 2: full y=0 correlation cuts
+                     p_empty2,p3_pos, p4_pos,      # Row 3: positive y=0 cuts, empty
+                     p5, p6, p7,                    # Row 4: diagonal correlation cuts  
+                     p_empty3, p6_pos, p7_pos,      # Row 5: positive diagonal cuts, empty
+                     layout=(5,3), size=(1800,2000),
                      plot_title="2D sweep $(sweep)"))
         return normalized_dist, corr_mat2 
 
@@ -333,11 +370,14 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             # Setup output directories for 2D
             x_axis_dir = "$(results_dir)/x_axis_cut"
             diag_dir = "$(results_dir)/diagonal_cut"
+            x_axis_pos_dir = "$(results_dir)/x_axis_positive_cut"
             mkpath(x_axis_dir)
             mkpath(diag_dir)
+            mkpath(x_axis_pos_dir)
 
             p_x_combined = plot(title="X-axis Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
             p_diag_combined = plot(title="Diagonal Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
+            p_x_pos_combined = plot(title="X-axis Positive Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
 
             y0 = div(dims[2] + 1, 2)  # middle y index
             
@@ -373,6 +413,10 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 
                 x_axis_data = corr_mat_x[point_to_look_at, :]
                 
+                # Extract positive half of x-axis data
+                middle_x = div(dims[1], 2) + 1
+                x_axis_positive_data = x_axis_data[middle_x:end]
+                
                 # Diagonal cut: C(x,x; x',x')
                 corr_diag = zeros(dims[1], dims[1])
                 for j in 1:dims[1], k in 1:dims[1]
@@ -388,22 +432,27 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 
                 diag_data = corr_diag[point_to_look_at, :]
                 
-                # Scale and plot both cuts
+                # Scale and plot all three cuts
                 x_positions = 1:length(x_axis_data)
                 x_scaled = (x_positions .- middle_spot) ./ Float64(i)
                 
-                for (data, p_plot, cut_type) in zip((x_axis_data, diag_data), 
-                                                   (p_x_combined, p_diag_combined),
-                                                   ("x-axis", "diagonal"))
+                # For positive x-axis cut
+                x_positions_pos = middle_x:dims[1]
+                x_scaled_pos = (x_positions_pos .- middle_spot) ./ Float64(i)
+                
+                for (data, p_plot, cut_type, x_scale) in zip((x_axis_data, diag_data, x_axis_positive_data), 
+                                                           (p_x_combined, p_diag_combined, p_x_pos_combined),
+                                                           ("x-axis", "diagonal", "x-axis-positive"),
+                                                           (x_scaled, x_scaled, x_scaled_pos))
                     y_scaled = data .* scaling_factor
                     
                     # Filter out non-finite values and extreme outliers
                     finite_mask = isfinite.(y_scaled)
-                    range_mask = (-5 .<= x_scaled .<= 5)
+                    range_mask = (-5 .<= x_scale .<= 5)
                     final_mask = finite_mask .& range_mask
                     
                     if sum(final_mask) > 0  # Only plot if we have valid data points
-                        x_filtered = x_scaled[final_mask]
+                        x_filtered = x_scale[final_mask]
                         y_filtered = y_scaled[final_mask]
                         
                         # Additional outlier filtering based on reasonable y-range
@@ -441,6 +490,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             
             savefig(p_x_combined, "$(x_axis_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_diag_combined, "$(diag_dir)/data_collapse_$(n)_indices-$(indices).png")
+            savefig(p_x_pos_combined, "$(x_axis_pos_dir)/data_collapse_$(n)_indices-$(indices).png")
         end
     end
 

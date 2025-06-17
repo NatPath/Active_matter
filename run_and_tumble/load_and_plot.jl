@@ -1,9 +1,12 @@
 # load_and_plot.jl
 using JLD2
 using ArgParse
+include("potentials.jl")
+include("modules_run_and_tumble.jl")
 include("plot_utils.jl")
 using Plots
-using .PlotUtils
+using .FP
+using .PlotUtils: plot_sweep, plot_density, plot_data_colapse, plot_spatial_correlation
 
 # Custom function to parse a range from a string
 function parse_range(range_str::String)
@@ -69,7 +72,7 @@ function main()
     
     # Generate data collapse plot with all states
     # whole_dir_path="$(figures_dir)/data_collapse_plot_y^$(n)_indices-$(args["indices"]).png"
-    p = plot_data_colapse(states_params_names,n,indices,figures_dir,do_fit)  
+    p = PlotUtils.plot_data_colapse(states_params_names,n,indices,figures_dir,do_fit)  
     display(p)
     # savefig(p, "$(figures_dir)/data_collapse_plot_y^$(n)_indices-$(args["indices"]).png")
     # println("Plot saved as data_collapse_plot.png")
@@ -79,7 +82,7 @@ function main()
         filename = basename(args["saved_states"][i])
         filename = replace(filename, ".jld2" => "")
         only_filename = split(filename,"/")|>last
-        normalized_dist, corr_mat = plot_sweep(state.t, state, param; label=label)
+        normalized_dist, corr_mat = PlotUtils.plot_sweep(state.t, state, param; label=label)
         specific_state_dir= "$(figures_dir)/$(only_filename)"
         mkpath(specific_state_dir)
         savefig("$(specific_state_dir)/sweep_plot_$(i).png")
