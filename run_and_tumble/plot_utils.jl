@@ -203,24 +203,54 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                  color=:red, markersize=6, markershape=:x,
                  label="Zeroed middle")
 
-        # Remove the old x-axis correlation plots since they were incorrectly implemented
-        # Layout: Row 1: density + potential, Row 2: y=0 cuts, Row 3: diagonal cuts, Row 4: positive half cuts
-        # fix the layout
+        # 9) Antisymmetric parts (remove symmetric component)
+        # For y=0 cut - remove symmetric part
+        corr_mat2_antisym = remove_symmetric_part_reflection(corr_mat2, middle_x)
+        # Apply same diagonal smoothing to antisymmetric part
+        for i in 1:dims[1]
+            left_idx = i == 1 ? dims[1] : i - 1
+            right_idx = i == dims[1] ? 1 : i + 1
+            corr_mat2_antisym[i, i] = (corr_mat2_antisym[i, left_idx] + corr_mat2_antisym[i, right_idx]) / 2
+        end
+        
+        line_data_antisym = corr_mat2_antisym[x_idx, :]
+        p3_antisym = plot(x_range, line_data_antisym,
+                         title="C at x₁=3/4·L₁ (Antisymmetric)",
+                         xlabel="x₂", ylabel="C",
+                         legend=false, lw=2, color=:red)
+        
+
+        # For diagonal cut - remove symmetric part  
+        corr_diag_antisym = remove_symmetric_part_reflection(corr_diag, middle_x)
+        # Apply same diagonal smoothing
+        for i in 1:dims[1]
+            left_idx = i == 1 ? dims[1] : i - 1
+            right_idx = i == dims[1] ? 1 : i + 1
+            corr_diag_antisym[i, i] = (corr_diag_antisym[i, left_idx] + corr_diag_antisym[i, right_idx]) / 2
+        end
+        
+        diag_line_data_antisym = corr_diag_antisym[x_idx, :]
+        p6_antisym = plot(x_range, diag_line_data_antisym,
+                         title="Diagonal C at x=3/4·L₁ (Antisymmetric)",
+                         xlabel="x'", ylabel="C",
+                         legend=false, lw=2, color=:red)
+        
+
         # Create empty plots for organization
         p_empty1 = plot(axis=false, showaxis=false, grid=false, title="")
         p_empty2 = plot(axis=false, showaxis=false, grid=false, title="")
         p_empty3 = plot(axis=false, showaxis=false, grid=false, title="")
+        p_empty4 = plot(axis=false, showaxis=false, grid=false, title="")
 
-        # Layout with 15 plots total (5 rows x 3 columns)
-        display(plot(p1, p_pot, p_empty1,           # Row 1: density, potential, empty
-                     p2, p3, p4,                    # Row 2: full y=0 correlation cuts
-                     p_empty2,p3_pos, p4_pos,      # Row 3: positive y=0 cuts, empty
-                     p5, p6, p7,                    # Row 4: diagonal correlation cuts  
-                     p_empty3, p6_pos, p7_pos,      # Row 5: positive diagonal cuts, empty
-                     layout=(5,3), size=(1800,2000),
+        # Layout with 20 plots total (5 rows x 4 columns)
+        display(plot(p1, p_pot, p_empty1, p_empty2,                    # Row 1: density, potential, empty, empty
+                     p2, p3, p4, p3_antisym,                           # Row 2: full y=0 correlation cuts + antisymmetric
+                     p_empty3, p3_pos, p4_pos, p_empty4,               # Row 3: positive y=0 cuts, empty, empty
+                     p5, p6, p7, p6_antisym,                           # Row 4: diagonal correlation cuts + antisymmetric  
+                     plot(), p6_pos, p7_pos, plot(),                   # Row 5: positive diagonal cuts, empty, empty
+                     layout=(5,4), size=(2400,2000),
                      plot_title="2D sweep $(sweep)"))
-        return normalized_dist, corr_mat2 
-
+        return normalized_dist, corr_mat2
     else
         throw(DomainError("Only 1D or 2D plotting supported"))
     end
@@ -371,13 +401,22 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             x_axis_dir = "$(results_dir)/x_axis_cut"
             diag_dir = "$(results_dir)/diagonal_cut"
             x_axis_pos_dir = "$(results_dir)/x_axis_positive_cut"
+            diag_pos_dir = "$(results_dir)/diagonal_positive_cut"
+            x_axis_antisym_dir = "$(results_dir)/x_axis_cut/antisymmetric"
+            diag_antisym_dir = "$(results_dir)/diagonal_cut/antisymmetric"
             mkpath(x_axis_dir)
             mkpath(diag_dir)
             mkpath(x_axis_pos_dir)
+            mkpath(diag_pos_dir)
+            mkpath(x_axis_antisym_dir)
+            mkpath(diag_antisym_dir)
 
             p_x_combined = plot(title="X-axis Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
             p_diag_combined = plot(title="Diagonal Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
             p_x_pos_combined = plot(title="X-axis Positive Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+            p_diag_pos_combined = plot(title="Diagonal Positive Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
+            p_x_antisym_combined = plot(title="X-axis Antisymmetric Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+            p_diag_antisym_combined = plot(title="Diagonal Antisymmetric Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
 
             y0 = div(dims[2] + 1, 2)  # middle y index
             
@@ -432,7 +471,29 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 
                 diag_data = corr_diag[point_to_look_at, :]
                 
-                # Scale and plot all three cuts
+                # Extract positive half of diagonal data
+                diag_positive_data = diag_data[middle_x:end]
+                
+                # Extract antisymmetric parts
+                corr_mat_x_antisym = remove_symmetric_part_reflection(corr_mat_x, middle_x)
+                # Apply diagonal smoothing to antisymmetric x-axis
+                for j in 1:dims[1]
+                    left_idx = j == 1 ? dims[1] : j - 1
+                    right_idx = j == dims[1] ? 1 : j + 1
+                    corr_mat_x_antisym[j, j] = (corr_mat_x_antisym[j, left_idx] + corr_mat_x_antisym[j, right_idx]) / 2
+                end
+                x_axis_antisym_data = corr_mat_x_antisym[point_to_look_at, :]
+                
+                corr_diag_antisym = remove_symmetric_part_reflection(corr_diag, middle_x)
+                # Apply diagonal smoothing to antisymmetric diagonal
+                for j in 1:dims[1]
+                    left_idx = j == 1 ? dims[1] : j - 1
+                    right_idx = j == dims[1] ? 1 : j + 1
+                    corr_diag_antisym[j, j] = (corr_diag_antisym[j, left_idx] + corr_diag_antisym[j, right_idx]) / 2
+                end
+                diag_antisym_data = corr_diag_antisym[point_to_look_at, :]
+                
+                # Scale and plot all six cuts
                 x_positions = 1:length(x_axis_data)
                 x_scaled = (x_positions .- middle_spot) ./ Float64(i)
                 
@@ -440,10 +501,10 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 x_positions_pos = middle_x:dims[1]
                 x_scaled_pos = (x_positions_pos .- middle_spot) ./ Float64(i)
                 
-                for (data, p_plot, cut_type, x_scale) in zip((x_axis_data, diag_data, x_axis_positive_data), 
-                                                           (p_x_combined, p_diag_combined, p_x_pos_combined),
-                                                           ("x-axis", "diagonal", "x-axis-positive"),
-                                                           (x_scaled, x_scaled, x_scaled_pos))
+                for (data, p_plot, cut_type, x_scale) in zip((x_axis_data, diag_data, x_axis_positive_data, diag_positive_data, x_axis_antisym_data, diag_antisym_data), 
+                                                           (p_x_combined, p_diag_combined, p_x_pos_combined, p_diag_pos_combined, p_x_antisym_combined, p_diag_antisym_combined),
+                                                           ("x-axis", "diagonal", "x-axis-positive", "diagonal-positive", "x-axis-antisymmetric", "diagonal-antisymmetric"),
+                                                           (x_scaled, x_scaled, x_scaled_pos, x_scaled_pos, x_scaled, x_scaled))
                     y_scaled = data .* scaling_factor
                     
                     # Filter out non-finite values and extreme outliers
@@ -491,6 +552,9 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             savefig(p_x_combined, "$(x_axis_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_diag_combined, "$(diag_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_x_pos_combined, "$(x_axis_pos_dir)/data_collapse_$(n)_indices-$(indices).png")
+            savefig(p_diag_pos_combined, "$(diag_pos_dir)/data_collapse_$(n)_indices-$(indices).png")
+            savefig(p_x_antisym_combined, "$(x_axis_antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
+            savefig(p_diag_antisym_combined, "$(diag_antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
         end
     end
 
