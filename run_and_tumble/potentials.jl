@@ -296,7 +296,7 @@ module Potentials
                 for i in axes(V, 1)
                     for j in axes(V, 2)
                         # Compute the condition for the mask
-                        if (x[i] - dims[1] / 2)^2 + (y[j] - dims[2] / 2)^2 <= 4
+                        if (x[i] - dims[1] / 2)^2 + (y[j] - dims[2] / 2)^2 <= 2
                             V[i, j] = -magnitude
                         end
                     end

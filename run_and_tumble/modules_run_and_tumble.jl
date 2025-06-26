@@ -39,14 +39,36 @@ module FP
         direction::Array{Float64}
     end
 
-    function setParticle(sys_params,rng)
+    function setParticle(sys_params,rng; ic="random",ic_specific=[])
         dim_num = length(sys_params.dims)
         position = zeros(Int64, dim_num)
         direction = zeros(Float64, dim_num)
-        for (i,dim) in enumerate(sys_params.dims)
-            position[i] = rand(rng, 1:dim)
-            direction[i] = rand(rng,1:dim)*rand(rng,[-1,1])
+        if ic == "random"
+            # Randomly initialize position and direction
+            for (i,dim) in enumerate(sys_params.dims)
+                position[i] = rand(rng, 1:dim)
+                direction[i] = rand(rng,[-1,1])
+            end
+        elseif ic == "center"
+            # Initialize position at the center and direction randomly
+            for (i,dim) in enumerate(sys_params.dims)
+                position[i] = div(dim, 2)
+                direction[i] = rand(rng,[-1,1])
+            end
+        elseif ic == "specific"
+            # Initialize position and direction based on specific input
+            if length(ic_specific) == dim_num + 1
+                position = ic_specific[1:dim_num]
+            else
+                throw(DomainError("Invalid input - specific initial condition must have length $(dim_num+1)"))
+            end
+            for i in 1:dim_num
+                direction[i] = rand(rng,[-1,1])
+            end
+        else
+            throw(DomainError("Invalid input - initial condition not supported yet"))
         end
+        
         direction = direction ./ norm(direction)
         Particle(position,direction)
     end
@@ -118,7 +140,7 @@ module FP
 
 
     
-    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims),zeros(Float64,param.dims)))
+    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims),zeros(Float64,param.dims)); ic ="random")
         N = param.N
         # initialize particles
         particles = Array{Particle}(undef,N)
