@@ -353,6 +353,8 @@ module Potentials
                 potential = setProfileSwitchPotential(pots; probs=probs, rng=rng)
                 #check_potential_switch(potential,rng)
                 return potential
+            elseif fluctuation_type == "forcing"
+                println("Forcing scenario")
             else
                 error("unsupported fluctuation type")
             end
