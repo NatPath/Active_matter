@@ -77,25 +77,29 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 64
+    L= 16
     return Dict(
-        "dim_num" => 2,
+        "dim_num" => 1,
         "D" => 1.0,
         "α" => 0.0,
         "L" => L,
-        "N" => L^2*100,
+        "N" => L*100,
         "T" => 1.0,
         "γ′" => 0.5,
         "ϵ" => 0.0,
         "n_sweeps" => 10^6,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "xy_slides",
-        "fluctuation_type" => "profile_switch",
+        "potential_type" => "zero",
+        "fluctuation_type" => "no-fluctuation",
         "potential_magnitude" => 4.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
-        "save_times" => [j*10^i for i in 6:12 for j in 1:9]
+        "save_times" => [j*10^i for i in 6:12 for j in 1:9],
+        "forcing_type" => "center_bond_x",
+        "forcing_fluctuation_rate" => 0.0,
+        "forcing_fluctuation_type" => "alternating_direction",
+        "forcing_magnitude" => 0.3,
     )
 end
 
@@ -192,16 +196,37 @@ end
     T                  = get(params, "T", defaults["T"])
     γ′                 = get(params, "γ′", defaults["γ′"])
     ϵ                  = get(params, "ϵ", defaults["ϵ"])
-    
+
+    forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
+    forcing_fluctuation_rate_normalized = get(params, "forcing_fluctuation_rate", defaults["forcing_fluctuation_rate"])/N
+    forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
+    forcing_type = get(params, "forcing_type", defaults["forcing_type"])
+    if forcing_type == "center_bond_x"
+        if dim_num ==1
+            bond_indices = ([L÷2],[L÷2+1])
+        elseif dim_num == 2
+            bond_indices = ([L÷2,L÷2],[L÷2+1,L÷2])
+        end
+    elseif forcing_type == "center_bond_y"
+        if dim_num ==1
+            bond_indices = ([L÷2],[L÷2+1])
+        elseif dim_num == 2
+            bond_indices = ([L÷2,L÷2],[L÷2,L÷2+1])
+        end
+    else
+        error("Unsupported forcing type: $forcing_type")
+    end
+    forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
+
     dims = ntuple(i -> L, dim_num)
     ρ₀ = N / (L^dim_num)
     γ = γ′ / N
 
     # Initialize simulation parameters and state.
-    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,forcing_fluctuation_rate_normalized)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
-    state = FP.setState(0, rng, param, T, potential)
+    state = FP.setState(0, rng, param, T, potential, forcing)
    
     #estimate run time
     estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
@@ -333,19 +358,39 @@ function main()
             γ′                 = get(params, "γ′", defaults["γ′"])
             ϵ                  = get(params, "ϵ", defaults["ϵ"])
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
+            forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
+            forcing_fluctuation_rate_normalized = get(params, "forcing_fluctuation_rate", defaults["forcing_fluctuation_rate"])/N
+            forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
+            forcing_type = get(params, "forcing_type", defaults["forcing_type"])
+            if forcing_type == "center_bond_x"
+                if dim_num ==1
+                    bond_indices = ([L÷2],[L÷2+1])
+                elseif dim_num == 2
+                    bond_indices = ([L÷2,L÷2],[L÷2+1,L÷2])
+                end
+            elseif forcing_type == "center_bond_y"
+                if dim_num ==1
+                    bond_indices = ([L÷2],[L÷2+1])
+                elseif dim_num == 2
+                    bond_indices = ([L÷2,L÷2],[L÷2,L÷2+1])
+                end
+            else
+                error("Unsupported forcing type: $forcing_type")
+            end
+            forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
             
             dims = ntuple(i -> L, dim_num)
             ρ₀ = N / prod(dims)
             γ = γ′ / N
             
-            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, forcing_fluctuation_rate_normalized)
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
             
-            state = FP.setState(0, rng, param, T, potential)
+            state = FP.setState(0, rng, param, T, potential, forcing)
         end
         
         show_times = get(params, "show_times", get_default_params()["show_times"])

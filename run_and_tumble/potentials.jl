@@ -1,7 +1,7 @@
 module Potentials
     import Random: AbstractRNG
     using Plots
-    export AbstractPotential ,Potential, MultiPotential, IndependentFluctuatingPoints, ProfileSwitchPotential
+    export AbstractPotential ,Potential, MultiPotential, IndependentFluctuatingPoints, ProfileSwitchPotential, BondForce
     export potential_args, choose_potential, potential_update!
 
     # Abstract type for polymorphism
@@ -32,6 +32,13 @@ module Potentials
         V::AbstractArray{Float64}
         current::Int
     end
+
+    mutable struct BondForce
+        bond_indices::Tuple{Array{Int},Array{Int}}
+        direction_flag::Bool # True if the force is directed (1->2), False if it is directed away
+        magnitude::Float64
+    end
+
     # Utility: weighted sampling without dependencies
     function weighted_sample(rng::AbstractRNG, weights::Vector{Float64})
         total = sum(weights)
@@ -61,6 +68,10 @@ module Potentials
         probabilities = probs === nothing ? fill(1/n, n) : probs
         idx = weighted_sample(rng, probabilities)
         return ProfileSwitchPotential(pots, probabilities, deepcopy(pots[idx].V),idx)
+    end
+
+    function setBondForce(bond_indices, direction_flag, magnitude)
+        return BondForce(bond_indices, direction_flag, magnitude)
     end
 
     function potential_update!(p::Potential)
@@ -103,6 +114,19 @@ module Potentials
         # Randomly switch to a new profile
         p.current = weighted_sample(rng, p.probabilities)
         p.V = deepcopy(p.potentials[p.current].V)
+    end
+
+    function bondforce_update!(bf::BondForce)
+        bf.sign = !bf.sign
+    end
+
+    function choose_bond_force(forcing_type, vertex1, vertex2, magnitude)
+        bond_indices = (vertex1, vertex2)
+        if forcing_type == "none"
+            return setBondForce(bond_indices, true, 0.0)
+        elseif forcing_type == "regular"
+            return setBondForce(bond_indices, true, magnitude)
+        end
     end
 
     # function potential_update!(p::IndependentFluctuatingPointsGaussian, rng::AbstractRNG)
