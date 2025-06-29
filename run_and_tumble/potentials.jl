@@ -2,7 +2,7 @@ module Potentials
     import Random: AbstractRNG
     using Plots
     export AbstractPotential ,Potential, MultiPotential, IndependentFluctuatingPoints, ProfileSwitchPotential, BondForce
-    export potential_args, choose_potential, potential_update!
+    export potential_args, choose_potential, potential_update!, bondforce_update!
 
     # Abstract type for polymorphism
     abstract type AbstractPotential end
@@ -117,7 +117,7 @@ module Potentials
     end
 
     function bondforce_update!(bf::BondForce)
-        bf.sign = !bf.sign
+        bf.direction_flag = !bf.direction_flag
     end
 
     function choose_bond_force(forcing_type, vertex1, vertex2, magnitude)
@@ -443,8 +443,11 @@ module Potentials
             v_2D_x_wall_slide = Dict("type"=>"2D_x_wall_slide","magnitude"=>magnitude)
             v_xy_slide = Dict("type"=>"xy_slide","magnitude"=>magnitude)
             v_xy_slide_rotated = Dict("type"=>"xy_slide_rotated","magnitude"=>magnitude)
+            v_x_slide = Dict("type"=>"2D_x_slide","magnitude"=>magnitude)
+            v_y_slide = Dict("type"=>"2D_y_slide","magnitude"=>magnitude)
             if !simple
                 v_xy_slides =Dict("type"=>"zero","potentials_profiles"=>[potential_args("xy_slide",dims;magnitude=magnitude,simple=true),potential_args("xy_slide",dims;magnitude=-magnitude,simple=true),potential_args("xy_slide_rotated",dims;magnitude=magnitude,simple=true),potential_args("xy_slide_rotated",dims;magnitude=-magnitude,simple=true)])
+                v_rotating_1D_slides = Dict("type"=>"zero","potentials_profiles"=>[potential_args("2D_y_slide",dims;magnitude=magnitude,simple=true),potential_args("2D_x_slide",dims;magnitude=magnitude,simple=true),potential_args("2D_x_slide",dims;magnitude=-magnitude,simple=true),potential_args("2D_y_slide",dims;magnitude=-magnitude,simple=true)])
             end
         else
             error("Unsupported number of dimensions: $dim. Only 1D and 2D cases are supported.")
@@ -496,6 +499,12 @@ module Potentials
             return v_ratchet_PR_ML
         elseif v_string == "2D_x_wall_slide"
             return v_2D_x_wall_slide
+        elseif v_string == "2D_x_slide"
+            return v_x_slide
+        elseif v_string == "2D_y_slide"
+            return v_y_slide
+        elseif v_string == "rotating_1D_slides"
+            return v_rotating_1D_slides
         elseif v_string =="xy_slide"
             return v_xy_slide
         elseif v_string =="xy_slide_rotated"

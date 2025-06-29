@@ -88,9 +88,9 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # 2) Extract correlation C(x1,y0; x2,y0)
         fix_term = param.N / (prod(param.dims)^2)
-        slice2d = state.ρ_matrix_avg[:, y0, :, y0]     # dims[1]×dims[1]
+        slice2d_x = state.ρ_matrix_avg[:, y0, :, y0]     # dims[1]×dims[1]
         mean_vec = state.ρ_avg[:, y0]
-        corr_mat2 = slice2d .- (mean_vec * transpose(mean_vec)) .+ fix_term
+        corr_mat2 = slice2d_x .- (mean_vec * transpose(mean_vec)) .+ fix_term
 
         # Remove diagonal peaks by averaging neighboring values
         for i in 1:dims[1]
@@ -275,16 +275,115 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                  color=:darkred, markersize=6, markershape=:x,
                  label="Zeroed middle")
 
+        # 11) Y-axis cuts (similar to x-axis cuts but along y direction)
+        # Extract correlation C(x0,y1; x0,y2) where x0 = 3/4·L₁
+        x0 = div(dims[1] + 1, 2)               # middle index for x=0
+        slice2d_y = state.ρ_matrix_avg[x0, :, x0, :]     # dims[2]×dims[2]
+        mean_vec_y = state.ρ_avg[x0, :]
+        corr_mat_y = slice2d_y .- (mean_vec_y * transpose(mean_vec_y)) .+ fix_term
+
+        # Remove diagonal peaks by averaging neighboring values
+        for i in 1:dims[2]
+            left_idx = i == 1 ? dims[2] : i - 1
+            right_idx = i == dims[2] ? 1 : i + 1
+            corr_mat_y[i, i] = (corr_mat_y[i, left_idx] + corr_mat_y[i, right_idx]) / 2
+        end
+
+        # Y-axis cut at y₁ = 3/4·L₂
+        y_idx = Int(floor(3 * dims[2] / 4))
+        y_range = 1:dims[2]
+        line_data_y = corr_mat_y[y_idx, :]
+        p_y_cut_full = plot(y_range, line_data_y,
+                  title="C at y₁=3/4·L₂ (idx=$(y_idx))",
+                  xlabel="y₂", ylabel="C",
+                  legend=false, lw=2, color=:cyan)
+
+        # Y-axis cut but with middle region zeroed
+        line_data_y_zeroed = copy(line_data_y)
+        middle_y = div(dims[2] + 1, 2)
+        zero_indices_y = [middle_y-1, middle_y, middle_y+1]
+        line_data_y_zeroed[zero_indices_y] .= 0
+        
+        p_y_cut_zeroed = plot(y_range, line_data_y_zeroed,
+                  title="C at y₁=3/4·L₂ (middle zeroed)",
+                  xlabel="y₂", ylabel="C",
+                  legend=false, lw=2, color=:cyan)
+        
+        # Mark the zeroed points
+        scatter!(p_y_cut_zeroed, zero_indices_y, zeros(length(zero_indices_y)),
+                 color=:red, markersize=6, markershape=:x,
+                 label="Zeroed middle")
+
+        # Positive half of y-axis cut
+        positive_y_range = middle_y:dims[2]
+        positive_line_data_y = line_data_y[middle_y:end]
+        positive_y_positions = positive_y_range .- middle_y .+ 1
+        p_y_cut_positive = plot(positive_y_positions, positive_line_data_y,
+                  title="C at y₁=3/4·L₂ (Positive Half)",
+                  xlabel="Distance from center", ylabel="C",
+                  legend=false, lw=2, color=:cyan)
+
+        # Positive half with middle region zeroed
+        positive_line_data_y_zeroed = copy(positive_line_data_y)
+        zero_indices_y_pos = [1,2]
+        positive_line_data_y_zeroed[zero_indices_y_pos] .= 0
+        p_y_cut_positive_zeroed = plot(positive_y_positions, positive_line_data_y_zeroed,
+                  title="C at y₁=3/4·L₂ (Positive Half, middle zeroed)",
+                  xlabel="Distance from center", ylabel="C",
+                  legend=false, lw=2, color=:cyan)
+        
+        # Mark the zeroed points in positive half
+        scatter!(p_y_cut_positive_zeroed, positive_y_positions[zero_indices_y_pos], 
+                 zeros(sum(zero_indices_y_pos)),
+                 color=:red, markersize=6, markershape=:x,
+                 label="Zeroed middle")
+
+        # Y-axis antisymmetric part
+        corr_mat_y_antisym = remove_symmetric_part_reflection(corr_mat_y, middle_y)
+        # Apply same diagonal smoothing to antisymmetric part
+        for i in 1:dims[2]
+            left_idx = i == 1 ? dims[2] : i - 1
+            right_idx = i == dims[2] ? 1 : i + 1
+            corr_mat_y_antisym[i, i] = (corr_mat_y_antisym[i, left_idx] + corr_mat_y_antisym[i, right_idx]) / 2
+        end
+        
+        line_data_y_antisym = corr_mat_y_antisym[y_idx, :]
+        p_y_cut_antisymmetric = plot(y_range, line_data_y_antisym,
+                         title="C at y₁=3/4·L₂ (Antisymmetric)",
+                         xlabel="y₂", ylabel="C",
+                         legend=false, lw=2, color=:cyan)
+
+        # Y-axis antisymmetric with middle zeroed
+        line_data_y_antisym_zeroed = copy(line_data_y_antisym)
+        line_data_y_antisym_zeroed[zero_indices_y] .= 0
+        p_y_cut_antisymmetric_zeroed = plot(y_range, line_data_y_antisym_zeroed,
+                                title="C at y₁=3/4·L₂ (Antisymmetric, middle zeroed)",
+                                xlabel="y₂", ylabel="C",
+                                legend=false, lw=2, color=:cyan)
+        
+        # Mark the zeroed points in antisymmetric y-axis
+        scatter!(p_y_cut_antisymmetric_zeroed, zero_indices_y, zeros(length(zero_indices_y)),
+                 color=:darkcyan, markersize=6, markershape=:x,
+                 label="Zeroed middle")
+
+        # Add y-axis correlation heatmap
+        p_corr_y_axis = heatmap(corr_mat_y,
+                     title="C(x=3/4·L₁,y₁; x=3/4·L₁,y₂)",
+                     xlabel="y₁", ylabel="y₂",
+                     aspect_ratio=1, colorbar=true, color=:plasma)
+
         # Create empty plot for organization
         p_empty = plot(axis=false, showaxis=false, grid=false, title="")
 
-        # Layout with 20 plots total (5 rows x 4 columns)
+        # Layout with 28 plots total (7 rows x 4 columns)
         display(plot(p_avg_density, p_current_density, p_potential, p_empty,                                    # Row 1: avg density, current density, potential, empty
                      p_corr_x_axis, p_x_cut_full, p_x_cut_positive, p_x_cut_antisymmetric,                            # Row 2: x-axis cuts: corr_x_axis_heatmap, full, positive half, antisymmetric
-                     p_empty, p_x_cut_zeroed, p_x_cut_positive_zeroed, p_x_cut_antisymmetric_zeroed,            # Row 3: empty_plot, x-axis cuts middle zeroed: empty ,full zeroed, positive half zeroed, antisymmetric zeroed,
-                     p_corr_diag, p_diag_cut_full, p_diag_cut_positive, p_diag_cut_antisymmetric,                  # Row 4: diagonal cuts: corr_diag_heatmap, full, positive half, antisymmetric  
-                     p_empty, p_diag_cut_zeroed, p_diag_cut_positive_zeroed, p_diag_cut_antisymmetric_zeroed,  # Row 5: diagonal cuts middle zeroed: empty ,full zeroed, positive half zeroed, antisymmetric zeroed
-                     layout=(5,4), size=(2400,2000),
+                     p_empty, p_x_cut_zeroed, p_x_cut_positive_zeroed, p_x_cut_antisymmetric_zeroed,            # Row 3: x-axis cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
+                     p_corr_y_axis, p_y_cut_full, p_y_cut_positive, p_y_cut_antisymmetric,                           # Row 4: y-axis cuts: corr_y_axis_heatmap, full, positive half, antisymmetric
+                     p_empty, p_y_cut_zeroed, p_y_cut_positive_zeroed, p_y_cut_antisymmetric_zeroed,           # Row 5: y-axis cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
+                     p_corr_diag, p_diag_cut_full, p_diag_cut_positive, p_diag_cut_antisymmetric,                  # Row 6: diagonal cuts: corr_diag_heatmap, full, positive half, antisymmetric  
+                     p_empty, p_diag_cut_zeroed, p_diag_cut_positive_zeroed, p_diag_cut_antisymmetric_zeroed,  # Row 7: diagonal cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
+                     layout=(7,4), size=(2400,2800),
                      plot_title="2D sweep $(sweep)"))
         return normalized_dist, corr_mat2
     else

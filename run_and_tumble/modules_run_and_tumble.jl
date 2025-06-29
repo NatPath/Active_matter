@@ -8,7 +8,7 @@ include("potentials.jl")
 #Wrap everything with a module to allow redefinition of type
 module FP
     # using ..PlotUtils: plot_sweep 
-    using ..Potentials: AbstractPotential, potential_update!, Potential, MultiPotential, IndependentFluctuatingPoints, BondForce
+    using ..Potentials: AbstractPotential, potential_update!, Potential, MultiPotential, IndependentFluctuatingPoints, BondForce, bondforce_update!
     using LinearAlgebra
     export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics
     struct Param # model parameters
@@ -236,7 +236,7 @@ module FP
                 elseif action_index == 5
                     p_candidate = param.forcing_fluctuation_rate
                 else
-                    if (spot_index == state.forcing.bond_indices[1] && candidate_spot_index == state.forcing.bond_indices[2] && state.forcing.direction_flag) || (spot_index == state.forcing.bond_indices[2] && candidate_spot_index == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
+                    if ([spot_index] == state.forcing.bond_indices[1] && [candidate_spot_index] == state.forcing.bond_indices[2] && state.forcing.direction_flag) || ([spot_index] == state.forcing.bond_indices[2] && [candidate_spot_index] == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
                         p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T; ϵ=param.ϵ,bond_forcing=state.forcing.magnitude)
                     else
                         p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T; ϵ=param.ϵ,bond_forcing=0.0)
@@ -275,7 +275,6 @@ module FP
                 t += 1/param.N
                 #state.t += Δt
             end
-            state.t += Δt
             
         elseif length(param.dims) == 2
             V = state.potential.V
@@ -291,6 +290,7 @@ module FP
                 n = (n_and_a - action_index) ÷ 7 + 1
                 particle = state.particles[n]
                 i,j = particle.position
+                spot_index = [i,j]
 
                 state.ρ[i,j] -= 1
 
@@ -330,7 +330,9 @@ module FP
                 elseif action_index==4  # up
                     cand = up
                     dirvec = [0.0, 1.0]
-                elseif action_index == 5  # tumble
+                end
+                
+                if action_index == 5  # tumble
                     cand = (i,j)
                     p_cand = α
                 elseif action_index == 6  # fluctuate potential
@@ -340,6 +342,7 @@ module FP
                     cand = (i,j)
                     p_cand = param.forcing_fluctuation_rate
                 else
+                    candidate_spot_index = collect(cand)
                     if (spot_index == state.forcing.bond_indices[1] && candidate_spot_index == state.forcing.bond_indices[2] && state.forcing.direction_flag) || (spot_index == state.forcing.bond_indices[2] && candidate_spot_index == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
                         p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T;bond_forcing=state.forcing.magnitude)
                     else
@@ -515,6 +518,7 @@ function run_simulation!(state, param, n_sweeps, rng;
     # counts = zeros(Int,length(state.potential.potentials))
     for sweep in t_init:t_end
         update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
+
         # Save state at specified times
         if sweep in save_times
             save_dir = "saved_states"

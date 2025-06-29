@@ -77,21 +77,21 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 16
+    L=16 
     return Dict(
-        "dim_num" => 1,
+        "dim_num" => 2,
         "D" => 1.0,
         "α" => 0.0,
         "L" => L,
-        "N" => L*100,
+        "N" => L^2*100,
         "T" => 1.0,
         "γ′" => 0.5,
         "ϵ" => 0.0,
         "n_sweeps" => 10^6,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "zero",
-        "fluctuation_type" => "no-fluctuation",
+        "potential_type" => "xy_slides",
+        "fluctuation_type" => "profile_switch",
         "potential_magnitude" => 4.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
@@ -99,7 +99,7 @@ end
         "forcing_type" => "center_bond_x",
         "forcing_fluctuation_rate" => 0.0,
         "forcing_fluctuation_type" => "alternating_direction",
-        "forcing_magnitude" => 0.3,
+        "forcing_magnitude" => 0.0,
     )
 end
 
