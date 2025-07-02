@@ -77,23 +77,29 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 64 
+    L=16 
     return Dict(
-        "dim_num" => 1,
+        "dim_num" => 2,
         "D" => 1.0,
         "α" => 0.0,
         "L" => L,
-        "N" => L*100,
+        "N" => L^2*100,
         "T" => 1.0,
-        "γ′" => 1,
+        "γ′" => 0.5,
         "ϵ" => 0.0,
-        "n_sweeps" => 1*10^6,
-        "potential_type" => "linear_slides_cut1",
+        "n_sweeps" => 10^6,
+        # "potential_type" => "well",
+        # "fluctuation_type" => "reflection",
+        "potential_type" => "xy_slides",
         "fluctuation_type" => "profile_switch",
-        "potential_magnitude" => 16,
+        "potential_magnitude" => 4.0,
         "save_dir" => "saved_states",
-        "show_times" => [j*10^i for i in 3:12 for j in 1:9],
-        "save_times" => [j*10^i for i in 6:12 for j in 1:9]
+        "show_times" => [j*10^i for i in 0:12 for j in 1:9],
+        "save_times" => [j*10^i for i in 6:12 for j in 1:9],
+        "forcing_type" => "center_bond_x",
+        "forcing_fluctuation_rate" => 0.0,
+        "forcing_fluctuation_type" => "alternating_direction",
+        "forcing_magnitude" => 0.0,
     )
 end
 
@@ -190,16 +196,37 @@ end
     T                  = get(params, "T", defaults["T"])
     γ′                 = get(params, "γ′", defaults["γ′"])
     ϵ                  = get(params, "ϵ", defaults["ϵ"])
-    
+
+    forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
+    forcing_fluctuation_rate_normalized = get(params, "forcing_fluctuation_rate", defaults["forcing_fluctuation_rate"])/N
+    forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
+    forcing_type = get(params, "forcing_type", defaults["forcing_type"])
+    if forcing_type == "center_bond_x"
+        if dim_num ==1
+            bond_indices = ([L÷2],[L÷2+1])
+        elseif dim_num == 2
+            bond_indices = ([L÷2,L÷2],[L÷2+1,L÷2])
+        end
+    elseif forcing_type == "center_bond_y"
+        if dim_num ==1
+            bond_indices = ([L÷2],[L÷2+1])
+        elseif dim_num == 2
+            bond_indices = ([L÷2,L÷2],[L÷2,L÷2+1])
+        end
+    else
+        error("Unsupported forcing type: $forcing_type")
+    end
+    forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
+
     dims = ntuple(i -> L, dim_num)
-    ρ₀ = N / L
+    ρ₀ = N / (L^dim_num)
     γ = γ′ / N
 
     # Initialize simulation parameters and state.
-    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,forcing_fluctuation_rate_normalized)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
-    state = FP.setState(0, rng, param, T, potential)
+    state = FP.setState(0, rng, param, T, potential, forcing)
    
     #estimate run time
     estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
@@ -256,10 +283,22 @@ function main()
         
         #avg_corr = mean(corr_mats, dims=1)
         #avg_dists = mean(normalized_dists,dims=1)
-        stacked_corr = cat(corr_mats..., dims=3)  # Stack matrices along a new third dimension
-        avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
-        stacked_dists = cat(normalized_dists..., dims=2)
-        avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
+        
+        # Handle different dimensions for stacking and averaging
+        if ndims(corr_mats[1]) == 2  # 1D case
+            stacked_corr = cat(corr_mats..., dims=3)  # Stack matrices along a new third dimension
+            avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
+            stacked_dists = cat(normalized_dists..., dims=2)
+            avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
+        elseif ndims(corr_mats[1]) == 4  # 2D case
+            stacked_corr = cat(corr_mats..., dims=5)  # Stack 4D tensors along 5th dimension
+            avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)  # Average over 5th dimension
+            stacked_dists = cat(normalized_dists..., dims=3)  # Stack 2D matrices along 3rd dimension
+            avg_dists = dropdims(mean(stacked_dists, dims=3), dims=3)  # Average over 3rd dimension
+        else
+            error("Unsupported correlation matrix dimensions: $(ndims(corr_mats[1]))")
+        end
+        
         total_t = n_sweeps*(num_runs-1)+states[1].t 
         dummy_state = FP.setDummyState(states[1],avg_dists,avg_corr,total_t)
 
@@ -272,7 +311,7 @@ function main()
         mkpath(save_dir)
         now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
         filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
-        @save filename normalized_dists corr_mats avg_corr avg_dists
+        @save filename normalized_dists corr_mats avg_corr avg_dists params
         println("Parallel results saved to: $filename")
     else
         # Single-run mode.
@@ -319,19 +358,39 @@ function main()
             γ′                 = get(params, "γ′", defaults["γ′"])
             ϵ                  = get(params, "ϵ", defaults["ϵ"])
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
+            forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
+            forcing_fluctuation_rate_normalized = get(params, "forcing_fluctuation_rate", defaults["forcing_fluctuation_rate"])/N
+            forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
+            forcing_type = get(params, "forcing_type", defaults["forcing_type"])
+            if forcing_type == "center_bond_x"
+                if dim_num ==1
+                    bond_indices = ([L÷2],[L÷2+1])
+                elseif dim_num == 2
+                    bond_indices = ([L÷2,L÷2],[L÷2+1,L÷2])
+                end
+            elseif forcing_type == "center_bond_y"
+                if dim_num ==1
+                    bond_indices = ([L÷2],[L÷2+1])
+                elseif dim_num == 2
+                    bond_indices = ([L÷2,L÷2],[L÷2,L÷2+1])
+                end
+            else
+                error("Unsupported forcing type: $forcing_type")
+            end
+            forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
             
             dims = ntuple(i -> L, dim_num)
-            ρ₀ = N / L
+            ρ₀ = N / prod(dims)
             γ = γ′ / N
             
-            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, forcing_fluctuation_rate_normalized)
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
             
-            state = FP.setState(0, rng, param, T, potential)
+            state = FP.setState(0, rng, param, T, potential, forcing)
         end
         
         show_times = get(params, "show_times", get_default_params()["show_times"])
