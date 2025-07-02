@@ -196,7 +196,7 @@ module FP
     #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
     # end
 
-    function update!(param, state, rng; bond_forcing=false)
+    function update!(param, state, rng )
 
         if length(param.dims) == 1
             V = state.potential.V
@@ -207,71 +207,76 @@ module FP
             t_end = state.t + Δt
             t= state.t
             while t < t_end
-                n_and_a = rand(rng,1:5*param.N)
-                action_index = mod1(n_and_a,5)
-                n = (n_and_a-action_index) ÷ 5 +1
-                particle = state.particles[n]
-                spot_index = particle.position[1]
-                left_index= mod1(spot_index-1,param.dims[1])
-                right_index = mod1(spot_index+1,param.dims[1])
+                n_and_a = rand(rng,1:3*(param.N+2))
+                action_index = mod1(n_and_a,3)
+                n = (n_and_a-action_index) ÷ 3 +1
+                if n<=param.N
+                    particle = state.particles[n]
+                    spot_index = particle.position[1]
+                    left_index= mod1(spot_index-1,param.dims[1])
+                    right_index = mod1(spot_index+1,param.dims[1])
 
-                state.ρ[spot_index] -= 1
-                
-                candidate_spot_index = 0
-                if action_index == 1 # left
-                    candidate_spot_index = left_index
-                    choice_direction = -1
-                elseif action_index == 2 # right
-                    candidate_spot_index = right_index
-                    choice_direction = 1
-                else  # tumble ,fluctuate potential, fluctuate forcing
-                    candidate_spot_index = spot_index
-                    choice_direction = 0
-                end
-
-                if action_index==3
-                    p_candidate=α
-                elseif action_index==4
-                    p_candidate=γ
-                elseif action_index == 5
-                    p_candidate = param.forcing_fluctuation_rate
-                else
-                    if ([spot_index] == state.forcing.bond_indices[1] && [candidate_spot_index] == state.forcing.bond_indices[2] && state.forcing.direction_flag) || ([spot_index] == state.forcing.bond_indices[2] && [candidate_spot_index] == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
-                        p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T; ϵ=param.ϵ,bond_forcing=state.forcing.magnitude)
+                    state.ρ[spot_index] -= 1
+                    
+                    candidate_spot_index = 0
+                    if action_index == 1 # left
+                        candidate_spot_index = left_index
+                        choice_direction = -1
+                    elseif action_index == 2 # right
+                        candidate_spot_index = right_index
+                        choice_direction = 1
+                    else  # tumble ,fluctuate potential, fluctuate forcing
+                        candidate_spot_index = spot_index
+                        choice_direction = 0
+                    end
+                    if action_index==3 # tumble
+                        p_candidate=α
                     else
-                        p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T; ϵ=param.ϵ,bond_forcing=0.0)
+                        if ([spot_index] == state.forcing.bond_indices[1] && [candidate_spot_index] == state.forcing.bond_indices[2] && state.forcing.direction_flag) || ([spot_index] == state.forcing.bond_indices[2] && [candidate_spot_index] == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
+                            p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T; ϵ=param.ϵ,bond_forcing=state.forcing.magnitude)
+                        else
+                            p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T; ϵ=param.ϵ,bond_forcing=0.0)
+                        end
+                    end
+                else
+                    if n == param.N+1 # potential fluctuation
+                        action_index = 4
+                        p_candidate=γ
+                    elseif n == param.N+2 # bond fluctuation
+                        action_index = 5
+                        p_candidate = param.forcing_fluctuation_rate
                     end
                 end
+
                 p_stay = 1-p_candidate
                 p_arr = [p_candidate, p_stay]
                 choice = tower_sampling(p_arr, sum(p_arr),rng)
                 if choice == 1
-                    particle.position[1] =  candidate_spot_index
+                    if n<=param.N
+                        particle.position[1] =  candidate_spot_index
 
-                    if particle.direction[1] == 1
-                        state.ρ₊[spot_index]-=1
-                        state.ρ₊[candidate_spot_index]+=1
-                    elseif particle.direction[1] ==-1
-                        state.ρ₋[spot_index]-=1
-                        state.ρ₋[candidate_spot_index]+=1
-                    end
+                        if particle.direction[1] == 1
+                            state.ρ₊[spot_index]-=1
+                            state.ρ₊[candidate_spot_index]+=1
+                        elseif particle.direction[1] ==-1
+                            state.ρ₋[spot_index]-=1
+                            state.ρ₋[candidate_spot_index]+=1
+                        end
 
-                    if action_index==3
-                        state.ρ₊[spot_index]-= particle.direction[1]
-                        state.ρ₋[spot_index]+= particle.direction[1]
-                        particle.direction[1]*=-1
-                        # println("tumbled")
+                        if action_index==3
+                            state.ρ₊[spot_index]-= particle.direction[1]
+                            state.ρ₋[spot_index]+= particle.direction[1]
+                            particle.direction[1]*=-1
+                        end
+                        new_position = particle.position[1]
+                        state.ρ[new_position] += 1
+
                     elseif action_index == 4
                         potential_update!(state.potential,rng)
-                        # state.potential.V += state.potential.fluctuation_mask*state.potential.fluctuation_sign
-                        # state.potential.fluctuation_sign*=-1
                     elseif action_index == 5
                         bondforce_update!(state.forcing)
                     end
                 end
-                new_position = particle.position[1]
-                state.ρ[new_position] += 1
-
                 t += 1/param.N
                 #state.t += Δt
             end
@@ -285,69 +290,54 @@ module FP
             t_end = state.t + Δt
             t = state.t
             while t < t_end
-                n_and_a = rand(rng, 1:7*param.N)  # 6 actions: left, right, up, down, tumble, fluctuate
-                action_index = mod1(n_and_a, 7)
-                n = (n_and_a - action_index) ÷ 7 + 1
-                particle = state.particles[n]
-                i,j = particle.position
-                spot_index = [i,j]
+                n_and_a = rand(rng, 1:5*(param.N+2))  # 6 actions: left, right, up, down, tumble, fluctuate
+                action_index = mod1(n_and_a, 5)
+                n = (n_and_a - action_index) ÷ 5 + 1
+                if n<=param.N
+                    particle = state.particles[n]
+                    i,j = particle.position
+                    spot_index = [i,j]
 
-                state.ρ[i,j] -= 1
+                    state.ρ[i,j] -= 1
 
-                # Calculate neighboring indices
-                Lx,Ly = param.dims
-                left = (mod1(i-1, Lx), j)
-                right = (mod1(i+1, Lx), j)
-                down = (i, mod1(j-1, Ly))
-                up = (i, mod1(j+1, Ly))
+                    # Calculate neighboring indices
+                    Lx,Ly = param.dims
+                    left = (mod1(i-1, Lx), j)
+                    right = (mod1(i+1, Lx), j)
+                    down = (i, mod1(j-1, Ly))
+                    up = (i, mod1(j+1, Ly))
 
-                # # Determine action
-                # if action_index == 1  # left
-                #     cand = left
-                #     dirvec = [-1.0, 0.0]
-                #     p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[left...]-V[i,j],T)
-                # elseif action_index == 2  # right
-                #     cand = right 
-                #     dirvec = [1.0, 0.0]
-                #     p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[right...]-V[i,j],T)
-                # elseif action_index == 3  # down
-                #     cand = down 
-                #     dirvec = [0.0, -1.0]
-                #     p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[down...]-V[i,j],T)
-                # elseif action_index == 4  # up
-                #     cand = up 
-                #     dirvec = [0.0, 1.0]
-                #     p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[up...]-V[i,j],T)
-                if action_index==1  # left
-                    cand = left
-                    dirvec = [-1.0, 0.0]
-                elseif action_index==2  # right
-                    cand = right
-                    dirvec = [1.0, 0.0]
-                elseif action_index==3  # down
-                    cand = down
-                    dirvec = [0.0, -1.0]
-                elseif action_index==4  # up
-                    cand = up
-                    dirvec = [0.0, 1.0]
-                end
-                
-                if action_index == 5  # tumble
-                    cand = (i,j)
-                    p_cand = α
-                elseif action_index == 6  # fluctuate potential
-                    cand = (i,j)
-                    p_cand = γ
-                elseif action_index == 7  # fluctuate forcing
-                    cand = (i,j)
-                    p_cand = param.forcing_fluctuation_rate
-                else
-                    candidate_spot_index = collect(cand)
-                    if (spot_index == state.forcing.bond_indices[1] && candidate_spot_index == state.forcing.bond_indices[2] && state.forcing.direction_flag) || (spot_index == state.forcing.bond_indices[2] && candidate_spot_index == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
-                        p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T;bond_forcing=state.forcing.magnitude)
-                    else
-                        p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T)
+                    if action_index==1  # left
+                        cand = left
+                        dirvec = [-1.0, 0.0]
+                    elseif action_index==2  # right
+                        cand = right
+                        dirvec = [1.0, 0.0]
+                    elseif action_index==3  # down
+                        cand = down
+                        dirvec = [0.0, -1.0]
+                    elseif action_index==4  # up
+                        cand = up
+                        dirvec = [0.0, 1.0]
                     end
+                    
+                    if action_index == 5  # tumble
+                        cand = (i,j)
+                        p_cand = α
+                    else
+                        candidate_spot_index = collect(cand)
+                        if (spot_index == state.forcing.bond_indices[1] && candidate_spot_index == state.forcing.bond_indices[2] && state.forcing.direction_flag) || (spot_index == state.forcing.bond_indices[2] && candidate_spot_index == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
+                            p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T;bond_forcing=state.forcing.magnitude)
+                        else
+                            p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T)
+                        end
+                    end
+                elseif n == param.N+1  # potential fluctuation
+                    action_index = 6
+                    p_cand = γ
+                elseif n == param.N+2  # bond fluctuation
+                    action_index = 7
+                    p_cand = param.forcing_fluctuation_rate
                 end
 
                 p_stay = 1 - p_cand
@@ -355,28 +345,24 @@ module FP
                 choice = tower_sampling(p_arr, sum(p_arr), rng)
 
                 if choice == 1
-                    
-                    # if particle.direction[1] == 1
-                    #     println("did you get here?")
-                    #     state.ρ₊[candidate_spot_index...] -= 1
-                    #     state.ρ₊[candidate_spot_index...] += 1
-                    # elseif particle.direction[1] == -1
-                    #     println("did you get here?")
-                    #     state.ρ₋[candidate_spot_index...] -= 1
-                    #     state.ρ₋[candidate_spot_index...] += 1
-                    # end
-
-                    if action_index == 5  # tumble
-                        v = randn(rng,2)
-                        particle.direction .= v/norm(v)
+                    if n<=param.N
+                        particle.position .= cand
+                        if action_index == 5  # tumble
+                            v = randn(rng,2)
+                            particle.direction .= v/norm(v)
+                        end
                     elseif action_index == 6  # fluctuate potential
                         potential_update!(state.potential, rng)
                     elseif action_index == 7  # fluctuate forcing
                         bondforce_update!(state.forcing)
                     end
-                    particle.position .= cand
                 end
-                state.ρ[particle.position...] += 1
+                if n<=param.N
+                    state.ρ[particle.position...] += 1
+                    if state.ρ[particle.position...]<0
+                        println("Negative density encountered at position $(particle.position)...")
+                    end
+                end
                 t += 1 / param.N
             end
         else

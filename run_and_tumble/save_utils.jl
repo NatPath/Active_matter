@@ -30,8 +30,8 @@ end
 # Original save_state function.
 function save_state(state, param, save_dir)
     mkpath(save_dir)
-    γ′ = param.γ * param.N
-    ffr = param.forcing_fluctuation_rate * param.N
+    γ = param.γ
+    ffr = param.ffr
     dim = length(param.dims)
     filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_f_-%.1f_ffr-%.2f_t-%d.jld2",
         save_dir,
@@ -43,7 +43,7 @@ function save_state(state, param, save_dir)
         param.dims[1],
         param.ρ₀,
         param.α,
-        γ′,
+        γ,
         param.D,
         state.forcing.magnitude,
         ffr,

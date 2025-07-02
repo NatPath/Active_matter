@@ -58,7 +58,7 @@ function parse_commandline()
     return parse_args(s)
 end
 # Estimate the total run time by running a sample of sweeps.
-@everywhere function estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+@everywhere function estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     println("Estimating run time using $sample_size sweeps...")
     # Clone the current state so that our sample does not affect the actual simulation.
     state_copy = deepcopy(state)
@@ -85,7 +85,7 @@ end
         "L" => L,
         "N" => L^2*100,
         "T" => 1.0,
-        "γ′" => 0.5,
+        "γ" => 0.5,
         "ϵ" => 0.0,
         "n_sweeps" => 10^6,
         # "potential_type" => "well",
@@ -97,7 +97,7 @@ end
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
-        "forcing_fluctuation_rate" => 0.0,
+        "ffr" => 0.0,
         "forcing_fluctuation_type" => "alternating_direction",
         "forcing_magnitude" => 0.0,
     )
@@ -144,7 +144,7 @@ end
     # potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
     # state = FP.setState(0, rng, param, T, potential)
     dummy_state = setDummyState(state,state.ρ_avg,state.ρ_matrix_avg,state.t)
-    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     estimated_time_hours = estimated_time / 3600
     println("Estimated run time for this simulation: $estimated_time_hours hours")
     # Run the simulation (calculating correlations).
@@ -194,11 +194,11 @@ end
     L                  = get(params, "L", defaults["L"])
     N                  = get(params, "N", defaults["N"])
     T                  = get(params, "T", defaults["T"])
-    γ′                 = get(params, "γ′", defaults["γ′"])
+    γ                 = get(params, "γ", defaults["γ"])
     ϵ                  = get(params, "ϵ", defaults["ϵ"])
 
     forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
-    forcing_fluctuation_rate_normalized = get(params, "forcing_fluctuation_rate", defaults["forcing_fluctuation_rate"])/N
+    ffr = get(params, "ffr", defaults["ffr"])
     forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
     forcing_type = get(params, "forcing_type", defaults["forcing_type"])
     if forcing_type == "center_bond_x"
@@ -220,16 +220,15 @@ end
 
     dims = ntuple(i -> L, dim_num)
     ρ₀ = N / (L^dim_num)
-    γ = γ′ / N
 
     # Initialize simulation parameters and state.
-    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,forcing_fluctuation_rate_normalized)
+    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,ffr)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
     state = FP.setState(0, rng, param, T, potential, forcing)
    
     #estimate run time
-    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     estimated_time_hours = estimated_time / 3600
     println("Estimated run time for this simulation: $estimated_time_hours hours")
 
@@ -355,11 +354,11 @@ function main()
             L                  = get(params, "L", defaults["L"])
             N                  = get(params, "N", defaults["N"])
             T                  = get(params, "T", defaults["T"])
-            γ′                 = get(params, "γ′", defaults["γ′"])
+            γ                 = get(params, "γ", defaults["γ"])
             ϵ                  = get(params, "ϵ", defaults["ϵ"])
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
             forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
-            forcing_fluctuation_rate_normalized = get(params, "forcing_fluctuation_rate", defaults["forcing_fluctuation_rate"])/N
+            ffr = get(params, "ffr", defaults["ffr"])
             forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
             forcing_type = get(params, "forcing_type", defaults["forcing_type"])
             if forcing_type == "center_bond_x"
@@ -381,9 +380,8 @@ function main()
             
             dims = ntuple(i -> L, dim_num)
             ρ₀ = N / prod(dims)
-            γ = γ′ / N
             
-            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, forcing_fluctuation_rate_normalized)
+            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffr )
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
