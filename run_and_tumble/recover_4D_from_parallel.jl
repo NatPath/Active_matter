@@ -24,6 +24,9 @@ function parse_commandline()
         "--match_mode"
             help = "Match files from parallel_dir with broken_dir based on creation dates"
             action = :store_true
+        "--allow_multiple"
+            help = "Allow multiple recovered files per parameter set (adds _index suffix)"
+            action = :store_true
         "--parallel_dir"
             help = "Directory containing parallel simulation results (recover_2D files)"
             default = "saved_states_parallel/recover_2D"
@@ -98,39 +101,91 @@ function match_files_by_date(parallel_dir::String, broken_dir::String, time_tole
     sort!(broken_dates, by=x->x[1])
     
     println("\nMatching files by creation date...")
+    println("Date range analysis:")
+    if !isempty(parallel_dates) && !isempty(broken_dates)
+        println("  Parallel files: $(parallel_dates[1][3]) to $(parallel_dates[end][3])")
+        println("  Broken files: $(broken_dates[1][3]) to $(broken_dates[end][3])")
+    end
     
     matches = Tuple{String, String, Float64}[]
-    unmatched_broken = String[]
+    unmatched_parallel = copy(parallel_files)
+    used_broken_files = String[]
     
-    for (broken_date, broken_file, broken_readable) in broken_dates
+    # First pass: Find best matches for each parallel file
+    for (parallel_date, parallel_file, parallel_readable) in parallel_dates
         best_match = ""
         best_match_readable = nothing
         min_diff = Inf
         
-        # Find closest parallel file within tolerance
-        for (parallel_date, parallel_file, parallel_readable) in parallel_dates
+        # Find closest broken file within tolerance
+        for (broken_date, broken_file, broken_readable) in broken_dates
             diff = abs(parallel_date - broken_date)
             if diff < min_diff && diff <= time_tolerance
                 min_diff = diff
-                best_match = parallel_file
-                best_match_readable = parallel_readable
+                best_match = broken_file
+                best_match_readable = broken_readable
             end
         end
         
         if !isempty(best_match)
-            push!(matches, (broken_file, best_match, min_diff))
-            println("MATCH: $(basename(broken_file)) ↔ $(basename(best_match)) (diff: $(round(min_diff, digits=1))s)")
-            println("  Broken:   $broken_readable")
-            println("  Parallel: $best_match_readable")
-        else
+            push!(matches, (best_match, parallel_file, min_diff))
+            println("MATCH: $(basename(best_match)) ↔ $(basename(parallel_file)) (diff: $(round(min_diff, digits=1))s)")
+            println("  Broken:   $best_match_readable")
+            println("  Parallel: $parallel_readable")
+            
+            # Remove from unmatched parallel files
+            filter!(x -> x != parallel_file, unmatched_parallel)
+            
+            # Track which broken files are being used (allow reuse)
+            if !(best_match in used_broken_files)
+                push!(used_broken_files, best_match)
+            end
+        end
+    end
+    
+    # Report unmatched parallel files
+    unmatched_broken = String[]
+    for (broken_date, broken_file, broken_readable) in broken_dates
+        if !(broken_file in used_broken_files)
             push!(unmatched_broken, broken_file)
-            println("UNMATCHED: $(basename(broken_file)) - $broken_readable")
+            println("UNMATCHED BROKEN: $(basename(broken_file)) - $broken_readable")
         end
     end
     
     println("\nMatching summary:")
-    println("  Matched pairs: $(length(matches))")
+    println("  Total matches: $(length(matches))")
+    println("  Unique broken files used: $(length(used_broken_files))")
+    println("  Unmatched parallel files: $(length(unmatched_parallel))")
     println("  Unmatched broken files: $(length(unmatched_broken))")
+    
+    # Show parameter reuse statistics
+    broken_usage = Dict{String, Int}()
+    for (broken_file, _, _) in matches
+        broken_usage[broken_file] = get(broken_usage, broken_file, 0) + 1
+    end
+    
+    reused_count = sum(usage > 1 for usage in values(broken_usage))
+    if reused_count > 0
+        println("\nParameter reuse statistics:")
+        println("  Broken files used multiple times: $reused_count")
+        for (broken_file, usage) in broken_usage
+            if usage > 1
+                println("    $(basename(broken_file)): used $usage times")
+            end
+        end
+    end
+    
+    # Show some examples of unmatched parallel files
+    if length(unmatched_parallel) > 0
+        println("\nSample unmatched parallel files:")
+        for (i, file) in enumerate(unmatched_parallel[1:min(5, length(unmatched_parallel))])
+            readable_date = get_readable_date(file)
+            println("  $(i). $(basename(file)) - $readable_date")
+        end
+        if length(unmatched_parallel) > 5
+            println("  ... and $(length(unmatched_parallel) - 5) more")
+        end
+    end
     
     return matches, unmatched_broken
 end
@@ -300,13 +355,16 @@ function process_directory(input_dir, output_dir)
     end
 end
 
-function process_matched_pair(broken_file::String, parallel_file::String, output_dir::String)
+function process_matched_pair(broken_file::String, parallel_file::String, output_dir::String, allow_multiple::Bool=false, index_suffix::String="")
     """
     Process a matched pair: use parallel results with parameters from broken file
     """
     println("\nProcessing matched pair:")
     println("  Parallel results: $(basename(parallel_file))")
     println("  Parameters from: $(basename(broken_file))")
+    if !isempty(index_suffix)
+        println("  Index suffix: $index_suffix")
+    end
     
     # Load parallel results
     @load parallel_file normalized_dists corr_mats
@@ -323,33 +381,94 @@ function process_matched_pair(broken_file::String, parallel_file::String, output
     nsteps = state.t
     dummy_state = FP.setDummyState(state, recovered_dists, recovered_corr, nsteps)
     
-    # Save the recovered dummy state
-    filename = save_state(dummy_state, param, output_dir)
+    # Save the recovered dummy state with optional index suffix
+    if allow_multiple && !isempty(index_suffix)
+        filename = save_state_with_suffix(dummy_state, param, output_dir, index_suffix)
+    else
+        filename = save_state(dummy_state, param, output_dir)
+    end
     println("Recovered dummy state saved to: $filename")
     
     return filename
 end
 
-function process_matched_files(matches, output_dir::String)
+function save_state_with_suffix(state, param, save_dir, suffix)
     """
-    Process all matched file pairs
+    Save state with an additional suffix before the file extension
+    """
+    # Generate the normal filename first
+    normal_filename = SaveUtils.generate_filename(param, state.t)
+    
+    # Insert suffix before .jld2 extension
+    base_name = replace(normal_filename, ".jld2" => "")
+    filename_with_suffix = "$(base_name)$(suffix).jld2"
+    
+    # Save with the modified filename
+    mkpath(save_dir)
+    filepath = joinpath(save_dir, filename_with_suffix)
+    
+    @save filepath state param
+    println("State saved to: $filepath")
+    return filepath
+end
+
+function process_matched_files(matches, output_dir::String, allow_multiple::Bool=false)
+    """
+    Process all matched file pairs, handling multiple results per parameter set if enabled
     """
     println("\n=== PROCESSING MATCHED PAIRS ===")
+    println("Allow multiple results: $allow_multiple")
     
     processed_files = String[]
     failed_files = String[]
     
-    for (i, (broken_file, parallel_file, time_diff)) in enumerate(matches)
-        println("\n--- Processing pair $i/$(length(matches)) ---")
+    if allow_multiple
+        # Group matches by broken file to handle multiple parallel files per parameter set
+        broken_file_groups = Dict{String, Vector{Tuple{String, String, Float64}}}()
         
-        try
-            output_filename = process_matched_pair(broken_file, parallel_file, output_dir)
-            push!(processed_files, output_filename)
-            println("✓ Successfully processed pair $i")
-        catch e
-            println("✗ Failed to process pair $i: $e")
-            push!(failed_files, (broken_file, parallel_file))
-            println(e)
+        for match in matches
+            broken_file, parallel_file, time_diff = match
+            
+            if !haskey(broken_file_groups, broken_file)
+                broken_file_groups[broken_file] = Tuple{String, String, Float64}[]
+            end
+            push!(broken_file_groups[broken_file], match)
+        end
+        
+        println("Grouped $(length(matches)) matches into $(length(broken_file_groups)) parameter sets")
+        
+        # Process each group
+        for (broken_file, group_matches) in broken_file_groups
+            println("\nProcessing parameter set: $(basename(broken_file)) ($(length(group_matches)) parallel files)")
+            
+            for (i, (broken_file, parallel_file, time_diff)) in enumerate(group_matches)
+                # Add index suffix for multiple files using same parameters
+                index_suffix = length(group_matches) > 1 ? "_$(i)" : ""
+                
+                try
+                    output_filename = process_matched_pair(broken_file, parallel_file, output_dir, allow_multiple, index_suffix)
+                    push!(processed_files, output_filename)
+                    println("✓ Successfully processed: $(basename(broken_file))$index_suffix ← $(basename(parallel_file))")
+                catch e
+                    println("✗ Failed to process $(basename(broken_file))$index_suffix ← $(basename(parallel_file)): $e")
+                    push!(failed_files, (broken_file, parallel_file))
+                end
+            end
+        end
+    else
+        # Original single-match processing
+        for (i, (broken_file, parallel_file, time_diff)) in enumerate(matches)
+            println("\n--- Processing pair $i/$(length(matches)) ---")
+            
+            try
+                output_filename = process_matched_pair(broken_file, parallel_file, output_dir, false, "")
+                push!(processed_files, output_filename)
+                println("✓ Successfully processed pair $i")
+            catch e
+                println("✗ Failed to process pair $i: $e")
+                push!(failed_files, (broken_file, parallel_file))
+                println(e)
+            end
         end
     end
     
@@ -376,6 +495,7 @@ function main()
     output_dir = args["output_dir"]
     batch_mode = args["batch"]
     match_mode = args["match_mode"]
+    allow_multiple = args["allow_multiple"]
     parallel_dir = args["parallel_dir"]
     broken_dir = args["broken_dir"]
     time_tolerance = args["time_tolerance"]
@@ -403,6 +523,7 @@ function main()
             println(f, "Parallel directory: $parallel_dir")
             println(f, "Broken directory: $broken_dir")
             println(f, "Time tolerance: $time_tolerance seconds")
+            println(f, "Allow multiple results: $allow_multiple")
             println(f, "")
             println(f, "MATCHED PAIRS:")
             for (i, (broken, parallel, diff)) in enumerate(matches)
@@ -417,7 +538,7 @@ function main()
         println("Matching report saved to: $report_file")
         
         # Process matched pairs
-        processed, failed = process_matched_files(matches, output_dir)
+        processed, failed = process_matched_files(matches, output_dir, allow_multiple)
         
     elseif batch_mode || isdir(input_path)
         # Process directory
