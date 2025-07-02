@@ -71,6 +71,44 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                      xlabel="x", ylabel="y",
                      aspect_ratio=1, colorbar=true)
 
+        # Add x-axis cut of average density at y=middle
+        y_middle = div(dims[2] + 1, 2)
+        x_range = 1:dims[1]
+        density_x_cut = normalized_dist[:, y_middle]
+        p_density_x_cut = plot(x_range, density_x_cut,
+                     title="⟨ρ⟩ x-cut at y=$(y_middle)",
+                     xlabel="x", ylabel="Density",
+                     legend=false, lw=2, color=:blue)
+
+        # Add y-axis cut of average density at x=middle
+        x_middle = div(dims[1] + 1, 2)
+        y_range = 1:dims[2]
+        density_y_cut = normalized_dist[x_middle, :]
+        p_density_y_cut = plot(y_range, density_y_cut,
+                     title="⟨ρ⟩ y-cut at x=$(x_middle)",
+                     xlabel="y", ylabel="Density",
+                     legend=false, lw=2, color=:green)
+
+        # Add log plots of density cuts
+        # Plot from middle toward right end only
+        x_right_range = x_middle+1:dims[1]
+        y_right_range = y_middle+1:dims[2]
+        
+        density_x_cut_right = density_x_cut[x_middle+1:end]
+        density_y_cut_right = density_y_cut[y_middle+1:end]
+
+        p_density_x_cut_log = plot(x_right_range, log10.(density_x_cut_right),
+                     title="⟨ρ⟩ x-cut at y=$(y_middle) (log-log scale)",
+                     xlabel="x (log)", ylabel="Density (log)",
+                     legend=false, lw=2, color=:blue,
+                     xscale=:log10 )
+
+        p_density_y_cut_log = plot(y_right_range, log10.(density_y_cut_right),
+                     title="⟨ρ⟩ y-cut at x=$(x_middle) (log-log scale)",
+                     xlabel="y (log)", ylabel="Density (log)",
+                     legend=false, lw=2, color=:green,
+                     xscale=:log10 )
+
         # Add 2D potential profile heatmap
         p_potential = heatmap(state.potential.V',
                        title="Potential V(x,y)",
@@ -375,15 +413,16 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         # Create empty plot for organization
         p_empty = plot(axis=false, showaxis=false, grid=false, title="")
 
-        # Layout with 28 plots total (7 rows x 4 columns)
-        display(plot(p_avg_density, p_current_density, p_potential, p_empty,                                    # Row 1: avg density, current density, potential, empty
-                     p_corr_x_axis, p_x_cut_full, p_x_cut_positive, p_x_cut_antisymmetric,                            # Row 2: x-axis cuts: corr_x_axis_heatmap, full, positive half, antisymmetric
-                     p_empty, p_x_cut_zeroed, p_x_cut_positive_zeroed, p_x_cut_antisymmetric_zeroed,            # Row 3: x-axis cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
-                     p_corr_y_axis, p_y_cut_full, p_y_cut_positive, p_y_cut_antisymmetric,                           # Row 4: y-axis cuts: corr_y_axis_heatmap, full, positive half, antisymmetric
-                     p_empty, p_y_cut_zeroed, p_y_cut_positive_zeroed, p_y_cut_antisymmetric_zeroed,           # Row 5: y-axis cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
-                     p_corr_diag, p_diag_cut_full, p_diag_cut_positive, p_diag_cut_antisymmetric,                  # Row 6: diagonal cuts: corr_diag_heatmap, full, positive half, antisymmetric  
-                     p_empty, p_diag_cut_zeroed, p_diag_cut_positive_zeroed, p_diag_cut_antisymmetric_zeroed,  # Row 7: diagonal cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
-                     layout=(7,4), size=(2400,2800),
+        # Layout with 36 plots total (9 rows x 4 columns)
+        display(plot(p_avg_density, p_density_x_cut, p_density_y_cut, p_current_density,                         # Row 1: avg density, x-cut, y-cut, current density
+                     p_potential, p_density_x_cut_log, p_density_y_cut_log, p_empty,                              # Row 2: potential, x-cut log, y-cut log, empty
+                     p_corr_x_axis, p_x_cut_full, p_x_cut_positive, p_x_cut_antisymmetric,                            # Row 3: x-axis cuts: corr_x_axis_heatmap, full, positive half, antisymmetric
+                     p_empty, p_x_cut_zeroed, p_x_cut_positive_zeroed, p_x_cut_antisymmetric_zeroed,            # Row 4: x-axis cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
+                     p_corr_y_axis, p_y_cut_full, p_y_cut_positive, p_y_cut_antisymmetric,                           # Row 5: y-axis cuts: corr_y_axis_heatmap, full, positive half, antisymmetric
+                     p_empty, p_y_cut_zeroed, p_y_cut_positive_zeroed, p_y_cut_antisymmetric_zeroed,           # Row 6: y-axis cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
+                     p_corr_diag, p_diag_cut_full, p_diag_cut_positive, p_diag_cut_antisymmetric,                  # Row 7: diagonal cuts: corr_diag_heatmap, full, positive half, antisymmetric  
+                     p_empty, p_diag_cut_zeroed, p_diag_cut_positive_zeroed, p_diag_cut_antisymmetric_zeroed,  # Row 8: diagonal cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
+                     layout=(9,4), size=(2400,3600),
                      plot_title="2D sweep $(sweep)"))
         return normalized_dist, corr_mat2
     else
