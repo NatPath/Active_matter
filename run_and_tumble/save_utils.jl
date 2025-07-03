@@ -30,8 +30,18 @@ end
 # Original save_state function.
 function save_state(state, param, save_dir)
     mkpath(save_dir)
-    γ = param.γ
-    ffr = param.ffr
+    # Check if param has forcing_fluctuation_rate or ffr field
+    if hasfield(typeof(param), :forcing_fluctuation_rate)
+        γ = param.γ* param.N
+        ffr = param.forcing_fluctuation_rate * param.N
+    elseif hasfield(typeof(param), :ffr)
+
+        γ = param.γ
+        ffr = param.ffr
+    else
+        error("Parameter object must have either forcing_fluctuation_rate or ffr field")
+    end
+
     dim = length(param.dims)
     filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_f_-%.1f_ffr-%.2f_t-%d.jld2",
         save_dir,
