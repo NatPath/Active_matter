@@ -83,7 +83,12 @@ module FP
         ρ₋::AbstractArray{Int64}      # density field
         #ρ_polarization_arr::Array{Int64}
         ρ_avg::AbstractArray{Float64} #time averaged density field
-        ρ_matrix_avg::AbstractArray{Float64}
+        # ρ_matrix_avg::AbstractArray{Float64}
+        # matrix cuts
+        ρ_matrix_avg_cuts::Dict{Symbol,AbstractArray{Float64}} # Dict with keys :full, :x_cut, :y_cut, :diag_cut
+        # ρ_matrix_avg_x_cut::AbstractArray{Float64}
+        # ρ_matrix_avg_y_cut::AbstractArray{Float64}
+        # ρ_matrix_avg_diag_cut::AbstractArray{Float64}
         T::Float64                      # temperature
         # V::Array{Float64}      # potential
         potential::AbstractPotential
@@ -91,8 +96,8 @@ module FP
 
     end
 
-    function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg, t)
-        dummy_state = State(t, state_to_imitate.particles, state_to_imitate.ρ,state_to_imitate.ρ₊,state_to_imitate.ρ₋, ρ_avg, ρ_matrix_avg, state_to_imitate.T, state_to_imitate.potential, state_to_imitate.forcing)
+    function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t)
+        dummy_state = State(t, state_to_imitate.particles, state_to_imitate.ρ,state_to_imitate.ρ₊,state_to_imitate.ρ₋, ρ_avg, ρ_matrix_avg_cuts, state_to_imitate.T, state_to_imitate.potential, state_to_imitate.forcing)
         #dummy_state = State(t, state_to_imitate.particles, state_to_imitate.ρ,state_to_imitate.ρ₊,state_to_imitate.ρ₋, state_to_imitate.ρ_polarization_arr, ρ_avg, ρ_matrix_avg, state_to_imitate.T, state_to_imitate.potential)
         return dummy_state
     end
@@ -142,7 +147,7 @@ module FP
 
 
     
-    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random")
+    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random", full_corr_tensor=false)
         N = param.N
         # initialize particles
         particles = Array{Particle}(undef,N)
@@ -167,13 +172,28 @@ module FP
         # end
         ρ_avg = Float64.(ρ)
         if dim == 1
-            ρ_matrix_avg = ρ_avg * transpose(ρ_avg) 
+            ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
+                :full => ρ_avg * transpose(ρ_avg)
+            )
+            # ρ_matrix_avg = ρ_avg * transpose(ρ_avg) 
         elseif dim ==2
-            ρ_matrix_avg = outer_density_2D(ρ_avg)
+            if full_corr_tensor
+                x_middle = div(param.dims[1],2)
+                y_middle = div(param.dims[2],2)
+                ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
+                    :full => outer_density_2D(ρ_avg),
+                )
+            else
+                ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
+                    :x_cut => ρ_avg[x_middle,:] * transpose(ρ_avg[x_middle,:]),
+                    :y_cut => ρ_avg[:,y_middle] * transpose(ρ_avg[:,y_middle]),
+                    :diag_cut => ρ_avg[diagind(ρ_avg)] * transpose(ρ_avg[diagind(ρ_avg)])
+                )
+            end
             # ρ_matrix_avg = ρ .* reshape(ρ, 1, 1, size(ρ, 1), size(ρ, 2))
             # ρ_matrix_avg = permutedims(ρ_matrix_avg, (3, 4, 1, 2))
         end
-        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg, T, potential, bond_force)
+        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, T, potential, bond_force)
         return state
     end
 
@@ -447,13 +467,37 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
         dim_num= length(param.dims)
         if dim_num==1
             state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
+            # @. state.ρ_avg += (state.ρ-state.ρ_avg)*calc_var_frequency/frame
             ρ_matrix = state.ρ*transpose(state.ρ)
-            state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
+            # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
+            state.ρ_matrix_avg_cuts[:full] = (state.ρ_matrix_avg_cuts[:full]*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
+            # @. state.ρ_matrix_avg_cuts[:full] += (ρ_matrix-state.ρ_matrix_avg_cuts[:full])*calc_var_frequency/frame
             # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
         elseif dim_num==2
-            state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
-            ρ_matrix = FP.outer_density_2D(state.ρ) 
-            state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
+            # state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
+            @. state.ρ_avg += (state.ρ-state.ρ_avg)*calc_var_frequency/frame
+            
+            x_middle = div(param.dims[1],2)
+            y_middle = div(param.dims[2],2)
+            if haskey(state.ρ_matrix_avg_cuts, :full)
+                ρ_matrix = FP.outer_density_2D(state.ρ) 
+                # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
+                @. state.ρ_matrix_avg[:full] += (ρ_matrix-state.ρ_matrix_avg[:full])*calc_var_frequency/frame
+            else
+
+                @. state.ρ_matrix_avg_cuts[:x_cut] += (state.ρ[x_middle,:] * transpose(state.ρ[x_middle,:])-state.ρ_matrix_avg_cuts[:x_cut])*calc_var_frequency/frame
+                @. state.ρ_matrix_avg_cuts[:y_cut] += (state.ρ[:,y_middle] * transpose(state.ρ[:,y_middle]) - state.ρ_matrix_avg_cuts[:y_cut])*calc_var_frequency/frame
+                @. state.ρ_matrix_avg_cuts[:diag_cut] += (state.ρ[diagind(state.ρ)] * transpose(state.ρ[diagind(state.ρ)]) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
+            end
+            # x_middle = div(param.dims[1],2)
+            # y_middle = div(param.dims[2],2)
+            # ρ_matrix_x_cut = state.ρ[x_middle,:] .* transpose(state.ρ[x_middle,:])
+            # ρ_matrix_y_cut = state.ρ[:,y_middle] .* transpose(state.ρ[:,y_middle])
+            # # extract the main diagonal from the ρ matrix
+            # ρ_matrix_diag_cut = state.ρ[diagind(state.ρ)]
+            # ρ_matrix_diag_cut = state.ρ
+            # ρ_matrix_avg_cut = (ρ_matrix_x_cut + ρ_matrix_y_cut) / 2
+            # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
             # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,:,1:frame])
         else
             throw(DomainError("Invalid input - dimension not supported yet"))
@@ -521,8 +565,10 @@ function run_simulation!(state, param, n_sweeps, rng;
         next!(prg)
     end
     # normalized_dist, corr_mat = PlotUtils.plot_sweep(n_sweeps, state, param)
-    normalized_dist, corr_mat = calculate_statistics(state)
+    # normalized_dist, corr_mat = calculate_statistics(state)
+
     
     println("Simulation complete")
-    return normalized_dist, corr_mat  
+    # return normalized_dist, corr_mat  
+    return state.ρ_avg, state.ρ_matrix_avg_cuts
 end
