@@ -77,8 +77,8 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L=32
-    d = 1
+    L=64
+    d = 2
     return Dict(
         "dim_num" => d,
         "D" => 1.0,
@@ -86,21 +86,21 @@ end
         "L" => L,
         "N" => L^d*100,
         "T" => 1.0,
-        "γ" => 1.0,
+        "γ" => 0.0,
         "ϵ" => 0.0,
         "n_sweeps" => 10^5,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "ratchet_PmLr",
+        "potential_type" => "xy_slides",
         "fluctuation_type" => "profile_switch",
-        "potential_magnitude" => 4.0,
+        "potential_magnitude" => 0.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
-        "ffr" => 0.0,
+        "ffr" => 0.5,
         "forcing_fluctuation_type" => "alternating_direction",
-        "forcing_magnitude" => 0.0,
+        "forcing_magnitude" => 0.5,
     )
 end
 
@@ -432,7 +432,7 @@ function main()
             res_dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  show_times=show_times,
                                                  save_times=save_times,
-                                                 plot_flag=true)
+                                                 plot_flag=true,)
         catch e
             if isa(e, InterruptException)
                 println("\nInterrupt detected, initiating cleanup...")

@@ -127,7 +127,11 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         # 2) Extract correlation C(x1,y0; x2,y0)
         fix_term = param.N / (prod(param.dims)^2)
 
-        slice2d_x = state.ρ_matrix_avg_cuts[:x_cut]     # dims[1]×dims[1]
+        if haskey(state.ρ_matrix_avg_cuts, :full)
+            slice2d_x = state.ρ_matrix_avg_cuts[:full][:,y0,:,y0]    # dims[1]×dims[1]
+        else
+            slice2d_x = state.ρ_matrix_avg_cuts[:x_cut]     # dims[1]×dims[1]
+        end 
         mean_vec = state.ρ_avg[:, y0]
         corr_mat2 = slice2d_x .- (mean_vec * transpose(mean_vec)) .+ fix_term
 
@@ -195,11 +199,14 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                  label="Zeroed middle")
 
         # 6) Diagonal correlation C(x,x; x',x') 
-        # corr_diag = zeros(dims[1], dims[1])
-        # for i in 1:dims[1], j in 1:dims[1]
-        #     corr_diag[i,j] = state.ρ_matrix_avg[i, i, j, j] - state.ρ_avg[i,i] * state.ρ_avg[j,j] + fix_term
-        # end
-        corr_diag = state.ρ_matrix_avg_cuts[:diag] .- (state.ρ_avg * transpose(state.ρ_avg)) .+ fix_term
+        if haskey(state.ρ_matrix_avg_cuts, :full)
+            corr_diag = zeros(dims[1], dims[1])
+            for i in 1:dims[1], j in 1:dims[1]
+                corr_diag[i,j] = state.ρ_matrix_avg_cuts[:full][i, i, j, j] - state.ρ_avg[i,i] * state.ρ_avg[j,j] + fix_term
+            end
+        else
+            corr_diag = state.ρ_matrix_avg_cuts[:diag_cut] .- (state.ρ_avg * transpose(state.ρ_avg)) .+ fix_term
+        end
         
         # Apply diagonal smoothing to diagonal correlation
         for i in 1:dims[1]
@@ -319,7 +326,12 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         # Extract correlation C(x0,y1; x0,y2) where x0 = 3/4·L₁
         x0 = div(dims[1] + 1, 2)               # middle index for x=0
         # slice2d_y = state.ρ_matrix_avg[x0, :, x0, :]     # dims[2]×dims[2]
-        slice2d_y = state.ρ_matrix_avg_cuts[:y_cut]     # dims[2]×dims[2]
+        if haskey(state.ρ_matrix_avg_cuts, :full)
+            slice2d_y = state.ρ_matrix_avg_cuts[:full][x0,:,x0,:]    # dims[2]×dims[2]
+        else
+            # Use y_cut if available, otherwise fallback to full
+            slice2d_y = state.ρ_matrix_avg_cuts[:y_cut]     # dims[2]×dims[2]
+        end
         mean_vec_y = state.ρ_avg[x0, :]
         corr_mat_y = slice2d_y .- (mean_vec_y * transpose(mean_vec_y)) .+ fix_term
 

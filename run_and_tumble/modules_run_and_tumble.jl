@@ -177,9 +177,9 @@ module FP
             )
             # ρ_matrix_avg = ρ_avg * transpose(ρ_avg) 
         elseif dim ==2
+            x_middle = div(param.dims[1],2)
+            y_middle = div(param.dims[2],2)
             if full_corr_tensor
-                x_middle = div(param.dims[1],2)
-                y_middle = div(param.dims[2],2)
                 ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
                     :full => outer_density_2D(ρ_avg),
                 )
@@ -236,9 +236,7 @@ module FP
                     left_index= mod1(spot_index-1,param.dims[1])
                     right_index = mod1(spot_index+1,param.dims[1])
 
-                    state.ρ[spot_index] -= 1
                     
-                    candidate_spot_index = 0
                     if action_index == 1 # left
                         candidate_spot_index = left_index
                         choice_direction = -1
@@ -289,6 +287,7 @@ module FP
                             particle.direction[1]*=-1
                         end
                         new_position = particle.position[1]
+                        state.ρ[spot_index] -= 1
                         state.ρ[new_position] += 1
 
                     elseif action_index == 4
@@ -318,7 +317,6 @@ module FP
                     i,j = particle.position
                     spot_index = [i,j]
 
-                    state.ρ[i,j] -= 1
 
                     # Calculate neighboring indices
                     Lx,Ly = param.dims
@@ -378,6 +376,7 @@ module FP
                     end
                 end
                 if n<=param.N
+                    state.ρ[i,j] -= 1
                     state.ρ[particle.position...] += 1
                     if state.ρ[particle.position...]<0
                         println("Negative density encountered at position $(particle.position)...")
@@ -482,12 +481,11 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
             if haskey(state.ρ_matrix_avg_cuts, :full)
                 ρ_matrix = FP.outer_density_2D(state.ρ) 
                 # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
-                @. state.ρ_matrix_avg[:full] += (ρ_matrix-state.ρ_matrix_avg[:full])*calc_var_frequency/frame
+                @. state.ρ_matrix_avg_cuts[:full] += (ρ_matrix-state.ρ_matrix_avg_cuts[:full])*calc_var_frequency/frame
             else
-
                 @. state.ρ_matrix_avg_cuts[:x_cut] += (state.ρ[x_middle,:] * transpose(state.ρ[x_middle,:])-state.ρ_matrix_avg_cuts[:x_cut])*calc_var_frequency/frame
                 @. state.ρ_matrix_avg_cuts[:y_cut] += (state.ρ[:,y_middle] * transpose(state.ρ[:,y_middle]) - state.ρ_matrix_avg_cuts[:y_cut])*calc_var_frequency/frame
-                @. state.ρ_matrix_avg_cuts[:diag_cut] += (state.ρ[diagind(state.ρ)] * transpose(state.ρ[diagind(state.ρ)]) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
+                state.ρ_matrix_avg_cuts[:diag_cut] += (state.ρ[diagind(state.ρ)] * transpose(state.ρ[diagind(state.ρ)]) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
             end
             # x_middle = div(param.dims[1],2)
             # y_middle = div(param.dims[2],2)
