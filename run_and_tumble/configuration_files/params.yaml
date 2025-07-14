@@ -1,20 +1,26 @@
 # Physical parameters
-dim_num: 1
+dim_num: 2
 D: 1.0
 α: 0.0
-L: 256
-N: 25600
+L: 64
+N: 409600
 T: 1.0
-γ′: 1
+γ′: 0.0
 ϵ: 0.0
 
 # Simulation parameters
-n_sweeps: 100
+n_sweeps: 200000
 
 # Potential parameters
-potential_type: "zero"
-fluctuation_type: "independent-points-discrete"
-potential_magnitude: 16
+potential_type: "xy_slides"
+fluctuation_type: "profile_switch"
+potential_magnitude: 0.0
+
+# Forcing parameters
+forcing_type: "center_bond_x"
+forcing_fluctuation_rate: 1.0
+forcing_fluctuation_type: "alternating_direction"
+forcing_magnitude: 1.0
 
 # Output parameters
 save_dir: "saved_states"
