@@ -216,9 +216,8 @@ module FP
                     left_index= mod1(spot_index-1,param.dims[1])
                     right_index = mod1(spot_index+1,param.dims[1])
 
-                    state.ρ[spot_index] -= 1
                     
-                    candidate_spot_index = 0
+                    # candidate_spot_index = 0
                     if action_index == 1 # left
                         candidate_spot_index = left_index
                         choice_direction = -1
@@ -269,6 +268,7 @@ module FP
                             particle.direction[1]*=-1
                         end
                         new_position = particle.position[1]
+                        state.ρ[spot_index] -= 1
                         state.ρ[new_position] += 1
 
                     elseif action_index == 4
