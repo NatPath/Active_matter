@@ -77,30 +77,30 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L=64
-    d = 2
+    L= 74
+    d = 1
     return Dict(
         "dim_num" => d,
         "D" => 1.0,
-        "α" => 0.0,
+        "α" => 0,
         "L" => L,
-        "N" => L^d*100,
+        "N_per_site" => L^d*100,
         "T" => 1.0,
-        "γ" => 0.0,
-        "ϵ" => 0.0,
-        "n_sweeps" => 10^5,
+        "γ" => 0.25,
+        "ϵ" => 0,
+        "n_sweeps" => 10^6,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "xy_slides",
-        "fluctuation_type" => "profile_switch",
-        "potential_magnitude" => 0.0,
+        "potential_type" => "smudge",
+        "fluctuation_type" => "reflection",
+        "potential_magnitude" => 4,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
-        "ffr" => 0.5,
+        "ffr" => 0.0,
         "forcing_fluctuation_type" => "alternating_direction",
-        "forcing_magnitude" => 0.5,
+        "forcing_magnitude" => 0,
     )
 end
 
@@ -281,7 +281,7 @@ function main()
         states = [res[3] for res in results]
         params = [res[4] for res in results]
         
-        dim_num = length(states[1].dims)
+        dim_num = length(params[1].dims)
         if dim_num == 1
             full_mats = [mat_cut[:full] for mat_cut in mat_cuts]
             stacked_corr = cat(full_mats..., dims=3)  # Stack matrices along a new third dimension
@@ -289,7 +289,7 @@ function main()
             stacked_dists = cat(dists..., dims=2)
             avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
         elseif dim_num == 2
-            if haskey(mat_cuts,:full)
+            if haskey(mat_cuts[1],:full)
                 full_mats = [mat_cut[:full] for mat_cut in mat_cuts]
                 stacked_corr = cat(full_mats..., dims=5)  # Stack 4D tensors along 5th dimension
                 avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)  # Average over 5th dimension
@@ -309,7 +309,7 @@ function main()
         else
             error("Unsupported correlation matrix dimensions: $(ndims(corr_mats[1]))")
         end
-        if haskey(mat_cuts,:full)
+        if haskey(mat_cuts[1],:full)
             mat_cuts_averaged = Dict(:full => avg_corr)
         else
             mat_cuts_averaged = Dict(:x_cut => avg_corr_x_cut, :y_cut => avg_corr_y_cut, :diagonal_cut => avg_corr_diagonal_cut)

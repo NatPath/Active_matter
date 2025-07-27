@@ -216,7 +216,6 @@ module Potentials
                 V[abs.(x.-shift) .> cut_at] .= 0
                 V[abs.(x.-shift) .<= cut_at] .= linear_potential(m, b, x[abs.(x.-shift) .<= cut_at])
                 magnitude = m*L+b
-                print(V)
             elseif v_string == "harmonic"
                 k = v_args["k"]
                 m_sign = v_args["m_sign"]

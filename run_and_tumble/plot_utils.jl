@@ -537,7 +537,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
 
             for i in indices
                 outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-                corr_mat = (state.ρ_matrix_avg - outer_prod_ρ) .+ (N / L^2)
+                corr_mat = (state.ρ_matrix_avg_cuts[:full] - outer_prod_ρ) .+ (N / L^2)
                 middle_spot = L ÷ 2
                 point_to_look_at = Int(middle_spot + i)
 
@@ -618,7 +618,12 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 end
                 
                 # X-axis cut: C(x1,y0; x2,y0)
-                slice2d_x = state.ρ_matrix_avg[:, y0, :, y0]
+                # slice2d_x = state.ρ_matrix_avg[:, y0, :, y0]
+                if haskey(state.ρ_matrix_avg_cuts, :full)
+                    slice2d_x = state.ρ_matrix_avg_cuts[:full][:, y0, :, y0]
+                else
+                    slice2d_x = state.ρ_matrix_avg_cuts[:x_cut]
+                end
                 mean_vec_x = state.ρ_avg[:, y0]
                 corr_mat_x = slice2d_x .- mean_vec_x * transpose(mean_vec_x) .+ fix_term
                 
@@ -647,8 +652,15 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 
                 # Diagonal cut: C(x,x; x',x')
                 corr_diag = zeros(dims[1], dims[1])
-                for j in 1:dims[1], k in 1:dims[1]
-                    corr_diag[j,k] = state.ρ_matrix_avg[j, j, k, k] - state.ρ_avg[j,j] * state.ρ_avg[k,k] + fix_term
+                # for j in 1:dims[1], k in 1:dims[1]
+                #     corr_diag[j,k] = state.ρ_matrix_avg[j, j, k, k] - state.ρ_avg[j,j] * state.ρ_avg[k,k] + fix_term
+                # end
+                if haskey(state.ρ_matrix_avg_cuts, :full)
+                    for j in 1:dims[1], k in 1:dims[1]
+                        corr_diag[j,k] = state.ρ_matrix_avg_cuts[:full][j, j, k, k] - state.ρ_avg[j,j] * state.ρ_avg[k,k] + fix_term
+                    end
+                else
+                    corr_diag = state.ρ_matrix_avg_cuts[:diag_cut] .- (state.ρ_avg * transpose(state.ρ_avg)) .+ fix_term
                 end
                 
                 # Apply diagonal smoothing to diagonal correlation

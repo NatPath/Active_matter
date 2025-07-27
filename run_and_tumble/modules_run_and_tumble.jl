@@ -147,7 +147,7 @@ module FP
 
 
     
-    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random", full_corr_tensor=false)
+    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random", full_corr_tensor=true)
         N = param.N
         # initialize particles
         particles = Array{Particle}(undef,N)
@@ -187,7 +187,8 @@ module FP
                 ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
                     :x_cut => ρ_avg[x_middle,:] * transpose(ρ_avg[x_middle,:]),
                     :y_cut => ρ_avg[:,y_middle] * transpose(ρ_avg[:,y_middle]),
-                    :diag_cut => ρ_avg[diagind(ρ_avg)] * transpose(ρ_avg[diagind(ρ_avg)])
+                    # :diag_cut => ρ_avg[diagind(ρ_avg)] * transpose(ρ_avg[diagind(ρ_avg)])
+                    :diag_cut => diag(ρ_avg)* transpose(diag(ρ_avg))
                 )
             end
             # ρ_matrix_avg = ρ .* reshape(ρ, 1, 1, size(ρ, 1), size(ρ, 2))
@@ -309,7 +310,7 @@ module FP
             t_end = state.t + Δt
             t = state.t
             while t < t_end
-                n_and_a = rand(rng, 1:5*(param.N+2))  # 6 actions: left, right, up, down, tumble, fluctuate
+                n_and_a = rand(rng, 1:5*(param.N+2))  # 7 actions: left, right, up, down, tumble, fluctuate potential , fluctuate bond
                 action_index = mod1(n_and_a, 5)
                 n = (n_and_a - action_index) ÷ 5 + 1
                 if n<=param.N
@@ -485,7 +486,8 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
             else
                 @. state.ρ_matrix_avg_cuts[:x_cut] += (state.ρ[x_middle,:] * transpose(state.ρ[x_middle,:])-state.ρ_matrix_avg_cuts[:x_cut])*calc_var_frequency/frame
                 @. state.ρ_matrix_avg_cuts[:y_cut] += (state.ρ[:,y_middle] * transpose(state.ρ[:,y_middle]) - state.ρ_matrix_avg_cuts[:y_cut])*calc_var_frequency/frame
-                state.ρ_matrix_avg_cuts[:diag_cut] += (state.ρ[diagind(state.ρ)] * transpose(state.ρ[diagind(state.ρ)]) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
+                # state.ρ_matrix_avg_cuts[:diag_cut] += (state.ρ[diagind(state.ρ)] * transpose(state.ρ[diagind(state.ρ)]) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
+                state.ρ_matrix_avg_cuts[:diag_cut] += (diag(state.ρ) * transpose(diag(state.ρ)) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
             end
             # x_middle = div(param.dims[1],2)
             # y_middle = div(param.dims[2],2)
