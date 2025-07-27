@@ -84,11 +84,11 @@ end
         "D" => 1.0,
         "α" => 0,
         "L" => L,
-        "N_per_site" => L^d*100,
+        "ρ₀" => 100, # particles per site
         "T" => 1.0,
         "γ" => 0.25,
         "ϵ" => 0,
-        "n_sweeps" => 10^6,
+        "n_sweeps" => 10^1,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
         "potential_type" => "smudge",
@@ -193,7 +193,7 @@ end
     D                  = get(params, "D", defaults["D"])
     α                  = get(params, "α", defaults["α"])
     L                  = get(params, "L", defaults["L"])
-    N                  = get(params, "N", defaults["N"])
+    ρ₀              = get(params, "ρ₀", defaults["ρ₀"])
     T                  = get(params, "T", defaults["T"])
     γ                 = get(params, "γ", defaults["γ"])
     ϵ                  = get(params, "ϵ", defaults["ϵ"])
@@ -220,7 +220,7 @@ end
     forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
 
     dims = ntuple(i -> L, dim_num)
-    ρ₀ = N / (L^dim_num)
+    # ρ₀ = N / (L^dim_num)
 
     # Initialize simulation parameters and state.
     param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,ffr)
@@ -369,7 +369,7 @@ function main()
             D                  = get(params, "D", defaults["D"])
             α                  = get(params, "α", defaults["α"])
             L                  = get(params, "L", defaults["L"])
-            N                  = get(params, "N", defaults["N"])
+            ρ₀                = get(params, "ρ₀", defaults["ρ₀"])
             T                  = get(params, "T", defaults["T"])
             γ                 = get(params, "γ", defaults["γ"])
             ϵ                  = get(params, "ϵ", defaults["ϵ"])
@@ -396,7 +396,7 @@ function main()
             forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
             
             dims = ntuple(i -> L, dim_num)
-            ρ₀ = N / prod(dims)
+            # ρ₀ = N / prod(dims)
             
             param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffr )
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)

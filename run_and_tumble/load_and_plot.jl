@@ -82,7 +82,7 @@ function main()
         filename = basename(args["saved_states"][i])
         filename = replace(filename, ".jld2" => "")
         only_filename = split(filename,"/")|>last
-        normalized_dist, corr_mat = PlotUtils.plot_sweep(state.t, state, param; label=label)
+        PlotUtils.plot_sweep(state.t, state, param; label=label)
         specific_state_dir= "$(figures_dir)/$(only_filename)"
         mkpath(specific_state_dir)
         savefig("$(specific_state_dir)/sweep_plot_$(i).png")

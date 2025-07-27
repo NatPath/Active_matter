@@ -29,7 +29,7 @@ module FP
     function setParam(α, γ, ϵ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,forcing_fluctuation_rate=0.0)
 
         N = Int(round( ρ₀*prod(dims)))       # number of particles
-        println(" params set with N = $N, γ = $γ, γ′=$(γ*N)")
+        println(" params set with N = $N, γ = $γ ")
 
         param = Param(α, γ, ϵ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude,forcing_fluctuation_rate)
         return param

@@ -18,10 +18,11 @@ end
 function plot_sweep(sweep,state,param; label="", plot_directional=false)
     dim_num = length(param.dims)
     if dim_num==1
-        normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+        # normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+        
         outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
         corr_mat = state.ρ_matrix_avg_cuts[:full]-outer_prod_ρ
-        p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+        p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
         p1 = plot_magnetization(state, param)
         
         # Remove potential profile plot for 1D case
@@ -58,15 +59,15 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         p7 = plot(corr_mat_antisym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
         p_final=plot(p0,p1,p4,p5,p6,p7, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
         display(p_final)
-        return normalized_dist, corr_mat
+        return corr_mat
     elseif dim_num == 2
         # --- 2D plotting with y=0 cut ---
         dims = param.dims
         y0 = div(dims[2] + 1, 2)               # middle index for y=0
 
         # 1) Time‐averaged density heatmap
-        normalized_dist = state.ρ_avg ./ sum(state.ρ_avg)
-        p_avg_density = heatmap(normalized_dist',
+        # normalized_dist = state.ρ_avg ./ sum(state.ρ_avg)
+        p_avg_density = heatmap(state.ρ_avg',
                      title="⟨ρ⟩ (t=$(sweep))",
                      xlabel="x", ylabel="y",
                      aspect_ratio=1, colorbar=true)
@@ -74,7 +75,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         # Add x-axis cut of average density at y=middle
         y_middle = div(dims[2] + 1, 2)
         x_range = 1:dims[1]
-        density_x_cut = normalized_dist[:, y_middle]
+        density_x_cut = state.ρ_avg[:, y_middle]
         p_density_x_cut = plot(x_range, density_x_cut,
                      title="⟨ρ⟩ x-cut at y=$(y_middle)",
                      xlabel="x", ylabel="Density",
@@ -83,7 +84,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         # Add y-axis cut of average density at x=middle
         x_middle = div(dims[1] + 1, 2)
         y_range = 1:dims[2]
-        density_y_cut = normalized_dist[x_middle, :]
+        density_y_cut = state.ρ_avg[x_middle, :]
         p_density_y_cut = plot(y_range, density_y_cut,
                      title="⟨ρ⟩ y-cut at x=$(x_middle)",
                      xlabel="y", ylabel="Density",
@@ -439,7 +440,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                      p_empty, p_diag_cut_zeroed, p_diag_cut_positive_zeroed, p_diag_cut_antisymmetric_zeroed,  # Row 8: diagonal cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
                      layout=(9,4), size=(2400,3600),
                      plot_title="2D sweep $(sweep)"))
-        return normalized_dist, corr_mat2
+        return corr_mat2
     else
         throw(DomainError("Only 1D or 2D plotting supported"))
     end
@@ -940,8 +941,7 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
                 # Combine plots
                 plot(p1, p2, layout=(2,1), size=(800,800))
             else
-                normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-                p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+                p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
                 outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
                 p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
                             title="Correlation Matrix Heatmap", color=:viridis)
@@ -955,8 +955,7 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
         if show_directions
             # ... existing show_directions plotting code ...
         else
-            normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-            p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+            p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
             p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
                         title="Correlation Matrix Heatmap", color=:viridis)
@@ -975,8 +974,7 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
     println("Generating final statistics...")
     
     # Calculate and display final statistics
-    normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-    p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+    p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
     outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
     p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
                  title="Correlation Matrix Heatmap", color=:viridis)
