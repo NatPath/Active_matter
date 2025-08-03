@@ -113,7 +113,8 @@ module Potentials
     function potential_update!(p::ProfileSwitchPotential, rng::AbstractRNG)
         # Randomly switch to a new profile
         p.current = weighted_sample(rng, p.probabilities)
-        p.V = deepcopy(p.potentials[p.current].V)
+        # p.V = deepcopy(p.potentials[p.current].V)
+        p.V = p.potentials[p.current].V
     end
 
     function bondforce_update!(bf::BondForce)
@@ -343,6 +344,94 @@ module Potentials
                 V[middle-1,middle] = -magnitude
                 V[middle,middle+1] = -magnitude
                 V[middle,middle-1] = magnitude
+
+            elseif v_string == "escape_right" 
+                V[middle+1,middle] = -magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+            elseif v_string =="escape_left"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = -magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+            elseif v_string=="escape_up"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = -magnitude
+                V[middle,middle-1] = magnitude
+            elseif v_string=="escape_down"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = -magnitude
+
+            elseif v_string == "sneeze_right" 
+                V[middle+1,middle] = -magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+            elseif v_string =="sneeze_left"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = -magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+            elseif v_string=="sneeze_up"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = -magnitude
+                V[middle,middle-1] = magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+            elseif v_string=="sneeze_down"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = -magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+
+            elseif v_string == "hallway_x"
+                V[middle,middle] = -magnitude
+
+                V[middle+1,middle] = -magnitude
+                V[middle-1,middle] = -magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+            elseif v_string == "hallway_y"
+                V[middle,middle] = -magnitude
+
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = -magnitude
+                V[middle,middle-1] = -magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+
             elseif v_string == "barrier"
                 x = LinRange(0, dims[1], dims[1])
                 y = LinRange(0, dims[2], dims[2])
@@ -350,6 +439,8 @@ module Potentials
                 V[end, :] .= 10^5 * magnitude
                 V[:, 1] .= 10^5 * magnitude
                 V[:, end] .= 10^5 * magnitude
+            elseif v_string == "escape_left"
+
             else
                 error("unsupported potential type : $v_string ")
             end
@@ -444,9 +535,26 @@ module Potentials
             v_xy_slide_rotated = Dict("type"=>"xy_slide_rotated","magnitude"=>magnitude)
             v_x_slide = Dict("type"=>"2D_x_slide","magnitude"=>magnitude)
             v_y_slide = Dict("type"=>"2D_y_slide","magnitude"=>magnitude)
+
+            v_escape_right = Dict("type"=>"escape_right","magnitude"=>magnitude)
+            v_escape_left = Dict("type"=>"escape_left","magnitude"=>magnitude)
+            v_escape_up = Dict("type"=>"escape_up","magnitude"=>magnitude)
+            v_escape_down = Dict("type"=>"escape_down","magnitude"=>magnitude)
+
+            v_sneeze_right = Dict("type"=>"sneeze_right","magnitude"=>magnitude)
+            v_sneeze_left = Dict("type"=>"sneeze_left","magnitude"=>magnitude)
+            v_sneeze_up = Dict("type"=>"sneeze_up","magnitude"=>magnitude)
+            v_sneeze_down = Dict("type"=>"sneeze_down","magnitude"=>magnitude)
+
+            v_hallway_x = Dict("type"=>"hallway_x","magnitude"=>magnitude)
+            v_hallway_y = Dict("type"=>"hallway_y","magnitude"=>magnitude)
+
             if !simple
                 v_xy_slides =Dict("type"=>"zero","potentials_profiles"=>[potential_args("xy_slide",dims;magnitude=magnitude,simple=true),potential_args("xy_slide",dims;magnitude=-magnitude,simple=true),potential_args("xy_slide_rotated",dims;magnitude=magnitude,simple=true),potential_args("xy_slide_rotated",dims;magnitude=-magnitude,simple=true)])
                 v_rotating_1D_slides = Dict("type"=>"zero","potentials_profiles"=>[potential_args("2D_y_slide",dims;magnitude=magnitude,simple=true),potential_args("2D_x_slide",dims;magnitude=magnitude,simple=true),potential_args("2D_x_slide",dims;magnitude=-magnitude,simple=true),potential_args("2D_y_slide",dims;magnitude=-magnitude,simple=true)])
+                v_rotating_escape = Dict("type"=>"zero","potentials_profiles"=>[potential_args("escape_left",dims;magnitude=magnitude,simple=true),potential_args("escape_right",dims;magnitude=magnitude,simple=true),potential_args("escape_up",dims;magnitude=magnitude,simple=true),potential_args("escape_down",dims;magnitude=magnitude,simple=true)])
+                v_rotating_sneezing_box = Dict("type"=>"zero","potentials_profiles"=>[potential_args("sneeze_left",dims;magnitude=magnitude,simple=true),potential_args("sneeze_right",dims;magnitude=magnitude,simple=true),potential_args("sneeze_up",dims;magnitude=magnitude,simple=true),potential_args("sneeze_down",dims;magnitude=magnitude,simple=true)])
+                v_rotating_hallway = Dict("type"=>"zero","potentials_profiles"=>[potential_args("hallway_x",dims;magnitude=magnitude,simple=true),potential_args("hallway_y",dims;magnitude=magnitude,simple=true)])
             end
         else
             error("Unsupported number of dimensions: $dim. Only 1D and 2D cases are supported.")
@@ -512,6 +620,35 @@ module Potentials
             return v_xy_slide_rotated
         elseif v_string =="xy_slides"
             return v_xy_slides
+        elseif v_string == "escape_right"
+            return v_escape_right
+        elseif v_string == "escape_left"
+            return v_escape_left
+        elseif v_string == "escape_up"
+            return v_escape_up
+        elseif v_string == "escape_down"
+            return v_escape_down
+        elseif v_string == "rotating_escape"
+            return v_rotating_escape
+
+        elseif v_string == "sneeze_right"
+            return v_sneeze_right
+        elseif v_string == "sneeze_left"
+            return v_sneeze_left
+        elseif v_string == "sneeze_up"
+            return v_sneeze_up
+        elseif v_string == "sneeze_down"
+            return v_sneeze_down
+        elseif v_string == "rotating_sneezing_box"
+            return v_rotating_sneezing_box
+
+        elseif v_string == "hallway_x"
+            return v_hallway_x
+        elseif v_string == "hallway_y"
+            return v_hallway_y
+        elseif v_string == "rotating_hallway"
+            return v_rotating_hallway 
+
         else
             error("unsupported V string")
         end

@@ -13,6 +13,7 @@ using LinearAlgebra
 using JLD2
 using YAML
 using ArgParse
+using BenchmarkTools
 
 # First, on the main process, include all necessary files.
 include("potentials.jl")
@@ -25,7 +26,7 @@ using .SaveUtils
 
 # Ensure all worker processes load the same files and modules.
 @everywhere begin
-    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
+    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse, BenchmarkTools
     include("potentials.jl")
     include("modules_run_and_tumble.jl")
     using .FP
@@ -77,30 +78,30 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 74
-    d = 1
+    L= 32  
+    d = 2
     return Dict(
         "dim_num" => d,
         "D" => 1.0,
-        "α" => 0,
+        "α" => 0.0,
         "L" => L,
         "ρ₀" => 100, # particles per site
         "T" => 1.0,
-        "γ" => 0.25,
+        "γ" => 0.01,
         "ϵ" => 0,
-        "n_sweeps" => 10^1,
+        "n_sweeps" => 10^5,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "smudge",
-        "fluctuation_type" => "reflection",
-        "potential_magnitude" => 4,
+        "potential_type" => "rotating_hallway",
+        "fluctuation_type" => "profile_switch",
+        "potential_magnitude" => 4.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
         "ffr" => 0.0,
         "forcing_fluctuation_type" => "alternating_direction",
-        "forcing_magnitude" => 0,
+        "forcing_magnitude" => 0.0,
     )
 end
 
@@ -432,7 +433,7 @@ function main()
             res_dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  show_times=show_times,
                                                  save_times=save_times,
-                                                 plot_flag=true,)
+                                                 plot_flag=true)
         catch e
             if isa(e, InterruptException)
                 println("\nInterrupt detected, initiating cleanup...")

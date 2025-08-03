@@ -86,7 +86,8 @@ function main()
         specific_state_dir= "$(figures_dir)/$(only_filename)"
         mkpath(specific_state_dir)
         savefig("$(specific_state_dir)/sweep_plot_$(i).png")
-        println("Plot saved as sweep_plot_$(i).png")
+
+        println("Plot saved as $(specific_state_dir)/sweep_plot_$(i).png")
     end
 end
 
