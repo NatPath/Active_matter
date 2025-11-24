@@ -1,6 +1,5 @@
 using JLD2
 using ArgParse
-using Statistics
 include("modules_run_and_tumble.jl")
 include("save_utils.jl")
 using .FP
@@ -24,59 +23,57 @@ function main()
     
     println("Processing $(length(args["saved_states"])) state files...")
     
-    states = []
     params = []
-    normalized_dists = []
-    corr_mats = []
-    stats_arr = []
     total_t = 0
+    total_weight = 0.0
+    state_count = 0
+    reference_state = nothing
+    ρ_avg_sum = nothing
+    cut_sums = Dict{Symbol,Array{Float64}}()
     
     for (i, saved_state) in enumerate(args["saved_states"])
         println("  Loading file $i/$(length(args["saved_states"])): $(basename(saved_state))")
         try
             @load saved_state state param potential
-            states = [states; state]
             params = [params; param]
             total_t += state.t
-            stats = calculate_statistics(state)
-            stats_arr = [stats_arr; stats]
+            if reference_state === nothing
+                reference_state = state
+                ρ_avg_sum = zeros(size(state.ρ_avg))
+                for (key, arr) in state.ρ_matrix_avg_cuts
+                    cut_sums[key] = zeros(size(arr))
+                end
+            end
+            weight = max(state.t, 1)
+            total_weight += weight
+            ρ_avg_sum .+= state.ρ_avg .* weight
+            for (key, arr) in state.ρ_matrix_avg_cuts
+                cut_sums[key] .+= arr .* weight
+            end
+            state_count += 1
         catch e
             println("  ERROR: Failed to load $saved_state: $e")
             continue
         end
     end
     
-    if isempty(states)
+    if state_count == 0 || reference_state === nothing
         println("ERROR: No valid states loaded for aggregation")
         exit(1)
     end
     
-    println("Successfully loaded $(length(states)) states")
+    println("Successfully loaded $state_count states")
     println("Total simulation time: $total_t")
     
-    normalized_dists = [stats[1] for stats in stats_arr]
-    corr_mats = [stats[2] for stats in stats_arr]
-
-    # Handle different dimensions for stacking
     println("Aggregating correlation matrices and densities...")
-    if ndims(corr_mats[1]) == 2  # 1D case
-        println("  Processing 1D correlation matrices")
-        stacked_corr = cat(corr_mats..., dims=3)
-        avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)
-        stacked_dists = cat(normalized_dists..., dims=2)
-        avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
-    elseif ndims(corr_mats[1]) == 4  # 2D case
-        println("  Processing 2D correlation matrices")
-        stacked_corr = cat(corr_mats..., dims=5)
-        avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)
-        stacked_dists = cat(normalized_dists..., dims=3)
-        avg_dists = dropdims(mean(stacked_dists, dims=3), dims=3)
-    else
-        error("Unsupported correlation matrix dimensions: $(ndims(corr_mats[1]))")
+    avg_ρ = ρ_avg_sum ./ total_weight
+    aggregated_cuts = Dict{Symbol,Array{Float64}}()
+    for (key, arr_sum) in cut_sums
+        aggregated_cuts[key] = arr_sum ./ total_weight
     end
     
     println("Creating aggregated dummy state...")
-    dummy_state = FP.setDummyState(states[1], avg_dists, avg_corr, total_t)
+    dummy_state = FP.setDummyState(reference_state, avg_ρ, aggregated_cuts, total_t)
 
     dummy_state_save_dir = "dummy_states_agg"
     println("Saving aggregated state to: $dummy_state_save_dir")

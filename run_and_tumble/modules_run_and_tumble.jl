@@ -1,7 +1,7 @@
 using Statistics
 using FFTW
 using LsqFit
-using BenchmarkTools
+# using BenchmarkTools
 include("plot_utils.jl") 
 using .PlotUtils
 include("potentials.jl")
@@ -51,16 +51,16 @@ module FP
         potential_type::String 
         fluctuation_type::String
         potential_magnitude::Float64
-        forcing_fluctuation_rate::Float64 # rate of forcing fluctuation
+        ffr::Float64 # rate of forcing fluctuation
     end
 
     #constructor
-    function setParam(α, γ, ϵ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,forcing_fluctuation_rate=0.0)
+    function setParam(α, γ, ϵ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,ffr=0.0)
 
         N = Int(round( ρ₀*prod(dims)))       # number of particles
         println(" params set with N = $N, γ = $γ ")
 
-        param = Param(α, γ, ϵ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude,forcing_fluctuation_rate)
+        param = Param(α, γ, ϵ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude,ffr)
         return param
     end
 
@@ -291,6 +291,7 @@ module FP
             T = state.T
             α = param.α
             γ = param.γ
+            ffr = param.ffr
             Δt=1
             t_end = state.t + Δt
             t= state.t
@@ -349,7 +350,7 @@ module FP
                         p_candidate=γ
                     elseif n == param.N+2 # bond fluctuation
                         action_index = 5
-                        p_candidate = param.forcing_fluctuation_rate
+                        p_candidate = param.ffr
                     end
                 end
 
@@ -421,6 +422,7 @@ module FP
             T = state.T
             α = param.α
             γ = param.γ
+            ffr = param.ffr
             Δt = 1
             t_end = state.t + Δt
             t = state.t
@@ -490,7 +492,7 @@ module FP
                     p_cand = γ
                 elseif n == param.N+2  # bond fluctuation
                     action_index = 7
-                    p_cand = param.forcing_fluctuation_rate
+                    p_cand = ffr
                 end
 
                 # Benchmark tower sampling
@@ -655,16 +657,16 @@ module FP
     #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
     # end
 
-    mutable struct BenchmarkResults
-        action_selection_time::Float64
-        jump_probability_time::Float64
-        tower_sampling_time::Float64
-        state_update_time::Float64
-        density_update_time::Float64
-        total_samples::Int
+    # mutable struct BenchmarkResults
+    #     action_selection_time::Float64
+    #     jump_probability_time::Float64
+    #     tower_sampling_time::Float64
+    #     state_update_time::Float64
+    #     density_update_time::Float64
+    #     total_samples::Int
         
-        BenchmarkResults() = new(0.0, 0.0, 0.0, 0.0, 0.0, 0)
-    end
+    #     BenchmarkResults() = new(0.0, 0.0, 0.0, 0.0, 0.0, 0)
+    # end
     
     function reset_benchmarks!(bench::BenchmarkResults)
         bench.action_selection_time = 0.0
@@ -696,6 +698,7 @@ module FP
             T = state.T
             α = param.α
             γ = param.γ
+            ffr = param.ffr
             Δt=1
             t_end = state.t + Δt
             t= state.t
@@ -754,7 +757,7 @@ module FP
                         p_candidate=γ
                     elseif n == param.N+2 # bond fluctuation
                         action_index = 5
-                        p_candidate = param.forcing_fluctuation_rate
+                        p_candidate = ffr 
                     end
                 end
 
@@ -826,6 +829,7 @@ module FP
             T = state.T
             α = param.α
             γ = param.γ
+            ffr = param.ffr
             Δt = 1
             t_end = state.t + Δt
             t = state.t
@@ -895,7 +899,7 @@ module FP
                     p_cand = γ
                 elseif n == param.N+2  # bond fluctuation
                     action_index = 7
-                    p_cand = param.forcing_fluctuation_rate
+                    p_cand = ffr
                 end
 
                 # Benchmark tower sampling
@@ -1118,23 +1122,24 @@ function run_simulation!(state, param, n_sweeps, rng;
     # Initialize the animation
     t_init = state.t+1
     t_end = t_init + n_sweeps-1
+    println("with t_init = $t_init , t_end = $t_end")
 
-    # Benchmark variables
-    benchmark_results = nothing
-    if benchmark_frequency > 0
-        println("Benchmarking enabled - will benchmark every $benchmark_frequency sweeps")
-    end
+    # # Benchmark variables
+    # benchmark_results = nothing
+    # if benchmark_frequency > 0
+    #     println("Benchmarking enabled - will benchmark every $benchmark_frequency sweeps")
+    # end
 
     for sweep in t_init:t_end
         # Run benchmarking periodically
-        run_benchmark = benchmark_frequency > 0 && (sweep - t_init + 1) % benchmark_frequency == 0
+        # run_benchmark = benchmark_frequency > 0 && (sweep - t_init + 1) % benchmark_frequency == 0
         
-        if run_benchmark
-            println("\n--- Benchmarking at sweep $sweep ---")
-            FP.update!(param, state, rng; benchmark=true)
-        else
-            FP.update!(param, state, rng)
-        end
+        # if run_benchmark
+        #     println("\n--- Benchmarking at sweep $sweep ---")
+        #     FP.update!(param, state, rng; benchmark=true)
+        # else
+        #     FP.update!(param, state, rng)
+        # end
         
         update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
 

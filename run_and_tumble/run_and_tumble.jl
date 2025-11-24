@@ -13,7 +13,7 @@ using LinearAlgebra
 using JLD2
 using YAML
 using ArgParse
-using BenchmarkTools
+# using BenchmarkTools
 
 # First, on the main process, include all necessary files.
 include("potentials.jl")
@@ -26,7 +26,7 @@ using .SaveUtils
 
 # Ensure all worker processes load the same files and modules.
 @everywhere begin
-    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse, BenchmarkTools
+    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
     include("potentials.jl")
     include("modules_run_and_tumble.jl")
     using .FP
@@ -79,7 +79,7 @@ end
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
     L= 32  
-    d = 2
+    d = 1
     return Dict(
         "dim_num" => d,
         "D" => 1.0,
@@ -89,12 +89,12 @@ end
         "T" => 1.0,
         "γ" => 0.01,
         "ϵ" => 0,
-        "n_sweeps" => 10^5,
+        "n_sweeps" => 10^4,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "rotating_hallway",
+        "potential_type" => "linear_slides_cut1",
         "fluctuation_type" => "profile_switch",
-        "potential_magnitude" => 4.0,
+        "potential_magnitude" => 16.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
@@ -145,7 +145,7 @@ end
     # v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     # potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
     # state = FP.setState(0, rng, param, T, potential)
-    dummy_state = setDummyState(state,state.ρ_avg,state.ρ_matrix_avg,state.t)
+    dummy_state = FP.setDummyState(state,state.ρ_avg,state.ρ_matrix_avg_cuts,state.t)
     estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     estimated_time_hours = estimated_time / 3600
     println("Estimated run time for this simulation: $estimated_time_hours hours")
@@ -156,7 +156,7 @@ end
                                                  save_times=save_times)
     return dist, corr_mat_cuts, dummy_state, param
 end
-# A very shitty function, find a cleaner way to do it! this is just a recepie for spagheti
+# A very shitty function, find a cleaner way to do it! this is just a recipe for spaghetti
 function n_sweeps_from_args(args)
     defaults = get_default_params()
     if haskey(args, "config") && !isnothing(args["config"])
@@ -250,8 +250,6 @@ function main()
     println("Running $num_runs independent simulations in parallel.")
     if num_runs > 1
         if haskey(args, "continue") && !isnothing(args["continue"])
-            # # When continuing from a saved state, parallel runs are not allowed.
-            # error("Parallel runs are not supported when continuing from a saved state.")
             println("Continuing from saved aggregation: $(args["continue"])")
             @load args["continue"] state param potential
             if haskey(args, "config") && !isnothing(args["config"])
