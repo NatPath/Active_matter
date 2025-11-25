@@ -23,6 +23,19 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
         corr_mat = state.ρ_matrix_avg_cuts[:full]-outer_prod_ρ
         p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
+        # Mark bond forcing position/direction
+        if hasfield(typeof(state), :forcing)
+            b1 = state.forcing.bond_indices[1][1]
+            b2 = state.forcing.bond_indices[2][1]
+            dir_label = state.forcing.direction_flag ? "force ->" : "force <-"
+            vline!(p0, [b1, b2], color=:red, linestyle=:dash, label=false)
+            y_max = maximum(state.ρ_avg)
+            y_pos = y_max * 0.9
+            start_x, end_x = state.forcing.direction_flag ? (b1, b2) : (b2, b1)
+            plot!(p0, [start_x, end_x], [y_pos, y_pos],
+                  arrow=:arrow, color=:red, lw=3, label=false)
+            annotate!(p0, ((b1 + b2) / 2, y_pos * 1.05, text(dir_label, :red, 8)))
+        end
         p1 = plot_magnetization(state, param)
         
         # Remove potential profile plot for 1D case
@@ -123,6 +136,27 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                            xlabel="x", ylabel="y",
                            aspect_ratio=1, colorbar=true,
                            color=:inferno)
+        # Simple marker for bond forcing direction/location
+        if hasfield(typeof(state), :forcing)
+            b1 = state.forcing.bond_indices[1]
+            b2 = state.forcing.bond_indices[2]
+            if length(b1) == 2 && length(b2) == 2
+                start = state.forcing.direction_flag ? b1 : b2
+                dx = state.forcing.direction_flag ? (b2[1] - b1[1]) : (b1[1] - b2[1])
+                dy = state.forcing.direction_flag ? (b2[2] - b1[2]) : (b1[2] - b2[2])
+                quiver!(p_current_density,
+                        [start[1]], [start[2]],
+                        quiver=([dx], [dy]),
+                        color=:white,
+                        lw=3,
+                        arrow=:arrow,
+                        label=false)
+                annotate!(p_current_density,
+                          start[1] + 0.3*dx,
+                          start[2] + 0.3*dy,
+                          text("bond force", :white, 8))
+            end
+        end
 
         # 2) Extract correlation C(x1,y0; x2,y0)
         fix_term = param.N / (prod(param.dims)^2)

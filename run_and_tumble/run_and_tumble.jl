@@ -79,7 +79,7 @@ end
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
     L= 32  
-    d = 1
+    d = 2
     return Dict(
         "dim_num" => d,
         "D" => 1.0,
@@ -87,21 +87,22 @@ end
         "L" => L,
         "ρ₀" => 100, # particles per site
         "T" => 1.0,
-        "γ" => 0.01,
+        "γ" => 0.0,
         "ϵ" => 0,
-        "n_sweeps" => 10^4,
+        "n_sweeps" => 10^2,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "linear_slides_cut1",
-        "fluctuation_type" => "profile_switch",
-        "potential_magnitude" => 16.0,
+        "potential_type" => "zero",
+        "fluctuation_type" => "no-fluctuation",
+        "potential_magnitude" => 0.0,
         "save_dir" => "saved_states",
-        "show_times" => [j*10^i for i in 0:12 for j in 1:9],
+        # "show_times" => [j*10^i for i in 0:12 for j in 1:9],
+        "show_times" => [i for i in 1:1:100],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
-        "ffr" => 0.0,
+        "ffr" => 0.001,
         "forcing_fluctuation_type" => "alternating_direction",
-        "forcing_magnitude" => 0.0,
+        "forcing_magnitude" => 1.0,
     )
 end
 
@@ -322,12 +323,12 @@ function main()
 
         
         # Save aggregated results to a separate file.
-        save_dir = "saved_states_parallel"
-        mkpath(save_dir)
-        now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
-        filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
-        @save filename states params
-        println("Parallel results saved to: $filename")
+        # save_dir = "saved_states_parallel"
+        # mkpath(save_dir)
+        # now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
+        # filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
+        # @save filename states params
+        # println("Parallel results saved to: $filename")
     else
         # Single-run mode.
         if haskey(args, "continue") && !isnothing(args["continue"])
