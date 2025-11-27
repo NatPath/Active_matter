@@ -1,5 +1,7 @@
 using JLD2
 using ArgParse
+using LinearAlgebra
+using Statistics
 include("modules_run_and_tumble.jl")
 include("save_utils.jl")
 using .FP
@@ -11,76 +13,213 @@ function parse_commandline()
         "saved_states"
             help = "Path(s) to the saved state file(s) (.jld2)"
             required = true
-            nargs = '+'  # This allows one or more arguments
+            nargs = '+'
+        "--method"
+            help = "Aggregation method: 'mean' (default) or 'svd'"
+            default = "mean"
+        "--cut"
+            help = "Specific cut to process (e.g., 'x_cut'). Default 'auto' selects 'full' for 1D and 'x_cut' for 2D."
+            default = "auto"
     end
     return parse_args(s)
 end
 
-function main()
-    println("Starting aggregation of simulation results...")
+# Helper to extract specific cut data even if only :full exists in the file
+function get_cut_data(state, cut_name, param)
+    cuts = state.ρ_matrix_avg_cuts
+    sym_name = Symbol(cut_name)
     
-    args = parse_commandline()
-    
-    println("Processing $(length(args["saved_states"])) state files...")
-    
-    params = []
-    total_t = 0
-    total_weight = 0.0
-    state_count = 0
-    reference_state = nothing
-    ρ_avg_sum = nothing
-    cut_sums = Dict{Symbol,Array{Float64}}()
-    
-    for (i, saved_state) in enumerate(args["saved_states"])
-        println("  Loading file $i/$(length(args["saved_states"])): $(basename(saved_state))")
-        try
-            @load saved_state state param potential
-            params = [params; param]
-            total_t += state.t
-            if reference_state === nothing
-                reference_state = state
-                ρ_avg_sum = zeros(size(state.ρ_avg))
-                for (key, arr) in state.ρ_matrix_avg_cuts
-                    cut_sums[key] = zeros(size(arr))
-                end
-            end
-            weight = max(state.t, 1)
-            total_weight += weight
-            ρ_avg_sum .+= state.ρ_avg .* weight
-            for (key, arr) in state.ρ_matrix_avg_cuts
-                cut_sums[key] .+= arr .* weight
-            end
-            state_count += 1
-        catch e
-            println("  ERROR: Failed to load $saved_state: $e")
-            continue
-        end
+    # 1. Direct match (e.g. 1D :full, or 2D :x_cut if it exists)
+    if haskey(cuts, sym_name)
+        return vec(cuts[sym_name])
     end
     
-    if state_count == 0 || reference_state === nothing
-        println("ERROR: No valid states loaded for aggregation")
-        exit(1)
+    # 2. Extract x_cut from Full Tensor in 2D
+    if cut_name == "x_cut" && haskey(cuts, :full)
+        # x-cut is typically taken at y_middle
+        y_mid = div(param.dims[2], 2)
+        full_tensor = cuts[:full]
+        # Tensor structure is (Nx, Ny, Nx, Ny). We want [:, y_mid, :, y_mid]
+        slice = full_tensor[:, y_mid, :, y_mid]
+        return vec(slice)
     end
     
-    println("Successfully loaded $state_count states")
-    println("Total simulation time: $total_t")
-    
-    println("Aggregating correlation matrices and densities...")
-    avg_ρ = ρ_avg_sum ./ total_weight
-    aggregated_cuts = Dict{Symbol,Array{Float64}}()
-    for (key, arr_sum) in cut_sums
-        aggregated_cuts[key] = arr_sum ./ total_weight
-    end
-    
-    println("Creating aggregated dummy state...")
-    dummy_state = FP.setDummyState(reference_state, avg_ρ, aggregated_cuts, total_t)
+    return nothing
+end
 
-    dummy_state_save_dir = "dummy_states_agg"
-    println("Saving aggregated state to: $dummy_state_save_dir")
+function main()
+    args = parse_commandline()
+    method = args["method"]
+    files = args["saved_states"]
+    n_files = length(files)
     
-    saved_filename = save_state(dummy_state, params[1], dummy_state_save_dir)
-    println("✓ SUCCESS: Aggregated state saved as: $saved_filename")
-    println("Aggregation completed successfully!")
+    println("Processing $n_files files using method: $method")
+    
+    # --- METHOD 1: ARITHMETIC MEAN (Default) ---
+    if method == "mean"
+        ρ_avg_sum = nothing
+        cut_sums = Dict{Symbol,Array{Float64}}()
+        total_weight = 0.0
+        params_ref = nothing
+        state_ref = nothing
+        total_t = 0
+        
+        for (i, file) in enumerate(files)
+            println("  [Mean] Loading $i/$n_files: $(basename(file))")
+            try
+                @load file state param
+                if i % 20 == 0; GC.gc(); end # periodic GC
+                
+                params_ref = param
+                total_t += state.t
+                
+                if state_ref === nothing
+                    state_ref = state
+                    ρ_avg_sum = zeros(size(state.ρ_avg))
+                    for (k, arr) in state.ρ_matrix_avg_cuts
+                        cut_sums[k] = zeros(size(arr))
+                    end
+                end
+                
+                weight = max(state.t, 1)
+                total_weight += weight
+                ρ_avg_sum .+= state.ρ_avg .* weight
+                for (k, arr) in state.ρ_matrix_avg_cuts
+                    if haskey(cut_sums, k)
+                        cut_sums[k] .+= arr .* weight
+                    end
+                end
+            catch e
+                println("  ERROR loading $file: $e")
+            end
+        end
+        
+        if state_ref === nothing; error("No valid states found"); end
+        
+        avg_ρ = ρ_avg_sum ./ total_weight
+        agg_cuts = Dict{Symbol,Array{Float64}}()
+        for (k, sum_arr) in cut_sums
+            agg_cuts[k] = sum_arr ./ total_weight
+        end
+        
+        dummy = FP.setDummyState(state_ref, avg_ρ, agg_cuts, total_t)
+        save_dir = "dummy_states_agg"
+        mkpath(save_dir)
+        save_state(dummy, params_ref, save_dir; tag="agg_mean")
+
+    # --- METHOD 2: SVD (Principal Component) ---
+    elseif method == "svd"
+        # 1. Determine Dimensions & Target Cuts
+        @load files[1] state param
+        state_ref = state
+        params_ref = param
+        total_t = state.t
+        
+        # Initialize agg_cuts with EVERYTHING from the first file (Dummies)
+        # This ensures diag_cut, y_cut, etc., exist even if we don't process them.
+        agg_cuts = deepcopy(state.ρ_matrix_avg_cuts)
+        
+        # Auto-selection logic
+        target_cuts = String[]
+        if args["cut"] == "auto"
+            dim_num = length(param.dims)
+            if dim_num == 1
+                push!(target_cuts, "full")
+            elseif dim_num == 2
+                push!(target_cuts, "x_cut") # Only process x_cut for 2D to save RAM
+            end
+        else
+            push!(target_cuts, args["cut"])
+        end
+        println("  [SVD] Target cuts to process: $target_cuts")
+        println("  [SVD] Other cuts will be preserved as dummies from first file.")
+
+        # 2. Pre-allocate Memory
+        rho_len = length(state.ρ_avg)
+        mat_ρ = Matrix{Float64}(undef, rho_len, n_files)
+        
+        mat_cuts = Dict{String, Matrix{Float64}}()
+        cut_shapes = Dict{String, Tuple}()
+        
+        for cname in target_cuts
+            sample_data = get_cut_data(state, cname, param)
+            if sample_data !== nothing
+                len = length(sample_data)
+                mat_cuts[cname] = Matrix{Float64}(undef, len, n_files)
+                # Store original shape for reshaping later
+                if cname == "x_cut" && haskey(state.ρ_matrix_avg_cuts, :full)
+                    cut_shapes[cname] = (param.dims[1], param.dims[1])
+                elseif haskey(state.ρ_matrix_avg_cuts, Symbol(cname))
+                    cut_shapes[cname] = size(state.ρ_matrix_avg_cuts[Symbol(cname)])
+                end
+            else
+                println("  WARNING: Target cut '$cname' not found in first file.")
+            end
+        end
+        
+        state = nothing; GC.gc()
+
+        # 3. Stream Data
+        valid_idxs = Int[]
+        for (i, file) in enumerate(files)
+            println("  [SVD] Loading $i/$n_files into memory...")
+            try
+                @load file state param
+                if i > 1; total_t += state.t; end
+                
+                mat_ρ[:, i] = vec(state.ρ_avg)
+                
+                for (cname, mat) in mat_cuts
+                    data = get_cut_data(state, cname, param)
+                    if data !== nothing
+                        mat[:, i] = data
+                    end
+                end
+                push!(valid_idxs, i)
+            catch e
+                println("  Error: $e")
+            end
+            state = nothing; param = nothing; GC.gc()
+        end
+        
+        if isempty(valid_idxs); error("No valid files"); end
+        
+        # Resize to valid only
+        if length(valid_idxs) < n_files
+            mat_ρ = mat_ρ[:, valid_idxs]
+            for k in keys(mat_cuts); mat_cuts[k] = mat_cuts[k][:, valid_idxs]; end
+        end
+
+        # 4. Compute Results
+        avg_ρ = reshape(mean(mat_ρ, dims=2), size(state_ref.ρ_avg))
+        mat_ρ = nothing; GC.gc()
+        
+        # Overwrite the target cuts in agg_cuts with the SVD results
+        for (cname, mat) in mat_cuts
+            println("  Computing SVD for $cname...")
+            F = svd(mat)
+            
+            mode1 = F.U[:, 1] .* (F.S[1] / sqrt(length(valid_idxs)))
+            
+            mean_vec = vec(mean(mat, dims=2))
+            if dot(mode1, mean_vec) < 0; mode1 .*= -1; end
+            
+            # Update the dictionary (overwriting dummy or adding new)
+            if haskey(cut_shapes, cname)
+                agg_cuts[Symbol(cname)] = reshape(mode1, cut_shapes[cname])
+            else
+                agg_cuts[Symbol(cname)] = mode1 
+            end
+            
+            mat = nothing; GC.gc()
+        end
+        
+        dummy = FP.setDummyState(state_ref, avg_ρ, agg_cuts, total_t)
+        save_dir = "dummy_states_agg"
+        mkpath(save_dir)
+        tag = "agg_svd_$(join(target_cuts, "_"))"
+        save_state(dummy, params_ref, save_dir; tag=tag)
+    end
 end
 
 main()

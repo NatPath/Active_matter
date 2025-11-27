@@ -103,31 +103,58 @@ module FP
         Particle(position,direction)
     end
 
-    mutable struct State
-        t::Int64 # time
-        #pos::Array{Int64, 1+dim_num}    # position vector
-        particles::Array{Particle}
-        ρ::AbstractArray{Int64}      # density field
-        ρ₊::AbstractArray{Int64}      # density field
-        ρ₋::AbstractArray{Int64}      # density field
-        #ρ_polarization_arr::Array{Int64}
-        ρ_avg::AbstractArray{Float64} #time averaged density field
-        # ρ_matrix_avg::AbstractArray{Float64}
-        # matrix cuts
-        ρ_matrix_avg_cuts::Dict{Symbol,AbstractArray{Float64}} # Dict with keys :full, :x_cut, :y_cut, :diag_cut
-        # ρ_matrix_avg_x_cut::AbstractArray{Float64}
-        # ρ_matrix_avg_y_cut::AbstractArray{Float64}
-        # ρ_matrix_avg_diag_cut::AbstractArray{Float64}
-        T::Float64                      # temperature
-        # V::Array{Float64}      # potential
+    # mutable struct State{N}
+    #     t::Int64 # time
+    #     #pos::Array{Int64, 1+dim_num}    # position vector
+    #     particles::Array{Particle}
+    #     ρ::AbstractArray{Int64,N}      # density field
+    #     ρ₊::AbstractArray{Int64}      # density field
+    #     ρ₋::AbstractArray{Int64}      # density field
+    #     #ρ_polarization_arr::Array{Int64}
+    #     ρ_avg::AbstractArray{Float64} #time averaged density field
+    #     # ρ_matrix_avg::AbstractArray{Float64}
+    #     # matrix cuts
+    #     ρ_matrix_avg_cuts::Dict{Symbol,AbstractArray{Float64}} # Dict with keys :full, :x_cut, :y_cut, :diag_cut
+    #     # ρ_matrix_avg_x_cut::AbstractArray{Float64}
+    #     # ρ_matrix_avg_y_cut::AbstractArray{Float64}
+    #     # ρ_matrix_avg_diag_cut::AbstractArray{Float64}
+    #     T::Float64                      # temperature
+    #     # V::Array{Float64}      # potential
+    #     potential::AbstractPotential
+    #     forcing:: BondForce
+    #     exp_table::ExpLookupTable  # Add exponential lookup table
+    # end
+
+    mutable struct State{N, C}
+        t::Int64
+        particles::Vector{Particle}
+        ρ::Array{Int64, N}           
+        ρ₊::Array{Int64, N}          
+        ρ₋::Array{Int64, N}          
+        ρ_avg::Array{Float64, N}     
+        ρ_matrix_avg_cuts::C         
+        T::Float64
         potential::AbstractPotential
-        forcing:: BondForce
-        exp_table::ExpLookupTable  # Add exponential lookup table
+        forcing::BondForce
+        exp_table::ExpLookupTable
     end
 
     function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t)
-        dummy_state = State(t, state_to_imitate.particles, state_to_imitate.ρ,state_to_imitate.ρ₊,state_to_imitate.ρ₋, ρ_avg, ρ_matrix_avg_cuts, state_to_imitate.T, state_to_imitate.potential, state_to_imitate.forcing, state_to_imitate.exp_table)
-        #dummy_state = State(t, state_to_imitate.particles, state_to_imitate.ρ,state_to_imitate.ρ₊,state_to_imitate.ρ₋, state_to_imitate.ρ_polarization_arr, ρ_avg, ρ_matrix_avg, state_to_imitate.T, state_to_imitate.potential)
+        N = ndims(state_to_imitate.ρ)
+        
+        dummy_state = State{N, typeof(ρ_matrix_avg_cuts)}(
+            t, 
+            state_to_imitate.particles, 
+            state_to_imitate.ρ, 
+            state_to_imitate.ρ₊, 
+            state_to_imitate.ρ₋, 
+            ρ_avg, 
+            ρ_matrix_avg_cuts, 
+            state_to_imitate.T, 
+            state_to_imitate.potential, 
+            state_to_imitate.forcing, 
+            state_to_imitate.exp_table
+        )
         return dummy_state
     end
 
@@ -226,7 +253,12 @@ module FP
         # Create exponential lookup table with reasonable range for jump probabilities
         exp_table = create_exp_lookup(-20.0, 20.0, 10000)
         
-        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, T, potential, bond_force, exp_table)
+        # state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, T, potential, bond_force, exp_table)
+        dim_num = length(param.dims)
+        state = State{dim_num, typeof(ρ_matrix_avg_cuts)}(
+            t, particles, ρ, ρ₊, ρ₋, ρ_avg, 
+            ρ_matrix_avg_cuts, T, potential, bond_force, exp_table
+    )
         return state
     end
 
