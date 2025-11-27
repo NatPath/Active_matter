@@ -1,2 +1,7 @@
+<<<<<<< HEAD
 *.jld2
 *.png
+=======
+*.png
+*.jld2
+>>>>>>> add_multicore_saving

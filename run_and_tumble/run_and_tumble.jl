@@ -13,6 +13,7 @@ using LinearAlgebra
 using JLD2
 using YAML
 using ArgParse
+# using BenchmarkTools
 
 # First, on the main process, include all necessary files.
 include("potentials.jl")
@@ -58,7 +59,7 @@ function parse_commandline()
     return parse_args(s)
 end
 # Estimate the total run time by running a sample of sweeps.
-@everywhere function estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+@everywhere function estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     println("Estimating run time using $sample_size sweeps...")
     # Clone the current state so that our sample does not affect the actual simulation.
     state_copy = deepcopy(state)
@@ -77,29 +78,31 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L=16 
+    L= 32  
+    d = 2
     return Dict(
-        "dim_num" => 2,
+        "dim_num" => d,
         "D" => 1.0,
         "α" => 0.0,
         "L" => L,
-        "N" => L^2*100,
+        "ρ₀" => 100, # particles per site
         "T" => 1.0,
-        "γ′" => 0.5,
-        "ϵ" => 0.0,
-        "n_sweeps" => 10^6,
+        "γ" => 0.0,
+        "ϵ" => 0,
+        "n_sweeps" => 10^2,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "xy_slides",
-        "fluctuation_type" => "profile_switch",
-        "potential_magnitude" => 4.0,
+        "potential_type" => "zero",
+        "fluctuation_type" => "no-fluctuation",
+        "potential_magnitude" => 0.0,
         "save_dir" => "saved_states",
-        "show_times" => [j*10^i for i in 0:12 for j in 1:9],
+        # "show_times" => [j*10^i for i in 0:12 for j in 1:9],
+        "show_times" => [i for i in 1:1:100],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
-        "forcing_fluctuation_rate" => 0.0,
+        "ffr" => 0.001,
         "forcing_fluctuation_type" => "alternating_direction",
-        "forcing_magnitude" => 0.0,
+        "forcing_magnitude" => 1.0,
     )
 end
 
@@ -143,18 +146,18 @@ end
     # v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     # potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
     # state = FP.setState(0, rng, param, T, potential)
-    dummy_state = setDummyState(state,state.ρ_avg,state.ρ_matrix_avg,state.t)
-    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    dummy_state = FP.setDummyState(state,state.ρ_avg,state.ρ_matrix_avg_cuts,state.t)
+    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     estimated_time_hours = estimated_time / 3600
     println("Estimated run time for this simulation: $estimated_time_hours hours")
     # Run the simulation (calculating correlations).
-    normalized_dist, corr_mat = run_simulation!(dummy_state, param, n_sweeps, rng;
+    dist, corr_mat_cuts = run_simulation!(dummy_state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=show_times,
                                                  save_times=save_times)
-    return normalized_dist, corr_mat, dummy_state, param
+    return dist, corr_mat_cuts, dummy_state, param
 end
-# A very shitty function, find a cleaner way to do it! this is just a recepie for spagheti
+# A very shitty function, find a cleaner way to do it! this is just a recipe for spaghetti
 function n_sweeps_from_args(args)
     defaults = get_default_params()
     if haskey(args, "config") && !isnothing(args["config"])
@@ -192,13 +195,13 @@ end
     D                  = get(params, "D", defaults["D"])
     α                  = get(params, "α", defaults["α"])
     L                  = get(params, "L", defaults["L"])
-    N                  = get(params, "N", defaults["N"])
+    ρ₀              = get(params, "ρ₀", defaults["ρ₀"])
     T                  = get(params, "T", defaults["T"])
-    γ′                 = get(params, "γ′", defaults["γ′"])
+    γ                 = get(params, "γ", defaults["γ"])
     ϵ                  = get(params, "ϵ", defaults["ϵ"])
 
     forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
-    forcing_fluctuation_rate_normalized = get(params, "forcing_fluctuation_rate", defaults["forcing_fluctuation_rate"])/N
+    ffr = get(params, "ffr", defaults["ffr"])
     forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
     forcing_type = get(params, "forcing_type", defaults["forcing_type"])
     if forcing_type == "center_bond_x"
@@ -219,26 +222,25 @@ end
     forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
 
     dims = ntuple(i -> L, dim_num)
-    ρ₀ = N / (L^dim_num)
-    γ = γ′ / N
+    # ρ₀ = N / (L^dim_num)
 
     # Initialize simulation parameters and state.
-    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,forcing_fluctuation_rate_normalized)
+    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,ffr)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
     state = FP.setState(0, rng, param, T, potential, forcing)
    
     #estimate run time
-    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     estimated_time_hours = estimated_time / 3600
     println("Estimated run time for this simulation: $estimated_time_hours hours")
 
     # Run the simulation (calculating correlations).
-    normalized_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
+    dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=params["show_times"],
                                                  save_times=params["save_times"])
-    return normalized_dist, corr_mat, state, param
+    return dist, corr_mat_cuts, state, param
 end
 
 # Main function.
@@ -249,8 +251,6 @@ function main()
     println("Running $num_runs independent simulations in parallel.")
     if num_runs > 1
         if haskey(args, "continue") && !isnothing(args["continue"])
-            # # When continuing from a saved state, parallel runs are not allowed.
-            # error("Parallel runs are not supported when continuing from a saved state.")
             println("Continuing from saved aggregation: $(args["continue"])")
             @load args["continue"] state param potential
             if haskey(args, "config") && !isnothing(args["config"])
@@ -276,43 +276,59 @@ function main()
         end
         # Use different seeds for each independent simulation.
         # Aggregate results (here we average the correlation matrices).
-        normalized_dists = [res[1] for res in results]
-        corr_mats = [res[2] for res in results]
+        dists = [res[1] for res in results]
+        mat_cuts = [res[2] for res in results]
         states = [res[3] for res in results]
         params = [res[4] for res in results]
         
-        #avg_corr = mean(corr_mats, dims=1)
-        #avg_dists = mean(normalized_dists,dims=1)
-        
-        # Handle different dimensions for stacking and averaging
-        if ndims(corr_mats[1]) == 2  # 1D case
-            stacked_corr = cat(corr_mats..., dims=3)  # Stack matrices along a new third dimension
+        dim_num = length(params[1].dims)
+        if dim_num == 1
+            full_mats = [mat_cut[:full] for mat_cut in mat_cuts]
+            stacked_corr = cat(full_mats..., dims=3)  # Stack matrices along a new third dimension
             avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
-            stacked_dists = cat(normalized_dists..., dims=2)
+            stacked_dists = cat(dists..., dims=2)
             avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
-        elseif ndims(corr_mats[1]) == 4  # 2D case
-            stacked_corr = cat(corr_mats..., dims=5)  # Stack 4D tensors along 5th dimension
-            avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)  # Average over 5th dimension
-            stacked_dists = cat(normalized_dists..., dims=3)  # Stack 2D matrices along 3rd dimension
+        elseif dim_num == 2
+            if haskey(mat_cuts[1],:full)
+                full_mats = [mat_cut[:full] for mat_cut in mat_cuts]
+                stacked_corr = cat(full_mats..., dims=5)  # Stack 4D tensors along 5th dimension
+                avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)  # Average over 5th dimension
+            else
+                x_cut_mats = [mat_cut[:x_cut] for mat_cut in mat_cuts]
+                y_cut_mats = [mat_cut[:y_cut] for mat_cut in mat_cuts]
+                diagonal_cut_mats = [mat_cut[:diagonal_cut] for mat_cut in mat_cuts]
+                stacked_corr_x_cut = cat(x_cut_mats..., dims=3)
+                stacked_corr_y_cut = cat(y_cut_mats..., dims=3)
+                stacked_corr_diagonal_cut = cat(diagonal_cut_mats..., dims=3)
+                avg_corr_x_cut = dropdims(mean(stacked_corr_x_cut, dims=3), dims=3)
+                avg_corr_y_cut = dropdims(mean(stacked_corr_y_cut, dims=3), dims=3)
+                avg_corr_diagonal_cut = dropdims(mean(stacked_corr_diagonal_cut, dims=3), dims=3)
+            end
+            stacked_dists = cat(dists..., dims=3)  # Stack 2D matrices along 3rd dimension
             avg_dists = dropdims(mean(stacked_dists, dims=3), dims=3)  # Average over 3rd dimension
         else
             error("Unsupported correlation matrix dimensions: $(ndims(corr_mats[1]))")
         end
+        if haskey(mat_cuts[1],:full)
+            mat_cuts_averaged = Dict(:full => avg_corr)
+        else
+            mat_cuts_averaged = Dict(:x_cut => avg_corr_x_cut, :y_cut => avg_corr_y_cut, :diagonal_cut => avg_corr_diagonal_cut)
+        end
         
         total_t = n_sweeps*(num_runs-1)+states[1].t 
-        dummy_state = FP.setDummyState(states[1],avg_dists,avg_corr,total_t)
+        dummy_state = FP.setDummyState(states[1],avg_dists,mat_cuts_averaged,total_t)
 
         dummy_state_save_dir = "dummy_states"
         save_state(dummy_state,params[1],dummy_state_save_dir)
 
         
         # Save aggregated results to a separate file.
-        save_dir = "saved_states_parallel"
-        mkpath(save_dir)
-        now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
-        filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
-        @save filename normalized_dists corr_mats avg_corr avg_dists params
-        println("Parallel results saved to: $filename")
+        # save_dir = "saved_states_parallel"
+        # mkpath(save_dir)
+        # now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
+        # filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
+        # @save filename states params
+        # println("Parallel results saved to: $filename")
     else
         # Single-run mode.
         if haskey(args, "continue") && !isnothing(args["continue"])
@@ -353,13 +369,13 @@ function main()
             D                  = get(params, "D", defaults["D"])
             α                  = get(params, "α", defaults["α"])
             L                  = get(params, "L", defaults["L"])
-            N                  = get(params, "N", defaults["N"])
+            ρ₀                = get(params, "ρ₀", defaults["ρ₀"])
             T                  = get(params, "T", defaults["T"])
-            γ′                 = get(params, "γ′", defaults["γ′"])
+            γ                 = get(params, "γ", defaults["γ"])
             ϵ                  = get(params, "ϵ", defaults["ϵ"])
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
             forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
-            forcing_fluctuation_rate_normalized = get(params, "forcing_fluctuation_rate", defaults["forcing_fluctuation_rate"])/N
+            ffr = get(params, "ffr", defaults["ffr"])
             forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
             forcing_type = get(params, "forcing_type", defaults["forcing_type"])
             if forcing_type == "center_bond_x"
@@ -380,10 +396,9 @@ function main()
             forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
             
             dims = ntuple(i -> L, dim_num)
-            ρ₀ = N / prod(dims)
-            γ = γ′ / N
+            # ρ₀ = N / prod(dims)
             
-            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, forcing_fluctuation_rate_normalized)
+            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffr )
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
@@ -414,7 +429,7 @@ function main()
         Base.sigatomic_end()
         
         try
-            res_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
+            res_dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  show_times=show_times,
                                                  save_times=save_times,
                                                  plot_flag=true)

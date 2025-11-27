@@ -18,10 +18,24 @@ end
 function plot_sweep(sweep,state,param; label="", plot_directional=false)
     dim_num = length(param.dims)
     if dim_num==1
-        normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+        # normalized_dist = state.ρ_avg / sum(state.ρ_avg)
+        
         outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-        corr_mat = state.ρ_matrix_avg-outer_prod_ρ
-        p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+        corr_mat = state.ρ_matrix_avg_cuts[:full]-outer_prod_ρ
+        p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
+        # Mark bond forcing position/direction
+        if hasfield(typeof(state), :forcing)
+            b1 = state.forcing.bond_indices[1][1]
+            b2 = state.forcing.bond_indices[2][1]
+            dir_label = state.forcing.direction_flag ? "force ->" : "force <-"
+            vline!(p0, [b1, b2], color=:red, linestyle=:dash, label=false)
+            y_max = maximum(state.ρ_avg)
+            y_pos = y_max * 0.9
+            start_x, end_x = state.forcing.direction_flag ? (b1, b2) : (b2, b1)
+            plot!(p0, [start_x, end_x], [y_pos, y_pos],
+                  arrow=:arrow, color=:red, lw=3, label=false)
+            annotate!(p0, ((b1 + b2) / 2, y_pos * 1.05, text(dir_label, :red, 8)))
+        end
         p1 = plot_magnetization(state, param)
         
         # Remove potential profile plot for 1D case
@@ -58,53 +72,52 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
         p7 = plot(corr_mat_antisym[point_to_look_at,1:end],title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
         p_final=plot(p0,p1,p4,p5,p6,p7, size=(2100,1000),plot_title="sweep $(sweep)",layout=grid(2,3))
         display(p_final)
-        return normalized_dist, corr_mat
+        return corr_mat
     elseif dim_num == 2
         # --- 2D plotting with y=0 cut ---
         dims = param.dims
-        y0 = div(dims[2] + 1, 2)               # middle index for y=0
 
         # 1) Time‐averaged density heatmap
-        normalized_dist = state.ρ_avg ./ sum(state.ρ_avg)
-        p_avg_density = heatmap(normalized_dist',
+        # normalized_dist = state.ρ_avg ./ sum(state.ρ_avg)
+        p_avg_density = heatmap(state.ρ_avg',
                      title="⟨ρ⟩ (t=$(sweep))",
                      xlabel="x", ylabel="y",
                      aspect_ratio=1, colorbar=true)
 
         # Add x-axis cut of average density at y=middle
-        y_middle = div(dims[2] + 1, 2)
+        offset_middle = 0
+        y0= div(dims[2] + 1, 2)+1+offset_middle
         x_range = 1:dims[1]
-        density_x_cut = normalized_dist[:, y_middle]
+        density_x_cut = state.ρ_avg[:, y0]
         p_density_x_cut = plot(x_range, density_x_cut,
-                     title="⟨ρ⟩ x-cut at y=$(y_middle)",
+                     title="⟨ρ⟩ x-cut at y=$(y0)",
                      xlabel="x", ylabel="Density",
                      legend=false, lw=2, color=:blue)
 
         # Add y-axis cut of average density at x=middle
-        x_middle = div(dims[1] + 1, 2)
+        x0= div(dims[1] + 1, 2)+1+offset_middle
         y_range = 1:dims[2]
-        density_y_cut = normalized_dist[x_middle, :]
+        density_y_cut = state.ρ_avg[x0, :]
         p_density_y_cut = plot(y_range, density_y_cut,
-                     title="⟨ρ⟩ y-cut at x=$(x_middle)",
+                     title="⟨ρ⟩ y-cut at x=$(x0)",
                      xlabel="y", ylabel="Density",
                      legend=false, lw=2, color=:green)
 
         # Add log plots of density cuts
         # Plot from middle toward right end only
-        x_right_range = x_middle+1:dims[1]
-        y_right_range = y_middle+1:dims[2]
+        x_right_range = x0+1:dims[1]
+        y_right_range = y0+1:dims[2]
         
-        density_x_cut_right = density_x_cut[x_middle+1:end]
-        density_y_cut_right = density_y_cut[y_middle+1:end]
-
+        density_x_cut_right = density_x_cut[x0+1:end]
+        density_y_cut_right = density_y_cut[y0+1:end]
         p_density_x_cut_log = plot(x_right_range, log10.(density_x_cut_right),
-                     title="⟨ρ⟩ x-cut at y=$(y_middle) (log-log scale)",
+                     title="⟨ρ⟩ x-cut at y=$(y0) (log-log scale)",
                      xlabel="x (log)", ylabel="Density (log)",
                      legend=false, lw=2, color=:blue,
                      xscale=:log10 )
 
         p_density_y_cut_log = plot(y_right_range, log10.(density_y_cut_right),
-                     title="⟨ρ⟩ y-cut at x=$(x_middle) (log-log scale)",
+                     title="⟨ρ⟩ y-cut at x=$(x0) (log-log scale)",
                      xlabel="y (log)", ylabel="Density (log)",
                      legend=false, lw=2, color=:green,
                      xscale=:log10 )
@@ -123,10 +136,36 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                            xlabel="x", ylabel="y",
                            aspect_ratio=1, colorbar=true,
                            color=:inferno)
+        # Simple marker for bond forcing direction/location
+        if hasfield(typeof(state), :forcing)
+            b1 = state.forcing.bond_indices[1]
+            b2 = state.forcing.bond_indices[2]
+            if length(b1) == 2 && length(b2) == 2
+                start = state.forcing.direction_flag ? b1 : b2
+                dx = state.forcing.direction_flag ? (b2[1] - b1[1]) : (b1[1] - b2[1])
+                dy = state.forcing.direction_flag ? (b2[2] - b1[2]) : (b1[2] - b2[2])
+                quiver!(p_current_density,
+                        [start[1]], [start[2]],
+                        quiver=([dx], [dy]),
+                        color=:white,
+                        lw=3,
+                        arrow=:arrow,
+                        label=false)
+                annotate!(p_current_density,
+                          start[1] + 0.3*dx,
+                          start[2] + 0.3*dy,
+                          text("bond force", :white, 8))
+            end
+        end
 
         # 2) Extract correlation C(x1,y0; x2,y0)
         fix_term = param.N / (prod(param.dims)^2)
-        slice2d_x = state.ρ_matrix_avg[:, y0, :, y0]     # dims[1]×dims[1]
+
+        if haskey(state.ρ_matrix_avg_cuts, :full)
+            slice2d_x = state.ρ_matrix_avg_cuts[:full][:,y0,:,y0]    # dims[1]×dims[1]
+        else
+            slice2d_x = state.ρ_matrix_avg_cuts[:x_cut]     # dims[1]×dims[1]
+        end 
         mean_vec = state.ρ_avg[:, y0]
         corr_mat2 = slice2d_x .- (mean_vec * transpose(mean_vec)) .+ fix_term
 
@@ -139,7 +178,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # 3) Plot full 2D correlation at y=0
         p_corr_x_axis = heatmap(corr_mat2,
-                     title="C(x₁,y=0; x₂,y=0)",
+                     title="C(x₁,y=$offset_middle; x₂,y=$offset_middle)",
                      xlabel="x₁", ylabel="x₂",
                      aspect_ratio=1, colorbar=true)
 
@@ -154,8 +193,8 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # 5) Same 1D cut but with middle region zeroed
         line_data_zeroed = copy(line_data)
-        middle_x = div(dims[1] + 1, 2)
-        zero_indices = [middle_x-1, middle_x, middle_x+1]
+        # middle_x = div(dims[1] + 1, 2)
+        zero_indices = [x0-1, x0, x0+1]
         line_data_zeroed[zero_indices] .= 0
         
         p_x_cut_zeroed = plot(x_range, line_data_zeroed,
@@ -169,10 +208,9 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                  label="Zeroed middle")
 
         # 5.1) Positive half of y=0 cut (from middle to end)
-        middle_x = div(dims[1] + 1, 2)
-        positive_x_range = middle_x:dims[1]
-        positive_line_data = line_data[middle_x:end]
-        positive_x_positions = positive_x_range .- middle_x .+ 1
+        positive_x_range = x0:dims[1]
+        positive_line_data = line_data[x0:end]
+        positive_x_positions = positive_x_range .- x0 .+ 1
         p_x_cut_positive = plot(positive_x_positions, positive_line_data,
                   title="C at x₁=3/4·L₁ (Positive Half)",
                   xlabel="Distance from center", ylabel="C",
@@ -194,9 +232,13 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                  label="Zeroed middle")
 
         # 6) Diagonal correlation C(x,x; x',x') 
-        corr_diag = zeros(dims[1], dims[1])
-        for i in 1:dims[1], j in 1:dims[1]
-            corr_diag[i,j] = state.ρ_matrix_avg[i, i, j, j] - state.ρ_avg[i,i] * state.ρ_avg[j,j] + fix_term
+        if haskey(state.ρ_matrix_avg_cuts, :full)
+            corr_diag = zeros(dims[1], dims[1])
+            for i in 1:dims[1], j in 1:dims[1]
+                corr_diag[i,j] = state.ρ_matrix_avg_cuts[:full][i, i, j, j] - state.ρ_avg[i,i] * state.ρ_avg[j,j] + fix_term
+            end
+        else
+            corr_diag = state.ρ_matrix_avg_cuts[:diag_cut] .- (state.ρ_avg * transpose(state.ρ_avg)) .+ fix_term
         end
         
         # Apply diagonal smoothing to diagonal correlation
@@ -234,7 +276,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # 8.1) Positive half of diagonal cut (from middle to end)
         positive_diag_x_positions = positive_x_positions
-        positive_diag_line_data = diag_line_data[middle_x:end]
+        positive_diag_line_data = diag_line_data[x0:end]
         p_diag_cut_positive = plot(positive_diag_x_positions, positive_diag_line_data,
                   title="Diagonal C at x=3/4·L₁ (Positive Half)",
                   xlabel="Distance from center", ylabel="C",
@@ -256,7 +298,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # 9) Antisymmetric parts (remove symmetric component)
         # For y=0 cut - remove symmetric part
-        corr_mat2_antisym = remove_symmetric_part_reflection(corr_mat2, middle_x)
+        corr_mat2_antisym = remove_symmetric_part_reflection(corr_mat2, x0)
         # Apply same diagonal smoothing to antisymmetric part
         for i in 1:dims[1]
             left_idx = i == 1 ? dims[1] : i - 1
@@ -271,7 +313,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                          legend=false, lw=2, color=:red)
 
         # For diagonal cut - remove symmetric part  
-        corr_diag_antisym = remove_symmetric_part_reflection(corr_diag, middle_x)
+        corr_diag_antisym = remove_symmetric_part_reflection(corr_diag, x0)
         # Apply same diagonal smoothing
         for i in 1:dims[1]
             left_idx = i == 1 ? dims[1] : i - 1
@@ -315,8 +357,13 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # 11) Y-axis cuts (similar to x-axis cuts but along y direction)
         # Extract correlation C(x0,y1; x0,y2) where x0 = 3/4·L₁
-        x0 = div(dims[1] + 1, 2)               # middle index for x=0
-        slice2d_y = state.ρ_matrix_avg[x0, :, x0, :]     # dims[2]×dims[2]
+        # slice2d_y = state.ρ_matrix_avg[x0, :, x0, :]     # dims[2]×dims[2]
+        if haskey(state.ρ_matrix_avg_cuts, :full)
+            slice2d_y = state.ρ_matrix_avg_cuts[:full][x0,:,x0,:]    # dims[2]×dims[2]
+        else
+            # Use y_cut if available, otherwise fallback to full
+            slice2d_y = state.ρ_matrix_avg_cuts[:y_cut]     # dims[2]×dims[2]
+        end
         mean_vec_y = state.ρ_avg[x0, :]
         corr_mat_y = slice2d_y .- (mean_vec_y * transpose(mean_vec_y)) .+ fix_term
 
@@ -338,8 +385,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # Y-axis cut but with middle region zeroed
         line_data_y_zeroed = copy(line_data_y)
-        middle_y = div(dims[2] + 1, 2)
-        zero_indices_y = [middle_y-1, middle_y, middle_y+1]
+        zero_indices_y = [y0-1, y0, y0+1]
         line_data_y_zeroed[zero_indices_y] .= 0
         
         p_y_cut_zeroed = plot(y_range, line_data_y_zeroed,
@@ -353,9 +399,9 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                  label="Zeroed middle")
 
         # Positive half of y-axis cut
-        positive_y_range = middle_y:dims[2]
-        positive_line_data_y = line_data_y[middle_y:end]
-        positive_y_positions = positive_y_range .- middle_y .+ 1
+        positive_y_range = y0:dims[2]
+        positive_line_data_y = line_data_y[y0:end]
+        positive_y_positions = positive_y_range .- y0 .+ 1
         p_y_cut_positive = plot(positive_y_positions, positive_line_data_y,
                   title="C at y₁=3/4·L₂ (Positive Half)",
                   xlabel="Distance from center", ylabel="C",
@@ -377,7 +423,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                  label="Zeroed middle")
 
         # Y-axis antisymmetric part
-        corr_mat_y_antisym = remove_symmetric_part_reflection(corr_mat_y, middle_y)
+        corr_mat_y_antisym = remove_symmetric_part_reflection(corr_mat_y, y0)
         # Apply same diagonal smoothing to antisymmetric part
         for i in 1:dims[2]
             left_idx = i == 1 ? dims[2] : i - 1
@@ -406,7 +452,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # Add y-axis correlation heatmap
         p_corr_y_axis = heatmap(corr_mat_y,
-                     title="C(x=3/4·L₁,y₁; x=3/4·L₁,y₂)",
+                     title="C(x=$offset_middle,y₁; x=$offset_middle,y₂)",
                      xlabel="y₁", ylabel="y₂",
                      aspect_ratio=1, colorbar=true, color=:plasma)
 
@@ -424,7 +470,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                      p_empty, p_diag_cut_zeroed, p_diag_cut_positive_zeroed, p_diag_cut_antisymmetric_zeroed,  # Row 8: diagonal cuts middle zeroed: empty, full zeroed, positive half zeroed, antisymmetric zeroed
                      layout=(9,4), size=(2400,3600),
                      plot_title="2D sweep $(sweep)"))
-        return normalized_dist, corr_mat2
+        return corr_mat2
     else
         throw(DomainError("Only 1D or 2D plotting supported"))
     end
@@ -522,7 +568,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
 
             for i in indices
                 outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-                corr_mat = (state.ρ_matrix_avg - outer_prod_ρ) .+ (N / L^2)
+                corr_mat = (state.ρ_matrix_avg_cuts[:full] - outer_prod_ρ) .+ (N / L^2)
                 middle_spot = L ÷ 2
                 point_to_look_at = Int(middle_spot + i)
 
@@ -603,7 +649,12 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 end
                 
                 # X-axis cut: C(x1,y0; x2,y0)
-                slice2d_x = state.ρ_matrix_avg[:, y0, :, y0]
+                # slice2d_x = state.ρ_matrix_avg[:, y0, :, y0]
+                if haskey(state.ρ_matrix_avg_cuts, :full)
+                    slice2d_x = state.ρ_matrix_avg_cuts[:full][:, y0, :, y0]
+                else
+                    slice2d_x = state.ρ_matrix_avg_cuts[:x_cut]
+                end
                 mean_vec_x = state.ρ_avg[:, y0]
                 corr_mat_x = slice2d_x .- mean_vec_x * transpose(mean_vec_x) .+ fix_term
                 
@@ -632,8 +683,15 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 
                 # Diagonal cut: C(x,x; x',x')
                 corr_diag = zeros(dims[1], dims[1])
-                for j in 1:dims[1], k in 1:dims[1]
-                    corr_diag[j,k] = state.ρ_matrix_avg[j, j, k, k] - state.ρ_avg[j,j] * state.ρ_avg[k,k] + fix_term
+                # for j in 1:dims[1], k in 1:dims[1]
+                #     corr_diag[j,k] = state.ρ_matrix_avg[j, j, k, k] - state.ρ_avg[j,j] * state.ρ_avg[k,k] + fix_term
+                # end
+                if haskey(state.ρ_matrix_avg_cuts, :full)
+                    for j in 1:dims[1], k in 1:dims[1]
+                        corr_diag[j,k] = state.ρ_matrix_avg_cuts[:full][j, j, k, k] - state.ρ_avg[j,j] * state.ρ_avg[k,k] + fix_term
+                    end
+                else
+                    corr_diag = state.ρ_matrix_avg_cuts[:diag_cut] .- (state.ρ_avg * transpose(state.ρ_avg)) .+ fix_term
                 end
                 
                 # Apply diagonal smoothing to diagonal correlation
@@ -913,8 +971,7 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
                 # Combine plots
                 plot(p1, p2, layout=(2,1), size=(800,800))
             else
-                normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-                p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+                p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
                 outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
                 p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
                             title="Correlation Matrix Heatmap", color=:viridis)
@@ -928,8 +985,7 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
         if show_directions
             # ... existing show_directions plotting code ...
         else
-            normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-            p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+            p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
             outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
             p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
                         title="Correlation Matrix Heatmap", color=:viridis)
@@ -948,8 +1004,7 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
     println("Generating final statistics...")
     
     # Calculate and display final statistics
-    normalized_dist = state.ρ_avg / sum(state.ρ_avg)
-    p0 = plot_density(normalized_dist, param, state; title="Time averaged density")
+    p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
     outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
     p4 = heatmap(state.ρ_matrix_avg - outer_prod_ρ, xlabel="x", ylabel="y", 
                  title="Correlation Matrix Heatmap", color=:viridis)
