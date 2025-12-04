@@ -96,13 +96,14 @@ end
         "fluctuation_type" => "no-fluctuation",
         "potential_magnitude" => 0.0,
         "save_dir" => "saved_states",
-        # "show_times" => [j*10^i for i in 0:12 for j in 1:9],
-        "show_times" => [i for i in 1:1:100],
+        "show_times" => [j*10^i for i in 0:12 for j in 1:9],
+        # "show_times" => [i for i in 1:1:100],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
         "ffr" => 0.001,
         "forcing_fluctuation_type" => "alternating_direction",
         "forcing_magnitude" => 1.0,
+        "ic" => "random",
     )
 end
 
@@ -221,6 +222,8 @@ end
     end
     forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
 
+    ic = get(params, "ic", defaults["ic"])
+
     dims = ntuple(i -> L, dim_num)
     # ρ₀ = N / (L^dim_num)
 
@@ -228,7 +231,7 @@ end
     param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,ffr)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
-    state = FP.setState(0, rng, param, T, potential, forcing)
+    state = FP.setState(0, rng, param, T, potential, forcing; ic=ic)
    
     #estimate run time
     estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
@@ -296,7 +299,7 @@ function main()
             else
                 x_cut_mats = [mat_cut[:x_cut] for mat_cut in mat_cuts]
                 y_cut_mats = [mat_cut[:y_cut] for mat_cut in mat_cuts]
-                diagonal_cut_mats = [mat_cut[:diagonal_cut] for mat_cut in mat_cuts]
+                diagonal_cut_mats = [mat_cut[:diag_cut] for mat_cut in mat_cuts]
                 stacked_corr_x_cut = cat(x_cut_mats..., dims=3)
                 stacked_corr_y_cut = cat(y_cut_mats..., dims=3)
                 stacked_corr_diagonal_cut = cat(diagonal_cut_mats..., dims=3)
@@ -312,7 +315,7 @@ function main()
         if haskey(mat_cuts[1],:full)
             mat_cuts_averaged = Dict(:full => avg_corr)
         else
-            mat_cuts_averaged = Dict(:x_cut => avg_corr_x_cut, :y_cut => avg_corr_y_cut, :diagonal_cut => avg_corr_diagonal_cut)
+            mat_cuts_averaged = Dict(:x_cut => avg_corr_x_cut, :y_cut => avg_corr_y_cut, :diag_cut => avg_corr_diagonal_cut)
         end
         
         total_t = n_sweeps*(num_runs-1)+states[1].t 
@@ -342,6 +345,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
+            ic = get(params, "ic", get_default_params()["ic"])
             defaults = get_default_params()
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
                 n_sweeps = args["continue_sweeps"]
@@ -378,6 +382,7 @@ function main()
             ffr = get(params, "ffr", defaults["ffr"])
             forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
             forcing_type = get(params, "forcing_type", defaults["forcing_type"])
+            ic = get(params, "ic", defaults["ic"])
             if forcing_type == "center_bond_x"
                 if dim_num ==1
                     bond_indices = ([L÷2],[L÷2+1])
@@ -394,6 +399,8 @@ function main()
                 error("Unsupported forcing type: $forcing_type")
             end
             forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
+
+            ic = get(params, "ic", defaults["ic"])
             
             dims = ntuple(i -> L, dim_num)
             # ρ₀ = N / prod(dims)
@@ -405,7 +412,7 @@ function main()
             rng = MersenneTwister(seed)
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
             
-            state = FP.setState(0, rng, param, T, potential, forcing)
+            state = FP.setState(0, rng, param, T, potential, forcing; ic=ic)
         end
         
         show_times = get(params, "show_times", get_default_params()["show_times"])
@@ -416,7 +423,7 @@ function main()
             println("\nSaving current state...")
             try
                 save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-                SaveUtils.save_state(state, param, save_dir)
+                SaveUtils.save_state(state, param, save_dir; ic=ic)
                 println("State saved successfully")
             catch e
                 println("Error saving state: ", e)
@@ -443,7 +450,7 @@ function main()
         end
         
         save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-        filename = save_state(state, param, save_dir)
+        filename = save_state(state, param, save_dir; ic=ic)
         println("Final state saved to: ", filename)
    end
 end

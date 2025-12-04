@@ -201,16 +201,29 @@ module FP
         return reshape(M, Nx, Ny, Nx, Ny)
     end
 
-
-    
     function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random", full_corr_tensor=false)
         N = param.N
-        # initialize particles
-        particles = Array{Particle}(undef,N)
-        for n in 1:N
-            particles[n]= setParticle(param, rng)
-        end
         dim = length(param.dims)
+
+        # initialize particles
+        particles = Array{Particle}(undef, N)
+        if ic == "flat"
+            print("flat ic initialized \n")
+            num_sites = prod(param.dims)
+            cart_inds = CartesianIndices(param.dims)
+            for n in 1:N
+                lin_idx = mod(n - 1, num_sites) + 1
+                pos_tuple = Tuple(cart_inds[lin_idx])
+                pos = collect(pos_tuple)
+                dir = randn(rng, dim)
+                dir ./= norm(dir)
+                particles[n] = Particle(pos, dir)
+            end
+        else
+            for n in 1:N
+                particles[n] = setParticle(param, rng; ic=ic)
+            end
+        end
         # Initialize the matrix with dimensions specified by a tuple
         ρ = zeros(Int64, param.dims...)
         ρ₊ = zeros(Int64, param.dims...)
@@ -241,8 +254,8 @@ module FP
                 )
             else
                 ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
-                    :x_cut => ρ_avg[:,y_middle] * transpose(ρ_avg[:,y_middle]),
-                    :y_cut => ρ_avg[x_middle,:] * transpose(ρ_avg[x_middle,:]),
+                    :x_cut => ρ_avg[x_middle,:] * transpose(ρ_avg[x_middle,:]),
+                    :y_cut => ρ_avg[:,y_middle] * transpose(ρ_avg[:,y_middle]),
                     # :diag_cut => ρ_avg[diagind(ρ_avg)] * transpose(ρ_avg[diagind(ρ_avg)])
                     :diag_cut => diag(ρ_avg)* transpose(diag(ρ_avg))
                 )
@@ -253,12 +266,7 @@ module FP
         # Create exponential lookup table with reasonable range for jump probabilities
         exp_table = create_exp_lookup(-20.0, 20.0, 10000)
         
-        # state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, T, potential, bond_force, exp_table)
-        dim_num = length(param.dims)
-        state = State{dim_num, typeof(ρ_matrix_avg_cuts)}(
-            t, particles, ρ, ρ₊, ρ₋, ρ_avg, 
-            ρ_matrix_avg_cuts, T, potential, bond_force, exp_table
-    )
+        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, T, potential, bond_force, exp_table)
         return state
     end
 
@@ -615,59 +623,6 @@ module FP
 
 
     
-    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random", full_corr_tensor=true)
-        N = param.N
-        # initialize particles
-        particles = Array{Particle}(undef,N)
-        for n in 1:N
-            particles[n]= setParticle(param, rng)
-        end
-        dim = length(param.dims)
-        # Initialize the matrix with dimensions specified by a tuple
-        ρ = zeros(Int64, param.dims...)
-        ρ₊ = zeros(Int64, param.dims...)
-        ρ₋ = zeros(Int64, param.dims...)
-        populate_densities!(ρ,ρ₊,ρ₋,particles)
-        # Iterate over the positions and update the matrix
-        # for n in 1:N
-        #     indices = Tuple(particles[n].position[i] for i in 1:length(param.dims))
-        #     ρ[CartesianIndex(indices...)] += 1
-        #     if particles[n].direction[1]==1
-        #         ρ₊[CartesianIndex(indices...)] += 1
-        #     elseif particles[n].direction[1] ==-1
-        #         ρ₋[CartesianIndex(indices...)] += 1
-        #     end
-        # end
-        ρ_avg = Float64.(ρ)
-        if dim == 1
-            ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
-                :full => ρ_avg * transpose(ρ_avg)
-            )
-            # ρ_matrix_avg = ρ_avg * transpose(ρ_avg) 
-        elseif dim ==2
-            x_middle = div(param.dims[1],2)
-            y_middle = div(param.dims[2],2)
-            if full_corr_tensor
-                ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
-                    :full => outer_density_2D(ρ_avg),
-                )
-            else
-                ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
-                    :x_cut => ρ_avg[x_middle,:] * transpose(ρ_avg[x_middle,:]),
-                    :y_cut => ρ_avg[:,y_middle] * transpose(ρ_avg[:,y_middle]),
-                    # :diag_cut => ρ_avg[diagind(ρ_avg)] * transpose(ρ_avg[diagind(ρ_avg)])
-                    :diag_cut => diag(ρ_avg)* transpose(diag(ρ_avg))
-                )
-            end
-            # ρ_matrix_avg = ρ .* reshape(ρ, 1, 1, size(ρ, 1), size(ρ, 2))
-            # ρ_matrix_avg = permutedims(ρ_matrix_avg, (3, 4, 1, 2))
-        end
-        # Create exponential lookup table with reasonable range for jump probabilities
-        exp_table = create_exp_lookup(-20.0, 20.0, 10000)
-        
-        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, T, potential, bond_force, exp_table)
-        return state
-    end
 
     function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,exp_table::ExpLookupTable; ϵ=0.0, ΔV_max=0.4,bond_forcing=0.0)
         relative_direction = dot(particle_direction,choice_direction)

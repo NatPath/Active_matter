@@ -9,7 +9,7 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir)
     γ = param.γ
     ffr = param.f
     dim = length(param.dims)
-    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.3f_t-%d.jld2",
+    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f_t-%d.jld2",
         save_dir,
         dim,
         param.potential_type,
@@ -30,7 +30,7 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir)
 end
 
 # Original save_state function.
-function save_state(state, param, save_dir; tag=nothing)
+function save_state(state, param, save_dir; tag=nothing, ic=nothing)
     mkpath(save_dir)
     # Check if param has forcing_fluctuation_rate or ffr field
     if hasfield(typeof(param), :forcing_fluctuation_rate)
@@ -48,7 +48,8 @@ function save_state(state, param, save_dir; tag=nothing)
     host_tag = split(hostname, '.')[1]
     timestamp = Dates.format(now(), "yyyymmdd-HHMMSS")
     run_id = isnothing(tag) ? "$(timestamp)_$(host_tag)" : string(tag)
-    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.3f_t-%d_id-%s.jld2",
+    ic_tag = isnothing(ic) ? "unspecified" : string(ic)
+    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f_ic-%s_t-%d_id-%s.jld2",
         save_dir,
         dim,
         param.potential_type,
@@ -62,6 +63,7 @@ function save_state(state, param, save_dir; tag=nothing)
         param.D,
         state.forcing.magnitude,
         ffr,
+        ic_tag,
         state.t,
         run_id)
     # filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
