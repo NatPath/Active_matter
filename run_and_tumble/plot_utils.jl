@@ -86,7 +86,9 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
 
         # Add x-axis cut of average density at y=middle
         offset_middle = 0
-        y0= div(dims[2] + 1, 2)+1+offset_middle
+        # Use the same middle slice definition as accumulation (div(L,2))
+        # so plotting matches the stored correlation cuts.
+        y0= div(dims[2], 2) + offset_middle
         x_range = 1:dims[1]
         density_x_cut = state.ρ_avg[:, y0]
         p_density_x_cut = plot(x_range, density_x_cut,
@@ -95,7 +97,7 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                      legend=false, lw=2, color=:blue)
 
         # Add y-axis cut of average density at x=middle
-        x0= div(dims[1] + 1, 2)+1+offset_middle
+        x0= div(dims[1], 2)+offset_middle
         y_range = 1:dims[2]
         density_y_cut = state.ρ_avg[x0, :]
         p_density_y_cut = plot(y_range, density_y_cut,

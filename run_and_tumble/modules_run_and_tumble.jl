@@ -254,8 +254,8 @@ module FP
                 )
             else
                 ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
-                    :x_cut => ρ_avg[x_middle,:] * transpose(ρ_avg[x_middle,:]),
-                    :y_cut => ρ_avg[:,y_middle] * transpose(ρ_avg[:,y_middle]),
+                    :x_cut => ρ_avg[:,y_middle] * transpose(ρ_avg[:,y_middle]),
+                    :y_cut => ρ_avg[x_middle,:] * transpose(ρ_avg[x_middle,:]),
                     # :diag_cut => ρ_avg[diagind(ρ_avg)] * transpose(ρ_avg[diagind(ρ_avg)])
                     :diag_cut => diag(ρ_avg)* transpose(diag(ρ_avg))
                 )
@@ -323,282 +323,6 @@ module FP
         end
     end
 
-    function update!(param, state, rng; benchmark=true)
-        bench_results = benchmark ? BenchmarkResults() : nothing
-
-        if length(param.dims) == 1
-            V = state.potential.V
-            T = state.T
-            α = param.α
-            γ = param.γ
-            ffr = param.ffr
-            Δt=1
-            t_end = state.t + Δt
-            t= state.t
-            while t < t_end
-                # Benchmark action selection
-                if benchmark
-                    t1 = time_ns()
-                end
-                
-                n_and_a = rand(rng,1:3*(param.N+2))
-                action_index = mod1(n_and_a,3)
-                n = (n_and_a-action_index) ÷ 3 +1
-                
-                if benchmark
-                    bench_results.action_selection_time += (time_ns() - t1) / 1e9
-                end
-                
-                if n<=param.N
-                    particle = state.particles[n]
-                    spot_index = particle.position[1]
-                    left_index= mod1(spot_index-1,param.dims[1])
-                    right_index = mod1(spot_index+1,param.dims[1])
-
-                    
-                    if action_index == 1 # left
-                        candidate_spot_index = left_index
-                        choice_direction = -1
-                    elseif action_index == 2 # right
-                        candidate_spot_index = right_index
-                        choice_direction = 1
-                    else  # tumble ,fluctuate potential, fluctuate forcing
-                        candidate_spot_index = spot_index
-                        choice_direction = 0
-                    end
-                    if action_index==3 # tumble
-                        p_candidate=α
-                    else
-                        # Benchmark jump probability calculation
-                        if benchmark
-                            t2 = time_ns()
-                        end
-                        
-                        if ([spot_index] == state.forcing.bond_indices[1] && [candidate_spot_index] == state.forcing.bond_indices[2] && state.forcing.direction_flag) || ([spot_index] == state.forcing.bond_indices[2] && [candidate_spot_index] == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
-                            p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T,state.exp_table; ϵ=param.ϵ,bond_forcing=state.forcing.magnitude)
-                        else
-                            p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T,state.exp_table; ϵ=param.ϵ,bond_forcing=0.0)
-                        end
-                        
-                        if benchmark
-                            bench_results.jump_probability_time += (time_ns() - t2) / 1e9
-                        end
-                    end
-                else
-                    if n == param.N+1 # potential fluctuation
-                        action_index = 4
-                        p_candidate=γ
-                    elseif n == param.N+2 # bond fluctuation
-                        action_index = 5
-                        p_candidate = param.ffr
-                    end
-                end
-
-                # Benchmark tower sampling
-                if benchmark
-                    t3 = time_ns()
-                end
-                
-                p_stay = 1-p_candidate
-                p_arr = [p_candidate, p_stay]
-                choice = tower_sampling(p_arr, sum(p_arr),rng)
-                
-                if benchmark
-                    bench_results.tower_sampling_time += (time_ns() - t3) / 1e9
-                end
-                
-                # Benchmark state updates
-                if benchmark
-                    t4 = time_ns()
-                end
-                
-                if choice == 1
-                    if n<=param.N
-                        # Benchmark density updates
-                        if benchmark
-                            t5 = time_ns()
-                        end
-                        
-                        particle.position[1] =  candidate_spot_index
-
-                        if particle.direction[1] == 1
-                            state.ρ₊[spot_index]-=1
-                            state.ρ₊[candidate_spot_index]+=1
-                        elseif particle.direction[1] ==-1
-                            state.ρ₋[spot_index]-=1
-                            state.ρ₋[candidate_spot_index]+=1
-                        end
-
-                        if action_index==3
-                            state.ρ₊[spot_index]-= particle.direction[1]
-                            state.ρ₋[spot_index]+= particle.direction[1]
-                            particle.direction[1]*=-1
-                        end
-                        new_position = particle.position[1]
-                        state.ρ[spot_index] -= 1
-                        state.ρ[new_position] += 1
-                        
-                        if benchmark
-                            bench_results.density_update_time += (time_ns() - t5) / 1e9
-                        end
-
-                    elseif action_index == 4
-                        potential_update!(state.potential,rng)
-                    elseif action_index == 5
-                        bondforce_update!(state.forcing)
-                    end
-                end
-                
-                if benchmark
-                    bench_results.state_update_time += (time_ns() - t4) / 1e9
-                    bench_results.total_samples += 1
-                end
-                
-                t += 1/param.N
-            end
-            
-        elseif length(param.dims) == 2
-            V = state.potential.V
-            T = state.T
-            α = param.α
-            γ = param.γ
-            ffr = param.ffr
-            Δt = 1
-            t_end = state.t + Δt
-            t = state.t
-            while t < t_end
-                # Benchmark action selection
-                if benchmark
-                    t1 = time_ns()
-                end
-                
-                n_and_a = rand(rng, 1:5*(param.N+2))  # 7 actions: left, right, up, down, tumble, fluctuate potential , fluctuate bond
-                action_index = mod1(n_and_a, 5)
-                n = (n_and_a - action_index) ÷ 5 + 1
-                
-                if benchmark
-                    bench_results.action_selection_time += (time_ns() - t1) / 1e9
-                end
-                
-                if n<=param.N
-                    particle = state.particles[n]
-                    i,j = particle.position
-                    spot_index = [i,j]
-
-
-                    # Calculate neighboring indices
-                    Lx,Ly = param.dims
-                    left = (mod1(i-1, Lx), j)
-                    right = (mod1(i+1, Lx), j)
-                    down = (i, mod1(j-1, Ly))
-                    up = (i, mod1(j+1, Ly))
-
-                    if action_index==1  # left
-                        cand = left
-                        dirvec = [-1.0, 0.0]
-                    elseif action_index==2  # right
-                        cand = right
-                        dirvec = [1.0, 0.0]
-                    elseif action_index==3  # down
-                        cand = down
-                        dirvec = [0.0, -1.0]
-                    elseif action_index==4  # up
-                        cand = up
-                        dirvec = [0.0, 1.0]
-                    end
-                    
-                    if action_index == 5  # tumble
-                        cand = (i,j)
-                        p_cand = α
-                    else
-                        # Benchmark jump probability calculation
-                        if benchmark
-                            t2 = time_ns()
-                        end
-                        
-                        candidate_spot_index = collect(cand)
-                        if (spot_index == state.forcing.bond_indices[1] && candidate_spot_index == state.forcing.bond_indices[2] && state.forcing.direction_flag) || (spot_index == state.forcing.bond_indices[2] && candidate_spot_index == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
-                            p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T,state.exp_table;bond_forcing=state.forcing.magnitude)
-                        else
-                            p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T,state.exp_table)
-                        end
-                        
-                        if benchmark
-                            bench_results.jump_probability_time += (time_ns() - t2) / 1e9
-                        end
-                    end
-                elseif n == param.N+1  # potential fluctuation
-                    action_index = 6
-                    p_cand = γ
-                elseif n == param.N+2  # bond fluctuation
-                    action_index = 7
-                    p_cand = ffr
-                end
-
-                # Benchmark tower sampling
-                if benchmark
-                    t3 = time_ns()
-                end
-                
-                p_stay = 1 - p_cand
-                p_arr = [p_cand, p_stay]
-                choice = tower_sampling(p_arr, sum(p_arr), rng)
-                
-                if benchmark
-                    bench_results.tower_sampling_time += (time_ns() - t3) / 1e9
-                end
-
-                # Benchmark state updates
-                if benchmark
-                    t4 = time_ns()
-                end
-                
-                if choice == 1
-                    if n<=param.N
-                        particle.position .= cand
-                        if action_index == 5  # tumble
-                            v = randn(rng,2)
-                            particle.direction .= v/norm(v)
-                        end
-                    elseif action_index == 6  # fluctuate potential
-                        potential_update!(state.potential, rng)
-                    elseif action_index == 7  # fluctuate forcing
-                        bondforce_update!(state.forcing)
-                    end
-                end
-                
-                # Benchmark density updates
-                if benchmark
-                    t5 = time_ns()
-                end
-                
-                if n<=param.N
-                    state.ρ[i,j] -= 1
-                    state.ρ[particle.position...] += 1
-                    if state.ρ[particle.position...]<0
-                        println("Negative density encountered at position $(particle.position)...")
-                    end
-                end
-                
-                if benchmark
-                    bench_results.density_update_time += (time_ns() - t5) / 1e9
-                    bench_results.state_update_time += (time_ns() - t4) / 1e9
-                    bench_results.total_samples += 1
-                end
-                
-                t += 1 / param.N
-            end
-        else
-            throw(DomainError("Invalid input - dimension not supported yet"))
-        end
-        state.t += Δt
-        
-        if benchmark
-            print_benchmark_summary(bench_results)
-            return bench_results
-        end
-    end
-
     """
     outer_density_2D(ρ::AbstractMatrix{T}) where T<:Number
 
@@ -630,53 +354,20 @@ module FP
         exp_val = lookup_exp(exp_table, exp_arg)
         p = (D-bond_forcing)*min(1,exp_val)
         return p
-    end
-    # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # if ΔV!=0
-    #     p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # else
-    #     p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # end
-    # if relative_direction==1
-    #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
-    # else
-    #     p=0
-    #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
-    # end
-
-    # mutable struct BenchmarkResults
-    #     action_selection_time::Float64
-    #     jump_probability_time::Float64
-    #     tower_sampling_time::Float64
-    #     state_update_time::Float64
-    #     density_update_time::Float64
-    #     total_samples::Int
-        
-    #     BenchmarkResults() = new(0.0, 0.0, 0.0, 0.0, 0.0, 0)
-    # end
-    
-    function reset_benchmarks!(bench::BenchmarkResults)
-        bench.action_selection_time = 0.0
-        bench.jump_probability_time = 0.0
-        bench.tower_sampling_time = 0.0
-        bench.state_update_time = 0.0
-        bench.density_update_time = 0.0
-        bench.total_samples = 0
+        # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+        # if ΔV!=0
+        #     p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+        # else
+        #     p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+        # end
+        # if relative_direction==1
+        #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
+        # else
+        #     p=0
+        #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
+        # end
     end
     
-    function print_benchmark_summary(bench::BenchmarkResults)
-        if bench.total_samples > 0
-            println("\n=== Benchmark Results (per update) ===")
-            println("Action selection: $(round(bench.action_selection_time/bench.total_samples*1e6, digits=2)) μs")
-            println("Jump probability: $(round(bench.jump_probability_time/bench.total_samples*1e6, digits=2)) μs")
-            println("Tower sampling: $(round(bench.tower_sampling_time/bench.total_samples*1e6, digits=2)) μs")
-            println("State update: $(round(bench.state_update_time/bench.total_samples*1e6, digits=2)) μs")
-            println("Density update: $(round(bench.density_update_time/bench.total_samples*1e6, digits=2)) μs")
-            println("Total samples: $(bench.total_samples)")
-            println("=====================================\n")
-        end
-    end
-
     function update!(param, state, rng; benchmark=false)
         bench_results = benchmark ? BenchmarkResults() : nothing
 
