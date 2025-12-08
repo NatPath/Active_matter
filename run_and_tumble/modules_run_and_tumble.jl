@@ -739,8 +739,11 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
                 # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
                 @. state.ρ_matrix_avg_cuts[:full] += (ρ_matrix-state.ρ_matrix_avg_cuts[:full])*calc_var_frequency/frame
             else
-                @. state.ρ_matrix_avg_cuts[:x_cut] += (state.ρ[:,y_middle] * transpose(state.ρ[:,y_middle])-state.ρ_matrix_avg_cuts[:x_cut])*calc_var_frequency/frame
-                @. state.ρ_matrix_avg_cuts[:y_cut] += (state.ρ[x_middle,:] * transpose(state.ρ[x_middle,:]) - state.ρ_matrix_avg_cuts[:y_cut])*calc_var_frequency/frame
+                # @. state.ρ_matrix_avg_cuts[:x_cut] += (state.ρ[:,y_middle] * transpose(state.ρ[:,y_middle])-state.ρ_matrix_avg_cuts[:x_cut])*calc_var_frequency/frame
+                # @. state.ρ_matrix_avg_cuts[:y_cut] += (state.ρ[x_middle,:] * transpose(state.ρ[x_middle,:]) - state.ρ_matrix_avg_cuts[:y_cut])*calc_var_frequency/frame
+                state.ρ_matrix_avg_cuts[:x_cut] .+= (state.ρ[:, y_middle] * transpose(state.ρ[:, y_middle]) .- state.ρ_matrix_avg_cuts[:x_cut]) * calc_var_frequency / frame
+                state.ρ_matrix_avg_cuts[:y_cut] .+= (state.ρ[x_middle, :] * transpose(state.ρ[x_middle, :]) .- state.ρ_matrix_avg_cuts[:y_cut]) * calc_var_frequency / frame
+
                 # state.ρ_matrix_avg_cuts[:diag_cut] += (state.ρ[diagind(state.ρ)] * transpose(state.ρ[diagind(state.ρ)]) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
                 state.ρ_matrix_avg_cuts[:diag_cut] += (diag(state.ρ) * transpose(diag(state.ρ)) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
             end

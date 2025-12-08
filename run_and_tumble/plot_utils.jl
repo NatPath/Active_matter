@@ -2,6 +2,7 @@ module PlotUtils
 using Plots
 using LsqFit
 using Printf
+using LinearAlgebra
 export plot_sweep, plot_density, plot_data_colapse, plot_spatial_correlation 
 function remove_antisymmetric_part_reflection(matrix, x0)
     n = size(matrix, 1)
@@ -240,7 +241,8 @@ function plot_sweep(sweep,state,param; label="", plot_directional=false)
                 corr_diag[i,j] = state.ρ_matrix_avg_cuts[:full][i, i, j, j] - state.ρ_avg[i,i] * state.ρ_avg[j,j] + fix_term
             end
         else
-            corr_diag = state.ρ_matrix_avg_cuts[:diag_cut] .- (state.ρ_avg * transpose(state.ρ_avg)) .+ fix_term
+            diag_mean = diag(state.ρ_avg)
+            corr_diag = state.ρ_matrix_avg_cuts[:diag_cut] .- (diag_mean * transpose(diag_mean)) .+ fix_term
         end
         
         # Apply diagonal smoothing to diagonal correlation
@@ -693,7 +695,8 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                         corr_diag[j,k] = state.ρ_matrix_avg_cuts[:full][j, j, k, k] - state.ρ_avg[j,j] * state.ρ_avg[k,k] + fix_term
                     end
                 else
-                    corr_diag = state.ρ_matrix_avg_cuts[:diag_cut] .- (state.ρ_avg * transpose(state.ρ_avg)) .+ fix_term
+                    diag_mean = diag(state.ρ_avg)
+                    corr_diag = state.ρ_matrix_avg_cuts[:diag_cut] .- (diag_mean * transpose(diag_mean)) .+ fix_term
                 end
                 
                 # Apply diagonal smoothing to diagonal correlation
