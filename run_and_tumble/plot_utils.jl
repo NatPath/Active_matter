@@ -44,6 +44,46 @@ function scatter_zero_marks!(p, indices; color=:red)
              label="Zeroed middle")
 end
 
+function add_powerlaw_series!(p, distances, values, n; label="", add_reference=false, extra_reference_exponent=nothing, add_extra_reference=false)
+    mask = (distances .> 0) .& isfinite.(values) .& (abs.(values) .> 0)
+    if !any(mask)
+        return false
+    end
+    d = distances[mask]
+    v = abs.(values[mask])
+    plot!(p, d, v; label=label, lw=2)
+    if add_reference || (add_extra_reference && extra_reference_exponent !== nothing)
+        x_ref = [minimum(d), maximum(d)]
+        ref_anchor = v[end]
+        if add_reference
+            y_ref = ref_anchor .* (x_ref ./ x_ref[end]).^(-n)
+            plot!(p, x_ref, y_ref; label="slope -$n", linestyle=:dash, color=:black)
+        end
+        if add_extra_reference && extra_reference_exponent !== nothing
+            y_ref_extra = ref_anchor .* (x_ref ./ x_ref[end]).^(-extra_reference_exponent)
+            plot!(p, x_ref, y_ref_extra; label="slope -$(extra_reference_exponent)", linestyle=:dot, color=:gray)
+        end
+    end
+    return true
+end
+
+function add_dimension_reference!(p, dim, x_vals, data_vals)
+    mask = isfinite.(x_vals) .& isfinite.(data_vals)
+    if !any(mask)
+        return false
+    end
+    x_ref = x_vals[mask]
+    y_ref = x_ref ./ (((x_ref .^ 2) .+ 1) .^ (dim .+ 1))
+    max_ref = maximum(abs.(y_ref))
+    max_data = maximum(abs.(data_vals[mask]))
+    if max_ref == 0 || max_data == 0
+        return false
+    end
+    scale = max_data / max_ref
+    plot!(p, x_ref, y_ref .* scale; label="(x)/((x^2+1)^$(dim+1))", color=:gray, linestyle=:dashdot, lw=2)
+    return true
+end
+
 function antisymmetric_with_smoothing(matrix, center)
     antisym = remove_symmetric_part_reflection(matrix, center)
     smooth_diagonal!(antisym)
@@ -449,8 +489,9 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     end
     return p
 end
-function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true)
+function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true; show_powerlaw=true)
     n = Float64(power_n)
+    extra_power_exp = 2.0  # reference slope -2
     all_x = []
     all_y = []
 
@@ -475,6 +516,24 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             p_full_combined = plot(title="Full Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
             p_antisym_combined = plot(title="Antisymmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
             p_sym_combined = plot(title="Symmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+            ref_dim_added = Dict(:full=>false, :antisym=>false, :sym=>false, :combined=>false)
+            add_dimension_reference!(p_full_combined, dim_num)
+            add_dimension_reference!(p_antisym_combined, dim_num)
+            add_dimension_reference!(p_sym_combined, dim_num)
+            if show_powerlaw
+                p_full_powerlaw = plot(title="Power law check (full cut)", legend=:outerright, size=(800,600),
+                                       xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                p_antisym_powerlaw = plot(title="Power law check (antisymmetric cut)", legend=:outerright, size=(800,600),
+                                          xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                p_sym_powerlaw = plot(title="Power law check (symmetric cut)", legend=:outerright, size=(800,600),
+                                       xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                ref_added_full = false
+                ref_added_antisym = false
+                ref_added_sym = false
+                ref_added_full_extra = false
+                ref_added_antisym_extra = false
+                ref_added_sym_extra = false
+            end
 
             for i in indices
                 outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
@@ -502,12 +561,15 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 x_positions = 1:length(full_data)
                 x_scaled = (x_positions .- middle_spot) ./ (i)
 
-                for (data, p_combined_plot) in zip((full_data, antisym_data, sym_data), (p_full_combined, p_antisym_combined, p_sym_combined))
+                for (data, p_combined_plot, key) in zip((full_data, antisym_data, sym_data), (p_full_combined, p_antisym_combined, p_sym_combined), (:full, :antisym, :sym))
                     y_scaled = data .* i^n
                     mask = (-5 .<= x_scaled .<= 5)
                     x_filtered = x_scaled[mask]
                     y_filtered = y_scaled[mask]
                     plot!(p_combined_plot, x_filtered, y_filtered, label="y=$(i)", lw=2)
+                    if !ref_dim_added[key]
+                        ref_dim_added[key] = add_dimension_reference!(p_combined_plot, dim_num, x_filtered, y_filtered)
+                    end
                 end
 
                 y_scaled = full_data .* i^n
@@ -517,11 +579,28 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 append!(all_x, x_filtered)
                 append!(all_y, y_filtered)
                 plot!(p_combined, x_filtered, y_filtered, label="$(label) y=$(i)", linewidth=2)
+                if !ref_dim_added[:combined]
+                    ref_dim_added[:combined] = add_dimension_reference!(p_combined, dim_num, x_filtered, y_filtered)
+                end
+                if show_powerlaw
+                    distances = abs.(x_positions .- middle_spot)
+                    ref_added_full |= add_powerlaw_series!(p_full_powerlaw, distances, full_data, n; label="$(label) y=$(i)", add_reference=!ref_added_full, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_full_extra)
+                    ref_added_antisym |= add_powerlaw_series!(p_antisym_powerlaw, distances, antisym_data, n; label="$(label) y=$(i)", add_reference=!ref_added_antisym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_antisym_extra)
+                    ref_added_sym |= add_powerlaw_series!(p_sym_powerlaw, distances, sym_data, n; label="$(label) y=$(i)", add_reference=!ref_added_sym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_sym_extra)
+                    ref_added_full_extra = true
+                    ref_added_antisym_extra = true
+                    ref_added_sym_extra = true
+                end
             end
 
             savefig(p_full_combined, "$(full_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_antisym_combined, "$(antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_sym_combined, "$(sym_dir)/data_collapse_$(n)_indices-$(indices).png")
+            if show_powerlaw
+                savefig(p_full_powerlaw, "$(full_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+                savefig(p_antisym_powerlaw, "$(antisym_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+                savefig(p_sym_powerlaw, "$(sym_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+            end
         elseif dim_num == 2
             dims = param.dims
             N = param.N
@@ -547,6 +626,32 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             p_diag_pos_combined = plot(title="Diagonal Positive Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
             p_x_antisym_combined = plot(title="X-axis Antisymmetric Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
             p_diag_antisym_combined = plot(title="Diagonal Antisymmetric Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
+            ref_dim_added = Dict(
+                :x => false, :diag => false, :x_pos => false, :diag_pos => false,
+                :x_antisym => false, :diag_antisym => false, :combined => false
+            )
+            if show_powerlaw
+                p_x_powerlaw = plot(title="Power law check (x-axis cut)", legend=:outerright, size=(800,600),
+                                    xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                p_diag_powerlaw = plot(title="Power law check (diagonal cut)", legend=:outerright, size=(800,600),
+                                       xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                p_x_pos_powerlaw = plot(title="Power law check (x-axis positive cut)", legend=:outerright, size=(800,600),
+                                        xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                p_diag_pos_powerlaw = plot(title="Power law check (diagonal positive cut)", legend=:outerright, size=(800,600),
+                                           xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                p_x_antisym_powerlaw = plot(title="Power law check (x-axis antisymmetric cut)", legend=:outerright, size=(800,600),
+                                            xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                p_diag_antisym_powerlaw = plot(title="Power law check (diagonal antisymmetric cut)", legend=:outerright, size=(800,600),
+                                               xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
+                ref_added = Dict(
+                    :x => false, :diag => false, :x_pos => false, :diag_pos => false,
+                    :x_antisym => false, :diag_antisym => false
+                )
+                ref_added_extra = Dict(
+                    :x => false, :diag => false, :x_pos => false, :diag_pos => false,
+                    :x_antisym => false, :diag_antisym => false
+                )
+            end
 
             y0 = div(dims[2] + 1, 2)  # middle y index
             
@@ -644,10 +749,11 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 x_positions_pos = middle_x:dims[1]
                 x_scaled_pos = (x_positions_pos .- middle_spot) ./ Float64(i)
                 
-                for (data, p_plot, cut_type, x_scale) in zip((x_axis_data, diag_data, x_axis_positive_data, diag_positive_data, x_axis_antisym_data, diag_antisym_data), 
+                for (data, p_plot, cut_type, x_scale, key) in zip((x_axis_data, diag_data, x_axis_positive_data, diag_positive_data, x_axis_antisym_data, diag_antisym_data), 
                                                            (p_x_combined, p_diag_combined, p_x_pos_combined, p_diag_pos_combined, p_x_antisym_combined, p_diag_antisym_combined),
                                                            ("x-axis", "diagonal", "x-axis-positive", "diagonal-positive", "x-axis-antisymmetric", "diagonal-antisymmetric"),
-                                                           (x_scaled, x_scaled, x_scaled_pos, x_scaled_pos, x_scaled, x_scaled))
+                                                           (x_scaled, x_scaled, x_scaled_pos, x_scaled_pos, x_scaled, x_scaled),
+                                                           (:x, :diag, :x_pos, :diag_pos, :x_antisym, :diag_antisym))
                     y_scaled = data .* scaling_factor
                     
                     # Filter out non-finite values and extreme outliers
@@ -663,6 +769,9 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                         y_max = maximum(abs.(y_filtered))
                         if y_max < 1e8  # Reasonable threshold
                             plot!(p_plot, x_filtered, y_filtered, label="$(label) y=$(i)", lw=2)
+                            if !ref_dim_added[key]
+                                ref_dim_added[key] = add_dimension_reference!(p_plot, dim_num, x_filtered, y_filtered)
+                            end
                         else
                             println("Warning: Skipping $(cut_type) plot for i=$i due to extreme values (max: $y_max)")
                         end
@@ -686,9 +795,29 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                         append!(all_x, x_filtered)
                         append!(all_y, y_filtered)
                         plot!(p_combined, x_filtered, y_filtered, label="$(label) y=$(i)", linewidth=2)
+                        if !ref_dim_added[:combined]
+                            ref_dim_added[:combined] = add_dimension_reference!(p_combined, dim_num, x_filtered, y_filtered)
+                        end
                     else
                         println("Warning: Skipping combined plot for i=$i due to extreme values")
                     end
+                end
+
+                if show_powerlaw
+                    distances = abs.(x_positions .- middle_spot)
+                    ref_added[:x] |= add_powerlaw_series!(p_x_powerlaw, distances, x_axis_data, n; label="$(label) y=$(i)", add_reference=!ref_added[:x], extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_extra[:x])
+                    ref_added[:diag] |= add_powerlaw_series!(p_diag_powerlaw, distances, diag_data, n; label="$(label) y=$(i)", add_reference=!ref_added[:diag], extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_extra[:diag])
+                    distances_pos = x_positions_pos .- middle_spot
+                    ref_added[:x_pos] |= add_powerlaw_series!(p_x_pos_powerlaw, distances_pos, x_axis_positive_data, n; label="$(label) y=$(i)", add_reference=!ref_added[:x_pos], extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_extra[:x_pos])
+                    ref_added[:diag_pos] |= add_powerlaw_series!(p_diag_pos_powerlaw, distances_pos, diag_positive_data, n; label="$(label) y=$(i)", add_reference=!ref_added[:diag_pos], extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_extra[:diag_pos])
+                    ref_added[:x_antisym] |= add_powerlaw_series!(p_x_antisym_powerlaw, distances, x_axis_antisym_data, n; label="$(label) y=$(i)", add_reference=!ref_added[:x_antisym], extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_extra[:x_antisym])
+                    ref_added[:diag_antisym] |= add_powerlaw_series!(p_diag_antisym_powerlaw, distances, diag_antisym_data, n; label="$(label) y=$(i)", add_reference=!ref_added[:diag_antisym], extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_extra[:diag_antisym])
+                    ref_added_extra[:x] = true
+                    ref_added_extra[:diag] = true
+                    ref_added_extra[:x_pos] = true
+                    ref_added_extra[:diag_pos] = true
+                    ref_added_extra[:x_antisym] = true
+                    ref_added_extra[:diag_antisym] = true
                 end
             end
             
@@ -698,6 +827,14 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             savefig(p_diag_pos_combined, "$(diag_pos_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_x_antisym_combined, "$(x_axis_antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_diag_antisym_combined, "$(diag_antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
+            if show_powerlaw
+                savefig(p_x_powerlaw, "$(x_axis_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+                savefig(p_diag_powerlaw, "$(diag_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+                savefig(p_x_pos_powerlaw, "$(x_axis_pos_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+                savefig(p_diag_pos_powerlaw, "$(diag_pos_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+                savefig(p_x_antisym_powerlaw, "$(x_axis_antisym_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+                savefig(p_diag_antisym_powerlaw, "$(diag_antisym_dir)/powerlaw_loglog_$(n)_indices-$(indices).png")
+            end
         end
     end
 
