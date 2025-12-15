@@ -517,9 +517,6 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             p_antisym_combined = plot(title="Antisymmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
             p_sym_combined = plot(title="Symmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
             ref_dim_added = Dict(:full=>false, :antisym=>false, :sym=>false, :combined=>false)
-            add_dimension_reference!(p_full_combined, dim_num)
-            add_dimension_reference!(p_antisym_combined, dim_num)
-            add_dimension_reference!(p_sym_combined, dim_num)
             if show_powerlaw
                 p_full_powerlaw = plot(title="Power law check (full cut)", legend=:outerright, size=(800,600),
                                        xscale=:log10, yscale=:log10, xlabel="|Δ|", ylabel="|C|")
