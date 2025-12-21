@@ -30,7 +30,7 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir)
 end
 
 # Original save_state function.
-function save_state(state, param, save_dir; tag=nothing, ic=nothing)
+function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic::Bool=false)
     mkpath(save_dir)
     # Check if param has forcing_fluctuation_rate or ffr field
     if hasfield(typeof(param), :forcing_fluctuation_rate)
@@ -49,6 +49,9 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing)
     timestamp = Dates.format(now(), "yyyymmdd-HHMMSS")
     run_id = isnothing(tag) ? "$(timestamp)_$(host_tag)" : string(tag)
     ic_tag = isnothing(ic) ? "unspecified" : string(ic)
+    if relaxed_ic
+        ic_tag = string(ic_tag, "-relaxed_ic")
+    end
     filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f_ic-%s_t-%d_id-%s.jld2",
         save_dir,
         dim,
@@ -66,19 +69,6 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing)
         ic_tag,
         state.t,
         run_id)
-    # filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gammap-%.2f_D-%.1f_t-%d.jld2",
-    #     save_dir,
-    #     dim,
-    #     param.potential_type,
-    #     param.potential_magnitude,
-    #     param.fluctuation_type,
-    #     param.ϵ,
-    #     param.dims[1],
-    #     param.ρ₀,
-    #     param.α,
-    #     γ′,
-    #     param.D,
-    #     state.t)
     potential = state.potential 
     @save filename state param potential
     println("Saved a state to $filename")

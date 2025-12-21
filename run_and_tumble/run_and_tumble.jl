@@ -55,8 +55,19 @@ function parse_commandline()
             arg_type = Int
             required = false
             default = 1
+        "--initial_state"
+            help = "Path to saved state file to start from as t=0 (statistics reset)"
+            required = false
     end
     return parse_args(s)
+end
+# Load a saved state and reset its statistics so it can be used as a fresh initial condition.
+function load_initial_state(path)
+    println("Loading initial state from $path")
+    @load path state param potential
+    FP.reset_statistics!(state)
+    state.potential = potential
+    return state, param
 end
 # Estimate the total run time by running a sample of sweeps.
 @everywhere function estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
@@ -109,7 +120,7 @@ end
 
 
 # Function to set up and run one independent simulation.
-@everywhere function run_one_simulation_from_state(param, state, seed,n_sweeps)
+@everywhere function run_one_simulation_from_state(param, state, seed,n_sweeps; relaxed_ic::Bool=false)
     println("Continuing simulation with seed $seed for $n_sweeps")
     rng = MersenneTwister(seed)
     # defaults = get_default_params()
@@ -155,7 +166,8 @@ end
     dist, corr_mat_cuts = run_simulation!(dummy_state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=show_times,
-                                                 save_times=save_times)
+                                                 save_times=save_times,
+                                                 relaxed_ic=relaxed_ic)
     return dist, corr_mat_cuts, dummy_state, param
 end
 # A very shitty function, find a cleaner way to do it! this is just a recipe for spaghetti
@@ -252,6 +264,12 @@ function main()
     num_runs = get(args, "num_runs", 1)
     seeds = rand(1:2^30,num_runs)
     println("Running $num_runs independent simulations in parallel.")
+    using_initial_state = haskey(args, "initial_state") && !isnothing(args["initial_state"])
+    initial_state = nothing
+    initial_param = nothing
+    if using_initial_state
+        initial_state, initial_param = load_initial_state(args["initial_state"])
+    end
     if num_runs > 1
         if haskey(args, "continue") && !isnothing(args["continue"])
             println("Continuing from saved aggregation: $(args["continue"])")
@@ -273,6 +291,14 @@ function main()
                 println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
             end
             results = pmap(seed -> run_one_simulation_from_state(param,state,seed,n_sweeps), seeds)
+        elseif using_initial_state
+            defaults = get_default_params()
+            n_sweeps = n_sweeps_from_args(args)
+            results = pmap(seed -> begin
+                    run_state = deepcopy(initial_state)
+                    run_param = deepcopy(initial_param)
+                    run_one_simulation_from_state(run_param, run_state, seed, n_sweeps; relaxed_ic=true)
+                end, seeds)
         else
             results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
             n_sweeps=n_sweeps_from_args(args)
@@ -322,7 +348,7 @@ function main()
         dummy_state = FP.setDummyState(states[1],avg_dists,mat_cuts_averaged,total_t)
 
         dummy_state_save_dir = "dummy_states"
-        save_state(dummy_state,params[1],dummy_state_save_dir)
+        save_state(dummy_state,params[1],dummy_state_save_dir; relaxed_ic=using_initial_state)
 
         
         # Save aggregated results to a separate file.
@@ -356,6 +382,21 @@ function main()
             end
             seed = rand(1:2^30)
             rng = MersenneTwister(seed)
+        elseif using_initial_state
+            state = deepcopy(initial_state)
+            param = deepcopy(initial_param)
+            defaults = get_default_params()
+            if haskey(args, "config") && !isnothing(args["config"])
+                println("Using configuration from file: $(args["config"])")
+                params = YAML.load_file(args["config"])
+            else
+                println("No config file provided. Using default parameters.")
+                params = get_default_params()
+            end
+            n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+            seed = rand(1:2^30)
+            rng = MersenneTwister(seed)
+            ic = get(params, "ic", defaults["ic"])
         else
             if haskey(args, "config") && !isnothing(args["config"])
                 println("Using configuration from file: $(args["config"])")
@@ -423,7 +464,7 @@ function main()
             println("\nSaving current state...")
             try
                 save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-                SaveUtils.save_state(state, param, save_dir; ic=ic)
+                SaveUtils.save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
                 println("State saved successfully")
             catch e
                 println("Error saving state: ", e)
@@ -439,7 +480,8 @@ function main()
             res_dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  show_times=show_times,
                                                  save_times=save_times,
-                                                 plot_flag=true)
+                                                 plot_flag=true,
+                                                 relaxed_ic=using_initial_state)
         catch e
             if isa(e, InterruptException)
                 println("\nInterrupt detected, initiating cleanup...")
@@ -450,7 +492,7 @@ function main()
         end
         
         save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-        filename = save_state(state, param, save_dir; ic=ic)
+        filename = save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
         println("Final state saved to: ", filename)
    end
 end

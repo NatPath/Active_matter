@@ -11,7 +11,7 @@ module FP
     # using ..PlotUtils: plot_sweep 
     using ..Potentials: AbstractPotential, potential_update!, Potential, MultiPotential, IndependentFluctuatingPoints, BondForce, bondforce_update!
     using LinearAlgebra
-    export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics
+    export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics, reset_statistics!
     
     # Add exponential look-up table structure
     struct ExpLookupTable
@@ -267,6 +267,29 @@ module FP
         exp_table = create_exp_lookup(-20.0, 20.0, 10000)
         
         state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, T, potential, bond_force, exp_table)
+        return state
+    end
+
+    function reset_statistics!(state)
+        dim = ndims(state.ρ)
+        state.t = 0
+        state.ρ_avg .= state.ρ
+
+        if dim == 1
+            state.ρ_matrix_avg_cuts[:full] .= state.ρ .* transpose(state.ρ)
+        elseif dim == 2
+            x_middle = div(size(state.ρ, 1), 2)
+            y_middle = div(size(state.ρ, 2), 2)
+            if haskey(state.ρ_matrix_avg_cuts, :full)
+                state.ρ_matrix_avg_cuts[:full] .= FP.outer_density_2D(state.ρ)
+            else
+                state.ρ_matrix_avg_cuts[:x_cut] .= state.ρ[:, y_middle] * transpose(state.ρ[:, y_middle])
+                state.ρ_matrix_avg_cuts[:y_cut] .= state.ρ[x_middle, :] * transpose(state.ρ[x_middle, :])
+                state.ρ_matrix_avg_cuts[:diag_cut] .= diag(state.ρ) * transpose(diag(state.ρ))
+            end
+        else
+            throw(DomainError("Invalid input - dimension not supported yet"))
+        end
         return state
     end
 
@@ -796,7 +819,8 @@ function run_simulation!(state, param, n_sweeps, rng;
                         show_times = [], 
                         save_times = [],
                         plot_flag = false,
-                        benchmark_frequency = 0)
+                        benchmark_frequency = 0,
+                        relaxed_ic::Bool=false)
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations)
 
@@ -827,7 +851,7 @@ function run_simulation!(state, param, n_sweeps, rng;
         # Save state at specified times
         if sweep in save_times
             save_dir = "saved_states"
-            save_state(state,param,save_dir)
+            save_state(state,param,save_dir; relaxed_ic=relaxed_ic)
             println("State saved at sweep $sweep")
         end
 
