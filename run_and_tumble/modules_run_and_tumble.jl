@@ -64,43 +64,38 @@ module FP
         return param
     end
 
-    mutable struct Particle
-        position::Array{Int64}
-        direction::Array{Float64}
+    mutable struct Particle{D}
+        position::NTuple{D,Int64}
+        direction::NTuple{D,Float64}
     end
 
     function setParticle(sys_params,rng; ic="random",ic_specific=[])
         dim_num = length(sys_params.dims)
-        position = zeros(Int64, dim_num)
-        direction = zeros(Float64, dim_num)
         if ic == "random"
-            # Randomly initialize position and direction
-            for (i,dim) in enumerate(sys_params.dims)
-                position[i] = rand(rng, 1:dim)
-                direction[i] = rand(rng,[-1,1])
-            end
+            position = ntuple(i -> rand(rng, 1:sys_params.dims[i]), dim_num)
+            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
+            dir_arr ./= norm(dir_arr)
+            direction = Tuple(dir_arr)
         elseif ic == "center"
-            # Initialize position at the center and direction randomly
-            for (i,dim) in enumerate(sys_params.dims)
-                position[i] = div(dim, 2)
-                direction[i] = rand(rng,[-1,1])
-            end
+            position = ntuple(i -> div(sys_params.dims[i], 2), dim_num)
+            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
+            dir_arr ./= norm(dir_arr)
+            direction = Tuple(dir_arr)
         elseif ic == "specific"
             # Initialize position and direction based on specific input
             if length(ic_specific) == dim_num + 1
-                position = ic_specific[1:dim_num]
+                position = Tuple(ic_specific[1:dim_num])
             else
                 throw(DomainError("Invalid input - specific initial condition must have length $(dim_num+1)"))
             end
-            for i in 1:dim_num
-                direction[i] = rand(rng,[-1,1])
-            end
+            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
+            dir_arr ./= norm(dir_arr)
+            direction = Tuple(dir_arr)
         else
             throw(DomainError("Invalid input - initial condition not supported yet"))
         end
         
-        direction = direction ./ norm(direction)
-        Particle(position,direction)
+        Particle{dim_num}(position,direction)
     end
 
     # mutable struct State{N}
@@ -125,9 +120,9 @@ module FP
     #     exp_table::ExpLookupTable  # Add exponential lookup table
     # end
 
-    mutable struct State{N, C}
+    mutable struct State{N, C, D}
         t::Int64
-        particles::Vector{Particle}
+        particles::Vector{Particle{D}}
         ρ::Array{Int64, N}           
         ρ₊::Array{Int64, N}          
         ρ₋::Array{Int64, N}          
@@ -140,9 +135,7 @@ module FP
     end
 
     function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t)
-        N = ndims(state_to_imitate.ρ)
-        
-        dummy_state = State{N, typeof(ρ_matrix_avg_cuts)}(
+        dummy_state = State(
             t, 
             state_to_imitate.particles, 
             state_to_imitate.ρ, 
@@ -162,7 +155,7 @@ module FP
         ρ::AbstractArray{<:Integer},
         ρ₊::AbstractArray{<:Integer},
         ρ₋::AbstractArray{<:Integer},
-        particles::AbstractVector{Particle}
+        particles::AbstractVector{<:Particle}
     )
         fill!(ρ,  0)
         fill!(ρ₊, 0)
@@ -206,7 +199,7 @@ module FP
         dim = length(param.dims)
 
         # initialize particles
-        particles = Array{Particle}(undef, N)
+        particles = Vector{Particle{dim}}(undef, N)
         if ic == "flat"
             print("flat ic initialized \n")
             num_sites = prod(param.dims)
@@ -214,10 +207,9 @@ module FP
             for n in 1:N
                 lin_idx = mod(n - 1, num_sites) + 1
                 pos_tuple = Tuple(cart_inds[lin_idx])
-                pos = collect(pos_tuple)
                 dir = randn(rng, dim)
                 dir ./= norm(dir)
-                particles[n] = Particle(pos, dir)
+                particles[n] = Particle{dim}(pos_tuple, Tuple(dir))
             end
         else
             for n in 1:N
@@ -293,8 +285,11 @@ module FP
         return state
     end
 
+    dot_like(a::Number, b::Number) = a * b
+    dot_like(a, b) = sum(x * y for (x, y) in zip(a, b))
+
     function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,exp_table::ExpLookupTable; ϵ=0.0, ΔV_max=0.4,bond_forcing=0.0)
-        relative_direction = dot(particle_direction,choice_direction)
+        relative_direction = dot_like(particle_direction,choice_direction)
         exp_arg = -(ΔV-relative_direction*ϵ)/T
         exp_val = lookup_exp(exp_table, exp_arg)
         p = (D-bond_forcing)*min(1,exp_val)
@@ -371,25 +366,18 @@ module FP
 
     
 
-    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,exp_table::ExpLookupTable; ϵ=0.0, ΔV_max=0.4,bond_forcing=0.0)
-        relative_direction = dot(particle_direction,choice_direction)
-        exp_arg = -(ΔV-relative_direction*ϵ)/T
-        exp_val = lookup_exp(exp_table, exp_arg)
-        p = (D-bond_forcing)*min(1,exp_val)
-        return p
-        # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-        # if ΔV!=0
-        #     p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-        # else
-        #     p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-        # end
-        # if relative_direction==1
-        #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
-        # else
-        #     p=0
-        #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
-        # end
-    end
+    # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+    # if ΔV!=0
+    #     p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+    # else
+    #     p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
+    # end
+    # if relative_direction==1
+    #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
+    # else
+    #     p=0
+    #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
+    # end
     
     function update!(param, state, rng; benchmark=false)
         bench_results = benchmark ? BenchmarkResults() : nothing
@@ -487,7 +475,7 @@ module FP
                             t5 = time_ns()
                         end
                         
-                        particle.position[1] =  candidate_spot_index
+                        particle.position = (candidate_spot_index,)
 
                         if particle.direction[1] == 1
                             state.ρ₊[spot_index]-=1
@@ -500,7 +488,7 @@ module FP
                         if action_index==3
                             state.ρ₊[spot_index]-= particle.direction[1]
                             state.ρ₋[spot_index]+= particle.direction[1]
-                            particle.direction[1]*=-1
+                            particle.direction = (-particle.direction[1],)
                         end
                         new_position = particle.position[1]
                         state.ρ[spot_index] -= 1
@@ -563,16 +551,16 @@ module FP
 
                     if action_index==1  # left
                         cand = left
-                        dirvec = [-1.0, 0.0]
+                        dirvec = (-1.0, 0.0)
                     elseif action_index==2  # right
                         cand = right
-                        dirvec = [1.0, 0.0]
+                        dirvec = (1.0, 0.0)
                     elseif action_index==3  # down
                         cand = down
-                        dirvec = [0.0, -1.0]
+                        dirvec = (0.0, -1.0)
                     elseif action_index==4  # up
                         cand = up
-                        dirvec = [0.0, 1.0]
+                        dirvec = (0.0, 1.0)
                     end
                     
                     if action_index == 5  # tumble
@@ -623,10 +611,11 @@ module FP
                 
                 if choice == 1
                     if n<=param.N
-                        particle.position .= cand
+                        particle.position = cand
                         if action_index == 5  # tumble
                             v = randn(rng,2)
-                            particle.direction .= v/norm(v)
+                            v ./= norm(v)
+                            particle.direction = Tuple(v)
                         end
                     elseif action_index == 6  # fluctuate potential
                         potential_update!(state.potential, rng)
