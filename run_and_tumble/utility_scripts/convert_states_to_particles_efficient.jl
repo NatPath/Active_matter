@@ -8,7 +8,7 @@ module CompatFP
         position::Vector{Int64}
         direction::Vector{Float64}
     end
-    mutable struct State{N,C}
+    mutable struct StateLegacy{N,C}
         t::Int64
         particles::Vector{Particle}
         ρ::Array{Int64,N}
@@ -21,27 +21,54 @@ module CompatFP
         forcing::Any
         exp_table::Any
     end
+    mutable struct StateWithMax{N,C}
+        t::Int64
+        particles::Vector{Particle}
+        ρ::Array{Int64,N}
+        ρ₊::Array{Int64,N}
+        ρ₋::Array{Int64,N}
+        ρ_avg::Array{Float64,N}
+        ρ_matrix_avg_cuts::C
+        max_site_occupancy::Int64
+        T::Float64
+        potential::Any
+        forcing::Any
+        exp_table::Any
+    end
 end
 
 function convert_file(path::String)
-    # Map old on-disk type names to the compatibility types
-    typemap = Dict(
+    # Map on-disk type names to compatibility types (try new layout, then legacy)
+    typemap_with_max = Dict(
         "FP.Particle"     => CompatFP.Particle,
         "Main.FP.Particle"=> CompatFP.Particle,
-        "FP.State"        => CompatFP.State,
-        "Main.FP.State"   => CompatFP.State,
+        "FP.State"        => CompatFP.StateWithMax,
+        "Main.FP.State"   => CompatFP.StateWithMax,
+    )
+    typemap_legacy = Dict(
+        "FP.Particle"     => CompatFP.Particle,
+        "Main.FP.Particle"=> CompatFP.Particle,
+        "FP.State"        => CompatFP.StateLegacy,
+        "Main.FP.State"   => CompatFP.StateLegacy,
     )
 
-    data = load(path; typemap=typemap)
+    data = try
+        load(path; typemap=typemap_with_max)
+    catch
+        load(path; typemap=typemap_legacy)
+    end
     old_state = data["state"]
     param     = data["param"]
     potential = get(data, "potential", nothing)
 
     D = length(param.dims)
-    particles = Vector{FP.Particle{D}}(undef, length(old_state.particles))
+    int_type = eltype(old_state.ρ)
+    particles = Vector{FP.Particle{D, int_type}}(undef, length(old_state.particles))
     for (i, p) in enumerate(old_state.particles)
-        particles[i] = FP.Particle{D}(Tuple(p.position), Tuple(p.direction))
+        particles[i] = FP.Particle{D, int_type}(Tuple(int_type.(p.position)), Tuple(Float32.(p.direction)))
     end
+
+    max_site_occupancy = hasfield(typeof(old_state), :max_site_occupancy) ? old_state.max_site_occupancy : maximum(old_state.ρ)
 
     new_state = FP.State(
         old_state.t,
@@ -51,6 +78,7 @@ function convert_file(path::String)
         old_state.ρ₋,
         old_state.ρ_avg,
         old_state.ρ_matrix_avg_cuts,
+        max_site_occupancy,
         old_state.T,
         potential === nothing ? old_state.potential : potential,
         old_state.forcing,

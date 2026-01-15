@@ -58,8 +58,45 @@ function parse_commandline()
         "--initial_state"
             help = "Path to saved state file to start from as t=0 (statistics reset)"
             required = false
+        "--int_type"
+            help = "Integer type for positions/densities (e.g., Int16, Int32, Int64)"
+            arg_type = String
+            required = false
     end
     return parse_args(s)
+end
+
+@everywhere const INT_TYPE_MAP = Dict(
+    "Int8" => Int8,
+    "Int16" => Int16,
+    "Int32" => Int32,
+    "Int64" => Int64,
+    "UInt8" => UInt8,
+    "UInt16" => UInt16,
+    "UInt32" => UInt32,
+    "UInt64" => UInt64,
+)
+
+@everywhere function parse_int_type(value)
+    if value isa DataType && value <: Integer
+        return value
+    elseif value isa Symbol
+        return parse_int_type(String(value))
+    elseif value isa AbstractString
+        if haskey(INT_TYPE_MAP, value)
+            return INT_TYPE_MAP[value]
+        end
+        error("Unsupported int_type: $value. Use one of $(collect(keys(INT_TYPE_MAP))).")
+    else
+        error("Unsupported int_type: $value. Use a string like \"Int32\".")
+    end
+end
+
+@everywhere function resolve_int_type(args, params, defaults)
+    if haskey(args, "int_type") && !isnothing(args["int_type"])
+        return parse_int_type(args["int_type"])
+    end
+    return parse_int_type(get(params, "int_type", defaults["int_type"]))
 end
 # Load a saved state and reset its statistics so it can be used as a fresh initial condition.
 function load_initial_state(path)
@@ -115,6 +152,7 @@ end
         "forcing_fluctuation_type" => "alternating_direction",
         "forcing_magnitude" => 1.0,
         "ic" => "random",
+        "int_type" => "Int32",
     )
 end
 
@@ -199,6 +237,7 @@ end
     n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
     params["show_times"] = Int[]
     params["save_times"] = Int[]
+    int_type = resolve_int_type(args, params, defaults)
     
     # Set up simulation parameters.
     dim_num            = get(params, "dim_num", defaults["dim_num"])
@@ -243,7 +282,7 @@ end
     param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,ffr)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
-    state = FP.setState(0, rng, param, T, potential, forcing; ic=ic)
+    state = FP.setState(0, rng, param, T, potential, forcing; ic=ic, int_type=int_type)
    
     #estimate run time
     estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
@@ -424,6 +463,7 @@ function main()
             forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
             forcing_type = get(params, "forcing_type", defaults["forcing_type"])
             ic = get(params, "ic", defaults["ic"])
+            int_type = resolve_int_type(args, params, defaults)
             if forcing_type == "center_bond_x"
                 if dim_num ==1
                     bond_indices = ([L÷2],[L÷2+1])
@@ -453,7 +493,7 @@ function main()
             rng = MersenneTwister(seed)
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
             
-            state = FP.setState(0, rng, param, T, potential, forcing; ic=ic)
+            state = FP.setState(0, rng, param, T, potential, forcing; ic=ic, int_type=int_type)
         end
         
         show_times = get(params, "show_times", get_default_params()["show_times"])

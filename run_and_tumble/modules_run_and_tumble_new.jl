@@ -64,38 +64,38 @@ module FP
         return param
     end
 
-    mutable struct Particle{D}
-        position::NTuple{D,Int64}
-        direction::NTuple{D,Float64}
+    mutable struct Particle{D, I<:Integer}
+        position::NTuple{D,I}
+        direction::NTuple{D,Float32}
     end
 
-    function setParticle(sys_params,rng; ic="random",ic_specific=[])
+    function setParticle(sys_params, rng; ic="random", ic_specific=[], int_type::Type{<:Integer}=Int32)
         dim_num = length(sys_params.dims)
         if ic == "random"
-            position = ntuple(i -> rand(rng, 1:sys_params.dims[i]), dim_num)
-            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
+            position = ntuple(i -> int_type(rand(rng, 1:sys_params.dims[i])), dim_num)
+            dir_arr = [Float32(rand(rng, [-1, 1])) for _ in 1:dim_num]
             dir_arr ./= norm(dir_arr)
             direction = Tuple(dir_arr)
         elseif ic == "center"
-            position = ntuple(i -> div(sys_params.dims[i], 2), dim_num)
-            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
+            position = ntuple(i -> int_type(div(sys_params.dims[i], 2)), dim_num)
+            dir_arr = [Float32(rand(rng, [-1, 1])) for _ in 1:dim_num]
             dir_arr ./= norm(dir_arr)
             direction = Tuple(dir_arr)
         elseif ic == "specific"
             # Initialize position and direction based on specific input
             if length(ic_specific) == dim_num + 1
-                position = Tuple(ic_specific[1:dim_num])
+                position = ntuple(i -> int_type(ic_specific[i]), dim_num)
             else
                 throw(DomainError("Invalid input - specific initial condition must have length $(dim_num+1)"))
             end
-            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
+            dir_arr = [Float32(rand(rng, [-1, 1])) for _ in 1:dim_num]
             dir_arr ./= norm(dir_arr)
             direction = Tuple(dir_arr)
         else
             throw(DomainError("Invalid input - initial condition not supported yet"))
         end
         
-        Particle{dim_num}(position,direction)
+        Particle{dim_num, int_type}(position,direction)
     end
 
     # mutable struct State{N}
@@ -120,12 +120,12 @@ module FP
     #     exp_table::ExpLookupTable  # Add exponential lookup table
     # end
 
-    mutable struct State{N, C, D}
+    mutable struct State{N, C, D, I<:Integer}
         t::Int64
-        particles::Vector{Particle{D}}
-        ρ::Array{Int64, N}           
-        ρ₊::Array{Int64, N}          
-        ρ₋::Array{Int64, N}          
+        particles::Vector{Particle{D, I}}
+        ρ::Array{I, N}           
+        ρ₊::Array{I, N}          
+        ρ₋::Array{I, N}          
         ρ_avg::Array{Float64, N}     
         ρ_matrix_avg_cuts::C
         max_site_occupancy::Int64
@@ -137,6 +137,7 @@ module FP
 
     function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t)
         max_site_occupancy = hasfield(typeof(state_to_imitate), :max_site_occupancy) ? state_to_imitate.max_site_occupancy : maximum(state_to_imitate.ρ)
+        max_site_occupancy = Int(max_site_occupancy)
         dummy_state = State(
             t, 
             state_to_imitate.particles, 
@@ -145,7 +146,7 @@ module FP
             state_to_imitate.ρ₋, 
             ρ_avg, 
             ρ_matrix_avg_cuts,
-            max_site_occupancy,
+            max_site_occupancy, 
             state_to_imitate.T, 
             state_to_imitate.potential, 
             state_to_imitate.forcing, 
@@ -197,12 +198,12 @@ module FP
         return reshape(M, Nx, Ny, Nx, Ny)
     end
 
-    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random", full_corr_tensor=false)
+    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random", full_corr_tensor=false, int_type::Type{<:Integer}=Int32)
         N = param.N
         dim = length(param.dims)
 
         # initialize particles
-        particles = Vector{Particle{dim}}(undef, N)
+        particles = Vector{Particle{dim, int_type}}(undef, N)
         if ic == "flat"
             print("flat ic initialized \n")
             num_sites = prod(param.dims)
@@ -212,17 +213,17 @@ module FP
                 pos_tuple = Tuple(cart_inds[lin_idx])
                 dir = randn(rng, dim)
                 dir ./= norm(dir)
-                particles[n] = Particle{dim}(pos_tuple, Tuple(dir))
+                particles[n] = Particle{dim, int_type}(ntuple(i -> int_type(pos_tuple[i]), dim), Tuple(Float32.(dir)))
             end
         else
             for n in 1:N
-                particles[n] = setParticle(param, rng; ic=ic)
+                particles[n] = setParticle(param, rng; ic=ic, int_type=int_type)
             end
         end
         # Initialize the matrix with dimensions specified by a tuple
-        ρ = zeros(Int64, param.dims...)
-        ρ₊ = zeros(Int64, param.dims...)
-        ρ₋ = zeros(Int64, param.dims...)
+        ρ = zeros(int_type, param.dims...)
+        ρ₊ = zeros(int_type, param.dims...)
+        ρ₋ = zeros(int_type, param.dims...)
         populate_densities!(ρ,ρ₊,ρ₋,particles)
         # Iterate over the positions and update the matrix
         # for n in 1:N
@@ -261,7 +262,7 @@ module FP
         # Create exponential lookup table with reasonable range for jump probabilities
         exp_table = create_exp_lookup(-20.0, 20.0, 10000)
         
-        max_site_occupancy = maximum(ρ)
+        max_site_occupancy = Int(maximum(ρ))
         state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, max_site_occupancy, T, potential, bond_force, exp_table)
         return state
     end
@@ -270,7 +271,7 @@ module FP
         dim = ndims(state.ρ)
         state.t = 0
         state.ρ_avg .= state.ρ
-        state.max_site_occupancy = maximum(state.ρ)
+        state.max_site_occupancy = Int(maximum(state.ρ))
 
         if dim == 1
             ρf = float(state.ρ)
@@ -387,6 +388,7 @@ module FP
     # end
     
     function update!(param, state, rng; benchmark=false)
+        pos_type = eltype(state.ρ)
         bench_results = benchmark ? BenchmarkResults() : nothing
 
         if length(param.dims) == 1
@@ -482,7 +484,7 @@ module FP
                             t5 = time_ns()
                         end
                         
-                        particle.position = (candidate_spot_index,)
+                        particle.position = (pos_type(candidate_spot_index),)
 
                         if particle.direction[1] == 1
                             state.ρ₊[spot_index]-=1
@@ -621,11 +623,11 @@ module FP
                 
                 if choice == 1
                     if n<=param.N
-                        particle.position = cand
+                        particle.position = (pos_type(cand[1]), pos_type(cand[2]))
                         if action_index == 5  # tumble
                             v = randn(rng,2)
                             v ./= norm(v)
-                            particle.direction = Tuple(v)
+                            particle.direction = Tuple(Float32.(v))
                         end
                     elseif action_index == 6  # fluctuate potential
                         potential_update!(state.potential, rng)
