@@ -51,16 +51,24 @@ module FP
         potential_type::String 
         fluctuation_type::String
         potential_magnitude::Float64
-        ffr::Float64 # rate of forcing fluctuation
+        ffr::Union{Float64,Vector{Float64}} # forcing fluctuation rate(s)
     end
 
     #constructor
     function setParam(α, γ, ϵ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,ffr=0.0)
-
+        ffrs = if ffr isa AbstractVector
+            Float64.(collect(ffr))
+        else
+            [Float64(ffr)]
+        end
+        if isempty(ffrs)
+            ffrs = [0.0]
+        end
         N = Int(round( ρ₀*prod(dims)))       # number of particles
         println(" params set with N = $N, γ = $γ ")
 
-        param = Param(α, γ, ϵ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude,ffr)
+        ffr_value = length(ffrs) == 1 ? ffrs[1] : ffrs
+        param = Param(α, γ, ϵ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude, ffr_value)
         return param
     end
 
@@ -131,7 +139,7 @@ module FP
         max_site_occupancy::Int64
         T::Float64
         potential::AbstractPotential
-        forcing::BondForce
+        forcing::Union{BondForce, Vector{BondForce}}
         exp_table::ExpLookupTable
     end
 
@@ -197,7 +205,7 @@ module FP
         return reshape(M, Nx, Ny, Nx, Ny)
     end
 
-    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce((1,2),true,0.0); ic ="random", full_corr_tensor=false)
+    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce(([1],[2]),true,0.0); ic ="random", full_corr_tensor=false, int_type::Type{<:Integer}=Int32)
         N = param.N
         dim = length(param.dims)
 
@@ -260,9 +268,15 @@ module FP
         end
         # Create exponential lookup table with reasonable range for jump probabilities
         exp_table = create_exp_lookup(-20.0, 20.0, 10000)
-        
+        bond_forces = if bond_force isa BondForce
+            [bond_force]
+        elseif bond_force isa AbstractVector && all(f -> f isa BondForce, bond_force)
+            BondForce[f for f in bond_force]
+        else
+            throw(ArgumentError("bond_force must be BondForce or Vector{BondForce}"))
+        end
         max_site_occupancy = maximum(ρ)
-        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, max_site_occupancy, T, potential, bond_force, exp_table)
+        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, max_site_occupancy, T, potential, bond_forces, exp_table)
         return state
     end
 
@@ -294,6 +308,61 @@ module FP
 
     dot_like(a::Number, b::Number) = a * b
     dot_like(a, b) = sum(x * y for (x, y) in zip(a, b))
+
+    function param_ffrs(param)
+        if hasfield(typeof(param), :ffr)
+            if param.ffr isa AbstractVector
+                return Float64.(collect(param.ffr))
+            end
+            return [Float64(param.ffr)]
+        elseif hasfield(typeof(param), :ffrs)
+            return param.ffrs
+        end
+        return [0.0]
+    end
+
+    function get_state_forcings!(state)
+        if state.forcing isa BondForce
+            state.forcing = BondForce[state.forcing]
+        elseif !(state.forcing isa Vector{BondForce})
+            if state.forcing isa AbstractVector && all(f -> f isa BondForce, state.forcing)
+                state.forcing = BondForce[f for f in state.forcing]
+            else
+                throw(ArgumentError("state.forcing must be BondForce or Vector{BondForce}"))
+            end
+        end
+        return state.forcing
+    end
+
+    @inline function forcing_rate(ffrs::AbstractVector{<:Real}, force_idx::Int)
+        return force_idx <= length(ffrs) ? Float64(ffrs[force_idx]) : 0.0
+    end
+
+    function active_bond_forcing_1d(forcings::Vector{BondForce}, from_idx::Int, to_idx::Int)
+        total_forcing = 0.0
+        for force in forcings
+            from_bond = force.bond_indices[1][1]
+            to_bond = force.bond_indices[2][1]
+            if (from_idx == from_bond && to_idx == to_bond && force.direction_flag) ||
+               (from_idx == to_bond && to_idx == from_bond && !force.direction_flag)
+                total_forcing += force.magnitude
+            end
+        end
+        return total_forcing
+    end
+
+    function active_bond_forcing_2d(forcings::Vector{BondForce}, from_pos::NTuple{2,Int}, to_pos::NTuple{2,Int})
+        total_forcing = 0.0
+        for force in forcings
+            from_bond = (force.bond_indices[1][1], force.bond_indices[1][2])
+            to_bond = (force.bond_indices[2][1], force.bond_indices[2][2])
+            if (from_pos == from_bond && to_pos == to_bond && force.direction_flag) ||
+               (from_pos == to_bond && to_pos == from_bond && !force.direction_flag)
+                total_forcing += force.magnitude
+            end
+        end
+        return total_forcing
+    end
 
     function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,exp_table::ExpLookupTable; ϵ=0.0, ΔV_max=0.4,bond_forcing=0.0)
         relative_direction = dot_like(particle_direction,choice_direction)
@@ -394,7 +463,9 @@ module FP
             T = state.T
             α = param.α
             γ = param.γ
-            ffr = param.ffr
+            ffrs = param_ffrs(param)
+            forcings = get_state_forcings!(state)
+            n_forces = length(forcings)
             Δt=1
             t_end = state.t + Δt
             t= state.t
@@ -404,7 +475,7 @@ module FP
                     t1 = time_ns()
                 end
                 
-                n_and_a = rand(rng,1:3*(param.N+2))
+                n_and_a = rand(rng,1:3*(param.N + 1))
                 action_index = mod1(n_and_a,3)
                 n = (n_and_a-action_index) ÷ 3 +1
                 
@@ -437,11 +508,8 @@ module FP
                             t2 = time_ns()
                         end
                         
-                        if ([spot_index] == state.forcing.bond_indices[1] && [candidate_spot_index] == state.forcing.bond_indices[2] && state.forcing.direction_flag) || ([spot_index] == state.forcing.bond_indices[2] && [candidate_spot_index] == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
-                            p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T,state.exp_table; ϵ=param.ϵ,bond_forcing=state.forcing.magnitude)
-                        else
-                            p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T,state.exp_table; ϵ=param.ϵ,bond_forcing=0.0)
-                        end
+                        bond_forcing = active_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
+                        p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T,state.exp_table; ϵ=param.ϵ,bond_forcing=bond_forcing)
                         
                         if benchmark
                             bench_results.jump_probability_time += (time_ns() - t2) / 1e9
@@ -451,9 +519,6 @@ module FP
                     if n == param.N+1 # potential fluctuation
                         action_index = 4
                         p_candidate=γ
-                    elseif n == param.N+2 # bond fluctuation
-                        action_index = 5
-                        p_candidate = ffr 
                     end
                 end
 
@@ -510,8 +575,21 @@ module FP
 
                     elseif action_index == 4
                         potential_update!(state.potential,rng)
-                    elseif action_index == 5
-                        bondforce_update!(state.forcing)
+                    end
+                end
+
+                # Independent force fluctuations (each force has its own channel)
+                for force_idx in 1:n_forces
+                    # Calibrated so ffr is "expected flips per sweep per force".
+                    # One sweep has param.N micro-steps.
+                    p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
+                    if p_force > 1.0
+                        p_force = 1.0
+                    elseif p_force < 0.0
+                        p_force = 0.0
+                    end
+                    if rand(rng) < p_force
+                        bondforce_update!(forcings[force_idx])
                     end
                 end
                 
@@ -528,7 +606,9 @@ module FP
             T = state.T
             α = param.α
             γ = param.γ
-            ffr = param.ffr
+            ffrs = param_ffrs(param)
+            forcings = get_state_forcings!(state)
+            n_forces = length(forcings)
             Δt = 1
             t_end = state.t + Δt
             t = state.t
@@ -538,7 +618,7 @@ module FP
                     t1 = time_ns()
                 end
                 
-                n_and_a = rand(rng, 1:5*(param.N+2))  # 7 actions: left, right, up, down, tumble, fluctuate potential , fluctuate bond
+                n_and_a = rand(rng, 1:5*(param.N + 1))
                 action_index = mod1(n_and_a, 5)
                 n = (n_and_a - action_index) ÷ 5 + 1
                 
@@ -549,7 +629,7 @@ module FP
                 if n<=param.N
                     particle = state.particles[n]
                     i,j = particle.position
-                    spot_index = [i,j]
+                    spot_index = (i, j)
 
 
                     # Calculate neighboring indices
@@ -582,12 +662,8 @@ module FP
                             t2 = time_ns()
                         end
                         
-                        candidate_spot_index = collect(cand)
-                        if (spot_index == state.forcing.bond_indices[1] && candidate_spot_index == state.forcing.bond_indices[2] && state.forcing.direction_flag) || (spot_index == state.forcing.bond_indices[2] && candidate_spot_index == state.forcing.bond_indices[1] && !state.forcing.direction_flag)
-                            p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T,state.exp_table;bond_forcing=state.forcing.magnitude)
-                        else
-                            p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T,state.exp_table)
-                        end
+                        bond_forcing = active_bond_forcing_2d(forcings, spot_index, cand)
+                        p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T,state.exp_table;bond_forcing=bond_forcing)
                         
                         if benchmark
                             bench_results.jump_probability_time += (time_ns() - t2) / 1e9
@@ -596,9 +672,6 @@ module FP
                 elseif n == param.N+1  # potential fluctuation
                     action_index = 6
                     p_cand = γ
-                elseif n == param.N+2  # bond fluctuation
-                    action_index = 7
-                    p_cand = ffr
                 end
 
                 # Benchmark tower sampling
@@ -629,8 +702,21 @@ module FP
                         end
                     elseif action_index == 6  # fluctuate potential
                         potential_update!(state.potential, rng)
-                    elseif action_index == 7  # fluctuate forcing
-                        bondforce_update!(state.forcing)
+                    end
+                end
+
+                # Independent force fluctuations (each force has its own channel)
+                for force_idx in 1:n_forces
+                    # Calibrated so ffr is "expected flips per sweep per force".
+                    # One sweep has param.N micro-steps.
+                    p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
+                    if p_force > 1.0
+                        p_force = 1.0
+                    elseif p_force < 0.0
+                        p_force = 0.0
+                    end
+                    if rand(rng) < p_force
+                        bondforce_update!(forcings[force_idx])
                     end
                 end
                 

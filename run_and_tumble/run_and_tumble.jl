@@ -126,7 +126,7 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 32  
+    L= 16  
     d = 2
     return Dict(
         "dim_num" => d,
@@ -137,7 +137,7 @@ end
         "T" => 1.0,
         "γ" => 0.0,
         "ϵ" => 0,
-        "n_sweeps" => 10^2,
+        "n_sweeps" => 10^6,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
         "potential_type" => "zero",
@@ -145,15 +145,176 @@ end
         "potential_magnitude" => 0.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
-        # "show_times" => [i for i in 1:1:100],
+        # "show_times" => [i for i in 1:1:1000000],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
-        "ffr" => 0.001,
+        "forcing_types" => ["center_bond_x"],
+        "ffr" => 1.0,
+        "ffrs" => [1.0],
         "forcing_fluctuation_type" => "alternating_direction",
         "forcing_magnitude" => 1.0,
+        "forcing_magnitudes" => [1.0],
+        "forcing_direction_flags" => [true],
         "ic" => "random",
         "int_type" => "Int32",
     )
+end
+
+@everywhere function to_string_vector(value, key_name::String)
+    if value isa AbstractString
+        return [String(value)]
+    elseif value isa AbstractVector
+        return [String(v) for v in value]
+    end
+    error("$key_name must be a string or a list of strings.")
+end
+
+@everywhere function to_float_vector(value, key_name::String)
+    if value isa Number
+        return [Float64(value)]
+    elseif value isa AbstractVector
+        return [Float64(v) for v in value]
+    end
+    error("$key_name must be a number or a list of numbers.")
+end
+
+@everywhere function to_bool_vector(value, key_name::String)
+    if value isa Bool
+        return [value]
+    elseif value isa Number
+        return [value != 0]
+    elseif value isa AbstractVector
+        flags = Bool[]
+        for v in value
+            if v isa Bool
+                push!(flags, v)
+            elseif v isa Number
+                push!(flags, v != 0)
+            elseif v isa AbstractString
+                lv = lowercase(strip(v))
+                if lv in ("true", "t", "1", "yes", "y")
+                    push!(flags, true)
+                elseif lv in ("false", "f", "0", "no", "n")
+                    push!(flags, false)
+                else
+                    error("$key_name has an invalid boolean value: $v")
+                end
+            else
+                error("$key_name contains unsupported value type: $(typeof(v))")
+            end
+        end
+        return flags
+    end
+    error("$key_name must be a boolean or a list of booleans.")
+end
+
+@everywhere function expand_to_length(values::Vector{T}, n::Int, key_name::String) where {T}
+    if length(values) == n
+        return values
+    elseif length(values) == 1 && n > 1
+        return fill(values[1], n)
+    end
+    error("$key_name must have length 1 or length $n.")
+end
+
+@everywhere function forcing_bond_indices_from_type(forcing_type::AbstractString, dim_num::Int, L::Int)
+    if forcing_type == "center_bond_x"
+        if dim_num == 1
+            return ([L ÷ 2], [L ÷ 2 + 1])
+        elseif dim_num == 2
+            return ([L ÷ 2, L ÷ 2], [L ÷ 2 + 1, L ÷ 2])
+        end
+    elseif forcing_type == "center_bond_y"
+        if dim_num == 1
+            return ([L ÷ 2], [L ÷ 2 + 1])
+        elseif dim_num == 2
+            return ([L ÷ 2, L ÷ 2], [L ÷ 2, L ÷ 2 + 1])
+        end
+    end
+    error("Unsupported forcing type: $forcing_type")
+end
+
+@everywhere function parse_forcing_bond_pair(raw_pair, dim_num::Int, L::Int)
+    if !(raw_pair isa AbstractVector) || length(raw_pair) != 2
+        error("Each entry in forcing_bond_pairs must contain exactly two bond endpoints.")
+    end
+    if dim_num == 1
+        i = mod1(Int(raw_pair[1]), L)
+        j = mod1(Int(raw_pair[2]), L)
+        return ([i], [j])
+    end
+
+    first_endpoint = raw_pair[1]
+    second_endpoint = raw_pair[2]
+    if !(first_endpoint isa AbstractVector) || !(second_endpoint isa AbstractVector)
+        error("For dim_num=$dim_num, each forcing_bond_pairs entry must look like [[x1,...],[x2,...]].")
+    end
+    if length(first_endpoint) != dim_num || length(second_endpoint) != dim_num
+        error("For dim_num=$dim_num, each endpoint must have exactly $dim_num coordinates.")
+    end
+
+    b1 = [mod1(Int(coord), L) for coord in first_endpoint]
+    b2 = [mod1(Int(coord), L) for coord in second_endpoint]
+    return (b1, b2)
+end
+
+@everywhere function build_forcings_and_ffrs(params, defaults, dim_num::Int, L::Int)
+    bond_indices_list = Tuple{Vector{Int}, Vector{Int}}[]
+
+    if haskey(params, "forcing_bond_pairs") && haskey(params, "forcing_distance_d")
+        error("Use either forcing_bond_pairs or forcing_distance_d, not both.")
+    elseif haskey(params, "forcing_bond_pairs")
+        raw_pairs = params["forcing_bond_pairs"]
+        if !(raw_pairs isa AbstractVector) || isempty(raw_pairs)
+            error("forcing_bond_pairs must be a non-empty list of bond pairs.")
+        end
+        for raw_pair in raw_pairs
+            push!(bond_indices_list, parse_forcing_bond_pair(raw_pair, dim_num, L))
+        end
+    elseif haskey(params, "forcing_distance_d")
+        if dim_num != 1
+            error("forcing_distance_d is currently supported only for dim_num=1.")
+        end
+        d_raw = params["forcing_distance_d"]
+        if !(d_raw isa Number)
+            error("forcing_distance_d must be numeric.")
+        end
+        d = mod(Int(round(Float64(d_raw))), L)
+
+        base_site = if haskey(params, "forcing_base_site")
+            base_site_raw = params["forcing_base_site"]
+            if !(base_site_raw isa Number)
+                error("forcing_base_site must be numeric.")
+            end
+            mod1(Int(round(Float64(base_site_raw))), L)
+        else
+            # Default: center the midpoint between the two forces on the origin bond.
+            # For odd d this can only be approximate due to lattice discretization.
+            mod1((L ÷ 2) - fld(d, 2), L)
+        end
+        second_site = mod1(base_site + d, L)
+
+        push!(bond_indices_list, ([base_site], [mod1(base_site + 1, L)]))
+        push!(bond_indices_list, ([second_site], [mod1(second_site + 1, L)]))
+    else
+        forcing_types_raw = haskey(params, "forcing_types") ? params["forcing_types"] : get(params, "forcing_type", defaults["forcing_type"])
+        forcing_types = to_string_vector(forcing_types_raw, "forcing_types")
+        for forcing_type in forcing_types
+            push!(bond_indices_list, forcing_bond_indices_from_type(forcing_type, dim_num, L))
+        end
+    end
+
+    n_forces = length(bond_indices_list)
+    forcing_magnitudes_raw = haskey(params, "forcing_magnitudes") ? params["forcing_magnitudes"] : get(params, "forcing_magnitude", defaults["forcing_magnitude"])
+    ffrs_raw = haskey(params, "ffrs") ? params["ffrs"] : get(params, "ffr", defaults["ffr"])
+    direction_flags_raw = haskey(params, "forcing_direction_flags") ? params["forcing_direction_flags"] : [true]
+
+    forcing_magnitudes = expand_to_length(to_float_vector(forcing_magnitudes_raw, "forcing_magnitudes"), n_forces, "forcing_magnitudes")
+    ffrs = expand_to_length(to_float_vector(ffrs_raw, "ffrs"), n_forces, "ffrs")
+    direction_flags = expand_to_length(to_bool_vector(direction_flags_raw, "forcing_direction_flags"), n_forces, "forcing_direction_flags")
+
+    forcings = [Potentials.setBondForce(bond_indices_list[i], direction_flags[i], forcing_magnitudes[i]) for i in 1:n_forces]
+    return forcings, ffrs
 end
 
 
@@ -252,26 +413,7 @@ end
     γ                 = get(params, "γ", defaults["γ"])
     ϵ                  = get(params, "ϵ", defaults["ϵ"])
 
-    forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
-    ffr = get(params, "ffr", defaults["ffr"])
-    forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
-    forcing_type = get(params, "forcing_type", defaults["forcing_type"])
-    if forcing_type == "center_bond_x"
-        if dim_num ==1
-            bond_indices = ([L÷2],[L÷2+1])
-        elseif dim_num == 2
-            bond_indices = ([L÷2,L÷2],[L÷2+1,L÷2])
-        end
-    elseif forcing_type == "center_bond_y"
-        if dim_num ==1
-            bond_indices = ([L÷2],[L÷2+1])
-        elseif dim_num == 2
-            bond_indices = ([L÷2,L÷2],[L÷2,L÷2+1])
-        end
-    else
-        error("Unsupported forcing type: $forcing_type")
-    end
-    forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
+    forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
 
     ic = get(params, "ic", defaults["ic"])
 
@@ -279,10 +421,10 @@ end
     # ρ₀ = N / (L^dim_num)
 
     # Initialize simulation parameters and state.
-    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,ffr)
+    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
-    state = FP.setState(0, rng, param, T, potential, forcing; ic=ic, int_type=int_type)
+    state = FP.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type)
    
     #estimate run time
     estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
@@ -458,42 +600,23 @@ function main()
             γ                 = get(params, "γ", defaults["γ"])
             ϵ                  = get(params, "ϵ", defaults["ϵ"])
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
-            forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
-            ffr = get(params, "ffr", defaults["ffr"])
-            forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
-            forcing_type = get(params, "forcing_type", defaults["forcing_type"])
+            forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
             ic = get(params, "ic", defaults["ic"])
             int_type = resolve_int_type(args, params, defaults)
-            if forcing_type == "center_bond_x"
-                if dim_num ==1
-                    bond_indices = ([L÷2],[L÷2+1])
-                elseif dim_num == 2
-                    bond_indices = ([L÷2,L÷2],[L÷2+1,L÷2])
-                end
-            elseif forcing_type == "center_bond_y"
-                if dim_num ==1
-                    bond_indices = ([L÷2],[L÷2+1])
-                elseif dim_num == 2
-                    bond_indices = ([L÷2,L÷2],[L÷2,L÷2+1])
-                end
-            else
-                error("Unsupported forcing type: $forcing_type")
-            end
-            forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
 
             ic = get(params, "ic", defaults["ic"])
             
             dims = ntuple(i -> L, dim_num)
             # ρ₀ = N / prod(dims)
             
-            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffr )
+            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
             
-            state = FP.setState(0, rng, param, T, potential, forcing; ic=ic, int_type=int_type)
+            state = FP.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type)
         end
         
         show_times = get(params, "show_times", get_default_params()["show_times"])

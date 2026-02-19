@@ -4,12 +4,63 @@ using JLD2
 using Dates
 using Sockets
 export save_aggregation, save_state
+
+function forcing_list(state)
+    if !hasfield(typeof(state), :forcing)
+        return Any[]
+    end
+    if state.forcing isa AbstractVector
+        return state.forcing
+    end
+    return [state.forcing]
+end
+
+function two_force_distance_suffix(state, param)
+    if !hasfield(typeof(param), :dims) || length(param.dims) != 1
+        return ""
+    end
+    forcings = forcing_list(state)
+    if length(forcings) != 2
+        return ""
+    end
+
+    force1 = forcings[1]
+    force2 = forcings[2]
+    if length(force1.bond_indices[1]) != 1 || length(force2.bond_indices[1]) != 1
+        return ""
+    end
+
+    L = param.dims[1]
+    s1 = mod1(force1.bond_indices[1][1], L)
+    s2 = mod1(force2.bond_indices[1][1], L)
+    d_forward = mod(s2 - s1, L)
+    d_short = min(d_forward, mod(s1 - s2, L))
+    return @sprintf("_fdist-%d_fdistmin-%d", d_forward, d_short)
+end
+
 function save_aggregation(agg_res,param,total_sweeps,save_dir)
     mkpath(save_dir)
+    state = agg_res
     γ = param.γ
-    ffr = param.f
+    ffr = if hasfield(typeof(param), :ffr)
+        param.ffr isa AbstractVector ? (isempty(param.ffr) ? 0.0 : Float64(param.ffr[1])) : Float64(param.ffr)
+    elseif hasfield(typeof(param), :ffrs)
+        isempty(param.ffrs) ? 0.0 : Float64(param.ffrs[1])
+    else
+        0.0
+    end
+    forcing_magnitude = if hasfield(typeof(state), :forcing)
+        if state.forcing isa AbstractVector
+            sum(force -> force.magnitude, state.forcing)
+        else
+            state.forcing.magnitude
+        end
+    else
+        0.0
+    end
+    force_distance_suffix = two_force_distance_suffix(state, param)
     dim = length(param.dims)
-    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f_t-%d.jld2",
+    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_t-%d.jld2",
         save_dir,
         dim,
         param.potential_type,
@@ -21,9 +72,10 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir)
         param.α,
         γ,
         param.D,
-        state.forcing.magnitude,
+        forcing_magnitude,
         ffr,
-        state.t)
+        force_distance_suffix,
+        total_sweeps)
     potential = state.potential 
     @save filename state param potential
     return filename
@@ -36,13 +88,30 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     if hasfield(typeof(param), :forcing_fluctuation_rate)
         γ = param.γ 
         ffr = param.forcing_fluctuation_rate * param.N
+    elseif hasfield(typeof(param), :ffrs)
+        γ = param.γ
+        ffr = isempty(param.ffrs) ? 0.0 : param.ffrs[1]
     elseif hasfield(typeof(param), :ffr)
 
         γ = param.γ
-        ffr = param.ffr
+        if param.ffr isa AbstractVector
+            ffr = isempty(param.ffr) ? 0.0 : Float64(param.ffr[1])
+        else
+            ffr = Float64(param.ffr)
+        end
     else
         error("Parameter object must have either forcing_fluctuation_rate or ffr field")
     end
+    forcing_magnitude = if hasfield(typeof(state), :forcing)
+        if state.forcing isa AbstractVector
+            sum(force -> force.magnitude, state.forcing)
+        else
+            state.forcing.magnitude
+        end
+    else
+        0.0
+    end
+    force_distance_suffix = two_force_distance_suffix(state, param)
     dim = length(param.dims)
     hostname = Sockets.gethostname()
     host_tag = split(hostname, '.')[1]
@@ -52,7 +121,7 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     if relaxed_ic
         ic_tag = string(ic_tag, "-relaxed_ic")
     end
-    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f_ic-%s_t-%d_id-%s.jld2",
+    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_ic-%s_t-%d_id-%s.jld2",
         save_dir,
         dim,
         param.potential_type,
@@ -64,8 +133,9 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
         param.α,
         γ,
         param.D,
-        state.forcing.magnitude,
+        forcing_magnitude,
         ffr,
+        force_distance_suffix,
         ic_tag,
         state.t,
         run_id)

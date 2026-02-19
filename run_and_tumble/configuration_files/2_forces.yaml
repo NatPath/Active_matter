@@ -1,0 +1,14 @@
+dim_num: 1
+L: 100
+ρ₀: 10000
+
+# New convenience mode (1D only)
+forcing_distance_d: 10      # separation in sites
+
+# Force parameters (applied to both if scalar, or per-force if vector)
+ffr: 1.0                    # equivalent to [1.0, 1.0]
+forcing_magnitude: 1.0      # equivalent to [1.0, 1.0]
+# or explicitly:
+# ffrs: [1.0, 1.0]
+# forcing_magnitudes: [1.0, 1.0]
+# forcing_direction_flags: [true, true]

@@ -121,49 +121,278 @@ function correlation_diag(state, param, fix_term)
     return corr_diag
 end
 
+function get_forcing_list(state)
+    if !hasfield(typeof(state), :forcing)
+        return Any[]
+    end
+    if state.forcing isa AbstractVector
+        return state.forcing
+    end
+    return [state.forcing]
+end
+
 function annotate_forcing_1d!(p, state)
-    b1 = state.forcing.bond_indices[1][1]
-    b2 = state.forcing.bond_indices[2][1]
-    dir_label = state.forcing.direction_flag ? "force ->" : "force <-"
-    vline!(p, [b1, b2], color=:red, linestyle=:dash, label=false)
+    forcings = get_forcing_list(state)
+    if isempty(forcings)
+        return
+    end
+    colors = [:red, :orange, :yellow, :cyan, :magenta, :white]
     y_max = maximum(state.ρ_avg)
-    y_pos = y_max * 0.9
-    start_x, end_x = state.forcing.direction_flag ? (b1, b2) : (b2, b1)
-    plot!(p, [start_x, end_x], [y_pos, y_pos],
-          arrow=:arrow, color=:red, lw=3, label=false)
-    annotate!(p, ((b1 + b2) / 2, y_pos * 1.05, text(dir_label, :red, 8)))
+    for (idx, forcing) in enumerate(forcings)
+        b1 = forcing.bond_indices[1][1]
+        b2 = forcing.bond_indices[2][1]
+        dir_label = forcing.direction_flag ? "f$(idx) ->" : "f$(idx) <-"
+        color = colors[mod1(idx, length(colors))]
+        y_pos = y_max * (0.9 - 0.08 * (idx - 1))
+        vline!(p, [b1, b2], color=color, linestyle=:dash, label=false)
+        start_x, end_x = forcing.direction_flag ? (b1, b2) : (b2, b1)
+        plot!(p, [start_x, end_x], [y_pos, y_pos],
+              arrow=:arrow, color=color, lw=3, label=false)
+        annotate!(p, ((b1 + b2) / 2, y_pos * 1.05, text(dir_label, color, 8)))
+    end
 end
 
 function annotate_forcing_2d!(p_current_density, state)
-    b1 = state.forcing.bond_indices[1]
-    b2 = state.forcing.bond_indices[2]
-    if length(b1) == 2 && length(b2) == 2
-        start = state.forcing.direction_flag ? b1 : b2
-        dx = state.forcing.direction_flag ? (b2[1] - b1[1]) : (b1[1] - b2[1])
-        dy = state.forcing.direction_flag ? (b2[2] - b1[2]) : (b1[2] - b2[2])
-        quiver!(p_current_density,
-                [start[1]], [start[2]],
-                quiver=([dx], [dy]),
-                color=:white,
-                lw=3,
-                arrow=:arrow,
-                label=false)
-        annotate!(p_current_density,
-                  start[1] + 0.3*dx,
-                  start[2] + 0.3*dy,
-                  text("bond force", :white, 8))
+    forcings = get_forcing_list(state)
+    if isempty(forcings)
+        return
+    end
+    colors = [:white, :yellow, :orange, :cyan, :magenta]
+    for (idx, forcing) in enumerate(forcings)
+        b1 = forcing.bond_indices[1]
+        b2 = forcing.bond_indices[2]
+        if length(b1) == 2 && length(b2) == 2
+            color = colors[mod1(idx, length(colors))]
+            start = forcing.direction_flag ? b1 : b2
+            dx = forcing.direction_flag ? (b2[1] - b1[1]) : (b1[1] - b2[1])
+            dy = forcing.direction_flag ? (b2[2] - b1[2]) : (b1[2] - b2[2])
+            quiver!(p_current_density,
+                    [start[1]], [start[2]],
+                    quiver=([dx], [dy]),
+                    color=color,
+                    lw=3,
+                    arrow=:arrow,
+                    label=false)
+            annotate!(p_current_density,
+                      start[1] + 0.3*dx,
+                      start[2] + 0.3*dy,
+                      text("bond force $(idx)", color, 8))
+        end
     end
 end
 
 function plot_sweep(sweep, state, param; label="", plot_directional=false)
     dim_num = length(param.dims)
     if dim_num == 1
+        if length(get_forcing_list(state)) > 1
+            return plot_sweep_1d_multiforce(sweep, state, param; label=label, plot_directional=plot_directional)
+        end
         return plot_sweep_1d(sweep, state, param; label=label, plot_directional=plot_directional)
     elseif dim_num == 2
         return plot_sweep_2d(sweep, state, param; label=label, plot_directional=plot_directional)
     else
         throw(DomainError("Only 1D or 2D plotting supported"))
     end
+end
+
+function force_bond_sites_1d(state, L)
+    forcings = get_forcing_list(state)
+    bonds = Tuple{Int, Int}[]
+    direction_flags = Bool[]
+    magnitudes = Float64[]
+    for force in forcings
+        if length(force.bond_indices[1]) == 1 && length(force.bond_indices[2]) == 1
+            b1 = mod1(force.bond_indices[1][1], L)
+            b2 = mod1(force.bond_indices[2][1], L)
+            push!(bonds, (b1, b2))
+            push!(direction_flags, force.direction_flag)
+            push!(magnitudes, force.magnitude)
+        end
+    end
+    return bonds, direction_flags, magnitudes
+end
+
+function centered_periodic_axis(L, ref_site)
+    half = L ÷ 2
+    x_rel = [mod(i - ref_site + half, L) - half for i in 1:L]
+    perm = sortperm(x_rel)
+    return x_rel[perm], perm
+end
+
+function annotate_force_directions_1d!(p, bonds, direction_flags; colors=[:red, :orange, :yellow, :cyan, :magenta, :green, :blue], label_prefix="f")
+    if isempty(bonds)
+        return
+    end
+    y_low, y_high = ylims(p)
+    y_range = y_high - y_low
+    if y_range <= 0
+        return
+    end
+
+    y_top = y_low + 0.90 * y_range
+    y_step = min(0.12 * y_range, 0.8 * y_range / max(length(bonds), 1))
+    x_low, x_high = xlims(p)
+    L_plot = max(1, Int(round(x_high - x_low + 1)))
+
+    for (idx, (b1, b2)) in enumerate(bonds)
+        color = colors[mod1(idx, length(colors))]
+        dir_flag = direction_flags[idx]
+        y = y_top - (idx - 1) * y_step
+
+        vline!(p, [b1, b2], color=color, linestyle=:dash, lw=1.5, alpha=0.35, label=false)
+        if abs(b2 - b1) == L_plot - 1
+            scatter!(p, [b1, b2], [y, y], color=color, markersize=4, label=false)
+            dir_txt = dir_flag ? "$(label_prefix)$(idx): wrap ->" : "$(label_prefix)$(idx): <- wrap"
+            annotate!(p, (min(b1, b2), y + 0.04 * y_range, text(dir_txt, color, 7)))
+        else
+            start_x, end_x = dir_flag ? (b1, b2) : (b2, b1)
+            plot!(p, [start_x, end_x], [y, y], arrow=:arrow, color=color, lw=3, label=false)
+            annotate!(p, ((b1 + b2) / 2, y + 0.04 * y_range, text("$(label_prefix)$(idx)", color, 8)))
+        end
+    end
+end
+
+function plot_force_realization_1d(state, param)
+    L = param.dims[1]
+    bonds, direction_flags, magnitudes = force_bond_sites_1d(state, L)
+    n_forces = length(bonds)
+    if n_forces == 0
+        return plot(title="Instantaneous force realization", axis=false, legend=false)
+    end
+
+    colors = [:red, :orange, :yellow, :cyan, :magenta, :green, :blue]
+    p = plot(1:L, zeros(L),
+             title="Instantaneous force realization",
+             xlabel="Site",
+             ylabel="Force index",
+             yticks=(1:n_forces, ["f$(i)" for i in 1:n_forces]),
+             ylim=(0.5, n_forces + 0.9),
+             xlim=(1, L),
+             legend=false,
+             color=:black,
+             lw=1,
+             alpha=0.25,
+             framestyle=:box,
+             grid=:y)
+
+    for idx in 1:n_forces
+        b1, b2 = bonds[idx]
+        dir_flag = direction_flags[idx]
+        color = colors[mod1(idx, length(colors))]
+        y = idx
+        start_x, end_x = dir_flag ? (b1, b2) : (b2, b1)
+
+        if abs(b2 - b1) == L - 1
+            scatter!(p, [b1, b2], [y, y], color=color, markersize=6, label=false)
+            dir_txt = dir_flag ? "wrap ->" : "<- wrap"
+            annotate!(p, (min(b1, b2), y + 0.22, text(dir_txt, color, 8)))
+        else
+            plot!(p, [start_x, end_x], [y, y], arrow=:arrow, color=color, lw=3, label=false)
+            scatter!(p, [b1, b2], [y, y], color=color, markersize=5, label=false)
+        end
+
+        dir_char = dir_flag ? "->" : "<-"
+        annotate!(p, (L * 0.03, y + 0.22, text(@sprintf("f%d: %d %s %d |F|=%.2f", idx, b1, dir_char, b2, magnitudes[idx]), color, 8)))
+    end
+    return p
+end
+
+function plot_sweep_1d_multiforce(sweep, state, param; label="", plot_directional=false)
+    L = param.dims[1]
+    x_range = 1:L
+    colors = [:red, :orange, :yellow, :cyan, :magenta, :green, :blue]
+
+    outer_prod_ρ = state.ρ_avg * transpose(state.ρ_avg)
+    corr_mat = state.ρ_matrix_avg_cuts[:full] .- outer_prod_ρ
+    corr_scale = maximum(abs.(corr_mat))
+    if !isfinite(corr_scale) || corr_scale == 0
+        corr_scale = 1.0
+    end
+
+    bonds, direction_flags, _ = force_bond_sites_1d(state, L)
+
+    p_avg_density = plot(x_range, state.ρ_avg,
+                         title="Time-averaged density (sweep $(sweep))",
+                         xlabel="Site",
+                         ylabel="⟨ρ(x)⟩",
+                         lw=2.5,
+                         color=:black,
+                         legend=false,
+                         framestyle=:box,
+                         grid=:y)
+    for (idx, (b1, b2)) in enumerate(bonds)
+        color = colors[mod1(idx, length(colors))]
+        vline!(p_avg_density, [b1, b2], color=color, linestyle=:dash, alpha=0.25, lw=1.2, label=false)
+    end
+
+    inst_density = Float64.(state.ρ)
+    p_inst_density = plot(x_range, inst_density,
+                          title="Instantaneous density + force directions",
+                          xlabel="Site",
+                          ylabel="ρ(x,t)",
+                          lw=2.0,
+                          color=:steelblue,
+                          legend=false,
+                          framestyle=:box,
+                          grid=:y)
+    annotate_force_directions_1d!(p_inst_density, bonds, direction_flags; colors=colors, label_prefix="f")
+
+    p_force_realization = plot_force_realization_1d(state, param)
+
+    p_corr_heat = heatmap(corr_mat,
+                          xlabel="x",
+                          ylabel="x'",
+                          title="Connected correlation matrix C(x,x')",
+                          color=:balance,
+                          clims=(-corr_scale, corr_scale),
+                          framestyle=:box)
+
+    origin_left = max(1, div(L, 2))
+    origin_right = mod1(origin_left + 1, L)
+
+    vline!(p_corr_heat, [origin_left, origin_right], color=:white, linestyle=:dash, lw=2, label=false)
+    hline!(p_corr_heat, [origin_left, origin_right], color=:white, linestyle=:dash, lw=2, label=false)
+    for (idx, (b1, b2)) in enumerate(bonds)
+        color = colors[mod1(idx, length(colors))]
+        vline!(p_corr_heat, [b1, b2], color=color, linestyle=:dot, lw=2, label=false)
+        hline!(p_corr_heat, [b1, b2], color=color, linestyle=:dot, lw=2, label=false)
+    end
+
+    origin_cut = 0.5 .* (corr_mat[origin_left, :] .+ corr_mat[origin_right, :])
+    x_rel_origin, perm_origin = centered_periodic_axis(L, origin_left)
+    p_corr_origin = plot(x_rel_origin, origin_cut[perm_origin],
+                         title="Connected correlation at origin bond",
+                         xlabel="Periodic displacement Δx",
+                         ylabel="C_ref(x')",
+                         lw=3,
+                         color=:black,
+                         label="origin bond ($(origin_left),$(origin_right))")
+    vline!(p_corr_origin, [0.0], color=:gray, linestyle=:dash, label=false)
+    hline!(p_corr_origin, [0.0], color=:gray, linestyle=:dot, label=false)
+    plot!(p_corr_origin, framestyle=:box)
+
+    p_corr_forces = plot(title="Connected correlation at fluctuating bonds",
+                         xlabel="Periodic displacement Δx",
+                         ylabel="C_ref(x')",
+                         legend=:outerright,
+                         framestyle=:box)
+    for (idx, (b1, b2)) in enumerate(bonds)
+        color = colors[mod1(idx, length(colors))]
+        force_cut = 0.5 .* (corr_mat[b1, :] .+ corr_mat[b2, :])
+        x_rel_force, perm_force = centered_periodic_axis(L, b1)
+        plot!(p_corr_forces, x_rel_force, force_cut[perm_force], lw=2.2, color=color, label="f$(idx) bond ($(b1),$(b2))")
+    end
+    vline!(p_corr_forces, [0.0], color=:gray, linestyle=:dash, label=false)
+    hline!(p_corr_forces, [0.0], color=:gray, linestyle=:dot, label=false)
+
+    p_final = plot(p_avg_density, p_inst_density,
+                   p_force_realization, p_corr_heat,
+                   p_corr_origin, p_corr_forces,
+                   layout=(3, 2),
+                   size=(2200, 1400),
+                   plot_title="1D multi-force sweep $(sweep)")
+    display(p_final)
+    return corr_mat
 end
 
 function plot_sweep_1d(sweep, state, param; label="", plot_directional=false)
@@ -259,7 +488,8 @@ function plot_sweep_2d(sweep, state, param; label="", plot_directional=false)
                           aspect_ratio=1, colorbar=true,
                           color=:reds)
 
-    current_density = state.ρ ./ sum(state.ρ)
+    # current_density = state.ρ ./ sum(state.ρ)
+    current_density = state.ρ
     p_current_density = heatmap(current_density',
                                 title="Current ρ(x,y) (t=$(sweep))",
                                 xlabel="x", ylabel="y",
