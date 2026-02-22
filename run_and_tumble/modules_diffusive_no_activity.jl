@@ -7,7 +7,7 @@ using .PlotUtils
 include("potentials.jl")
 
 #Wrap everything with a module to allow redefinition of type
-module FP
+module FPDiffusive
     # using ..PlotUtils: plot_sweep 
     using ..Potentials: AbstractPotential, potential_update!, Potential, MultiPotential, IndependentFluctuatingPoints, BondForce, bondforce_update!
     using LinearAlgebra
@@ -41,9 +41,7 @@ module FP
     end
 
     struct Param # model parameters
-        α::Float64  # rate of tumbling
         γ::Float64  # rate of potential fluctuation
-        ϵ::Float64  # activity
         dims::Tuple{Vararg{Int}} # systen's dimensions
         ρ₀::Float64  # density
         N::Int64    # number of particles
@@ -55,7 +53,7 @@ module FP
     end
 
     #constructor
-    function setParam(α, γ, ϵ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,ffr=0.0)
+    function setParam(γ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,ffr=0.0)
         ffrs = if ffr isa AbstractVector
             Float64.(collect(ffr))
         else
@@ -68,42 +66,31 @@ module FP
         println(" params set with N = $N, γ = $γ ")
 
         ffr_value = length(ffrs) == 1 ? ffrs[1] : ffrs
-        param = Param(α, γ, ϵ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude, ffr_value)
+        param = Param(γ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude, ffr_value)
         return param
     end
 
     mutable struct Particle{D}
         position::NTuple{D,Int64}
-        direction::NTuple{D,Float64}
     end
 
     function setParticle(sys_params,rng; ic="random",ic_specific=[])
         dim_num = length(sys_params.dims)
         if ic == "random"
             position = ntuple(i -> rand(rng, 1:sys_params.dims[i]), dim_num)
-            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
-            dir_arr ./= norm(dir_arr)
-            direction = Tuple(dir_arr)
         elseif ic == "center"
             position = ntuple(i -> div(sys_params.dims[i], 2), dim_num)
-            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
-            dir_arr ./= norm(dir_arr)
-            direction = Tuple(dir_arr)
         elseif ic == "specific"
-            # Initialize position and direction based on specific input
-            if length(ic_specific) == dim_num + 1
+            if length(ic_specific) == dim_num
                 position = Tuple(ic_specific[1:dim_num])
             else
-                throw(DomainError("Invalid input - specific initial condition must have length $(dim_num+1)"))
+                throw(DomainError("Invalid input - specific initial condition must have length $(dim_num)"))
             end
-            dir_arr = [rand(rng, [-1, 1]) for _ in 1:dim_num]
-            dir_arr ./= norm(dir_arr)
-            direction = Tuple(dir_arr)
         else
             throw(DomainError("Invalid input - initial condition not supported yet"))
         end
         
-        Particle{dim_num}(position,direction)
+        Particle{dim_num}(position)
     end
 
     # mutable struct State{N}
@@ -128,7 +115,7 @@ module FP
     #     exp_table::ExpLookupTable  # Add exponential lookup table
     # end
 
-    mutable struct State{N, C, D}
+    mutable struct State{N, C, B, D}
         t::Int64
         particles::Vector{Particle{D}}
         ρ::Array{Int64, N}           
@@ -136,6 +123,7 @@ module FP
         ρ₋::Array{Int64, N}          
         ρ_avg::Array{Float64, N}     
         ρ_matrix_avg_cuts::C
+        bond_pass_stats::B
         max_site_occupancy::Int64
         T::Float64
         potential::AbstractPotential
@@ -163,35 +151,44 @@ module FP
         end
     end
 
-    function initialize_bond_passage_stats!(ρ_matrix_avg_cuts, n_forces::Int; track_mask=nothing)
-        ρ_matrix_avg_cuts[BOND_PASS_FORWARD_AVG_KEY] = zeros(Float64, n_forces)
-        ρ_matrix_avg_cuts[BOND_PASS_REVERSE_AVG_KEY] = zeros(Float64, n_forces)
-        ρ_matrix_avg_cuts[BOND_PASS_TOTAL_AVG_KEY] = zeros(Float64, n_forces)
-        ρ_matrix_avg_cuts[BOND_PASS_TOTAL_SQ_AVG_KEY] = zeros(Float64, n_forces)
-        ρ_matrix_avg_cuts[BOND_PASS_SAMPLE_COUNT_KEY] = [0.0]
+    function initialize_bond_passage_stats!(bond_pass_stats, n_forces::Int; track_mask=nothing)
+        bond_pass_stats[BOND_PASS_FORWARD_AVG_KEY] = zeros(Float64, n_forces)
+        bond_pass_stats[BOND_PASS_REVERSE_AVG_KEY] = zeros(Float64, n_forces)
+        bond_pass_stats[BOND_PASS_TOTAL_AVG_KEY] = zeros(Float64, n_forces)
+        bond_pass_stats[BOND_PASS_TOTAL_SQ_AVG_KEY] = zeros(Float64, n_forces)
+        bond_pass_stats[BOND_PASS_SAMPLE_COUNT_KEY] = [0.0]
         if track_mask === nothing
-            if haskey(ρ_matrix_avg_cuts, BOND_PASS_TRACK_MASK_KEY) && length(ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY]) == n_forces
-                ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY] = Float64.(ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY])
+            if haskey(bond_pass_stats, BOND_PASS_TRACK_MASK_KEY) && length(bond_pass_stats[BOND_PASS_TRACK_MASK_KEY]) == n_forces
+                bond_pass_stats[BOND_PASS_TRACK_MASK_KEY] = Float64.(bond_pass_stats[BOND_PASS_TRACK_MASK_KEY])
             else
-                ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY] = ones(Float64, n_forces)
+                bond_pass_stats[BOND_PASS_TRACK_MASK_KEY] = ones(Float64, n_forces)
             end
         else
             if length(track_mask) != n_forces
                 throw(ArgumentError("track_mask must have length $n_forces."))
             end
-            ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY] = Float64.(track_mask)
+            bond_pass_stats[BOND_PASS_TRACK_MASK_KEY] = Float64.(track_mask)
         end
         return nothing
     end
 
-    function initialize_spatial_bond_passage_stats!(ρ_matrix_avg_cuts, L::Int)
-        ρ_matrix_avg_cuts[BOND_PASS_SPATIAL_F_AVG_KEY] = zeros(Float64, L)
-        ρ_matrix_avg_cuts[BOND_PASS_SPATIAL_F2_AVG_KEY] = zeros(Float64, L)
-        ρ_matrix_avg_cuts[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY] = [0.0]
+    function initialize_spatial_bond_passage_stats!(bond_pass_stats, L::Int)
+        bond_pass_stats[BOND_PASS_SPATIAL_F_AVG_KEY] = zeros(Float64, L)
+        bond_pass_stats[BOND_PASS_SPATIAL_F2_AVG_KEY] = zeros(Float64, L)
+        bond_pass_stats[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY] = [0.0]
         return nothing
     end
 
-    function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t)
+    function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t, bond_pass_stats=nothing)
+        stats_to_use = if isnothing(bond_pass_stats)
+            if hasfield(typeof(state_to_imitate), :bond_pass_stats)
+                getfield(state_to_imitate, :bond_pass_stats)
+            else
+                Dict{Symbol,Vector{Float64}}()
+            end
+        else
+            bond_pass_stats
+        end
         max_site_occupancy = hasfield(typeof(state_to_imitate), :max_site_occupancy) ? state_to_imitate.max_site_occupancy : maximum(state_to_imitate.ρ)
         dummy_state = State(
             t, 
@@ -201,6 +198,7 @@ module FP
             state_to_imitate.ρ₋, 
             ρ_avg, 
             ρ_matrix_avg_cuts,
+            stats_to_use,
             max_site_occupancy,
             state_to_imitate.T, 
             state_to_imitate.potential, 
@@ -223,11 +221,9 @@ module FP
         for p in particles
             pos = CartesianIndex(p.position...)            # CartesianIndex
             ρ[pos] += 1
-            if p.direction[1] > 0
-                ρ₊[pos] += 1
-            elseif p.direction[1] < 0
-                ρ₋[pos] += 1
-            end
+            # Keep directional arrays neutral/finite for legacy plotting paths.
+            ρ₊[pos] += 1
+            ρ₋[pos] += 1
         end
     end
 
@@ -266,9 +262,7 @@ module FP
             for n in 1:N
                 lin_idx = mod(n - 1, num_sites) + 1
                 pos_tuple = Tuple(cart_inds[lin_idx])
-                dir = randn(rng, dim)
-                dir ./= norm(dir)
-                particles[n] = Particle{dim}(pos_tuple, Tuple(dir))
+                particles[n] = Particle{dim}(pos_tuple)
             end
         else
             for n in 1:N
@@ -316,6 +310,7 @@ module FP
         end
         # Create exponential lookup table with reasonable range for jump probabilities
         exp_table = create_exp_lookup(-20.0, 20.0, 10000)
+        bond_pass_stats = Dict{Symbol,Vector{Float64}}()
         bond_forces = if bond_force isa BondForce
             [bond_force]
         elseif bond_force isa AbstractVector && all(f -> f isa BondForce, bond_force)
@@ -324,12 +319,12 @@ module FP
             throw(ArgumentError("bond_force must be BondForce or Vector{BondForce}"))
         end
         track_mask = bond_pass_track_mask_for_forcings(bond_forces, String(bond_pass_count_mode))
-        initialize_bond_passage_stats!(ρ_matrix_avg_cuts, length(bond_forces); track_mask=track_mask)
+        initialize_bond_passage_stats!(bond_pass_stats, length(bond_forces); track_mask=track_mask)
         if dim == 1
-            initialize_spatial_bond_passage_stats!(ρ_matrix_avg_cuts, param.dims[1])
+            initialize_spatial_bond_passage_stats!(bond_pass_stats, param.dims[1])
         end
         max_site_occupancy = maximum(ρ)
-        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, max_site_occupancy, T, potential, bond_forces, exp_table)
+        state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, bond_pass_stats, max_site_occupancy, T, potential, bond_forces, exp_table)
         return state
     end
 
@@ -346,7 +341,7 @@ module FP
             x_middle = div(size(state.ρ, 1), 2)
             y_middle = div(size(state.ρ, 2), 2)
             if haskey(state.ρ_matrix_avg_cuts, :full)
-                state.ρ_matrix_avg_cuts[:full] .= FP.outer_density_2D(float(state.ρ))
+                state.ρ_matrix_avg_cuts[:full] .= FPDiffusive.outer_density_2D(float(state.ρ))
             else
                 ρf = float(state.ρ)
                 state.ρ_matrix_avg_cuts[:x_cut] .= ρf[:, y_middle] * transpose(ρf[:, y_middle])
@@ -357,15 +352,15 @@ module FP
             throw(DomainError("Invalid input - dimension not supported yet"))
         end
         forcings = get_state_forcings!(state)
-        existing_mask = if haskey(state.ρ_matrix_avg_cuts, BOND_PASS_TRACK_MASK_KEY) &&
-                           length(state.ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY]) == length(forcings)
-            Float64.(state.ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY])
+        existing_mask = if haskey(state.bond_pass_stats, BOND_PASS_TRACK_MASK_KEY) &&
+                           length(state.bond_pass_stats[BOND_PASS_TRACK_MASK_KEY]) == length(forcings)
+            Float64.(state.bond_pass_stats[BOND_PASS_TRACK_MASK_KEY])
         else
             bond_pass_track_mask_for_forcings(forcings, "nonzero_magnitude")
         end
-        initialize_bond_passage_stats!(state.ρ_matrix_avg_cuts, length(forcings); track_mask=existing_mask)
+        initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings); track_mask=existing_mask)
         if dim == 1
-            initialize_spatial_bond_passage_stats!(state.ρ_matrix_avg_cuts, size(state.ρ, 1))
+            initialize_spatial_bond_passage_stats!(state.bond_pass_stats, size(state.ρ, 1))
         end
         return state
     end
@@ -399,51 +394,51 @@ module FP
     end
 
     function ensure_bond_passage_stats!(state, n_forces::Int; forcings=nothing)
-        cuts = state.ρ_matrix_avg_cuts
-        if !haskey(cuts, BOND_PASS_FORWARD_AVG_KEY) || length(cuts[BOND_PASS_FORWARD_AVG_KEY]) != n_forces
-            cuts[BOND_PASS_FORWARD_AVG_KEY] = zeros(Float64, n_forces)
+        stats = state.bond_pass_stats
+        if !haskey(stats, BOND_PASS_FORWARD_AVG_KEY) || length(stats[BOND_PASS_FORWARD_AVG_KEY]) != n_forces
+            stats[BOND_PASS_FORWARD_AVG_KEY] = zeros(Float64, n_forces)
         end
-        if !haskey(cuts, BOND_PASS_REVERSE_AVG_KEY) || length(cuts[BOND_PASS_REVERSE_AVG_KEY]) != n_forces
-            cuts[BOND_PASS_REVERSE_AVG_KEY] = zeros(Float64, n_forces)
+        if !haskey(stats, BOND_PASS_REVERSE_AVG_KEY) || length(stats[BOND_PASS_REVERSE_AVG_KEY]) != n_forces
+            stats[BOND_PASS_REVERSE_AVG_KEY] = zeros(Float64, n_forces)
         end
-        if !haskey(cuts, BOND_PASS_TOTAL_AVG_KEY) || length(cuts[BOND_PASS_TOTAL_AVG_KEY]) != n_forces
-            cuts[BOND_PASS_TOTAL_AVG_KEY] = zeros(Float64, n_forces)
+        if !haskey(stats, BOND_PASS_TOTAL_AVG_KEY) || length(stats[BOND_PASS_TOTAL_AVG_KEY]) != n_forces
+            stats[BOND_PASS_TOTAL_AVG_KEY] = zeros(Float64, n_forces)
         end
-        if !haskey(cuts, BOND_PASS_TOTAL_SQ_AVG_KEY) || length(cuts[BOND_PASS_TOTAL_SQ_AVG_KEY]) != n_forces
-            cuts[BOND_PASS_TOTAL_SQ_AVG_KEY] = zeros(Float64, n_forces)
+        if !haskey(stats, BOND_PASS_TOTAL_SQ_AVG_KEY) || length(stats[BOND_PASS_TOTAL_SQ_AVG_KEY]) != n_forces
+            stats[BOND_PASS_TOTAL_SQ_AVG_KEY] = zeros(Float64, n_forces)
         end
-        if !haskey(cuts, BOND_PASS_SAMPLE_COUNT_KEY) || length(cuts[BOND_PASS_SAMPLE_COUNT_KEY]) != 1
-            cuts[BOND_PASS_SAMPLE_COUNT_KEY] = [0.0]
+        if !haskey(stats, BOND_PASS_SAMPLE_COUNT_KEY) || length(stats[BOND_PASS_SAMPLE_COUNT_KEY]) != 1
+            stats[BOND_PASS_SAMPLE_COUNT_KEY] = [0.0]
         end
-        if !haskey(cuts, BOND_PASS_TRACK_MASK_KEY) || length(cuts[BOND_PASS_TRACK_MASK_KEY]) != n_forces
+        if !haskey(stats, BOND_PASS_TRACK_MASK_KEY) || length(stats[BOND_PASS_TRACK_MASK_KEY]) != n_forces
             if forcings === nothing
-                cuts[BOND_PASS_TRACK_MASK_KEY] = ones(Float64, n_forces)
+                stats[BOND_PASS_TRACK_MASK_KEY] = ones(Float64, n_forces)
             else
-                cuts[BOND_PASS_TRACK_MASK_KEY] = bond_pass_track_mask_for_forcings(forcings, "nonzero_magnitude")
+                stats[BOND_PASS_TRACK_MASK_KEY] = bond_pass_track_mask_for_forcings(forcings, "nonzero_magnitude")
             end
         end
         return nothing
     end
 
     function tracked_force_indices_from_state(state, n_forces::Int)
-        cuts = state.ρ_matrix_avg_cuts
-        if !haskey(cuts, BOND_PASS_TRACK_MASK_KEY) || length(cuts[BOND_PASS_TRACK_MASK_KEY]) != n_forces
+        stats = state.bond_pass_stats
+        if !haskey(stats, BOND_PASS_TRACK_MASK_KEY) || length(stats[BOND_PASS_TRACK_MASK_KEY]) != n_forces
             return collect(1:n_forces)
         end
-        mask = cuts[BOND_PASS_TRACK_MASK_KEY]
+        mask = stats[BOND_PASS_TRACK_MASK_KEY]
         return [i for i in 1:n_forces if mask[i] > 0.5]
     end
 
     function ensure_spatial_bond_passage_stats!(state, L::Int)
-        cuts = state.ρ_matrix_avg_cuts
-        if !haskey(cuts, BOND_PASS_SPATIAL_F_AVG_KEY) || length(cuts[BOND_PASS_SPATIAL_F_AVG_KEY]) != L
-            cuts[BOND_PASS_SPATIAL_F_AVG_KEY] = zeros(Float64, L)
+        stats = state.bond_pass_stats
+        if !haskey(stats, BOND_PASS_SPATIAL_F_AVG_KEY) || length(stats[BOND_PASS_SPATIAL_F_AVG_KEY]) != L
+            stats[BOND_PASS_SPATIAL_F_AVG_KEY] = zeros(Float64, L)
         end
-        if !haskey(cuts, BOND_PASS_SPATIAL_F2_AVG_KEY) || length(cuts[BOND_PASS_SPATIAL_F2_AVG_KEY]) != L
-            cuts[BOND_PASS_SPATIAL_F2_AVG_KEY] = zeros(Float64, L)
+        if !haskey(stats, BOND_PASS_SPATIAL_F2_AVG_KEY) || length(stats[BOND_PASS_SPATIAL_F2_AVG_KEY]) != L
+            stats[BOND_PASS_SPATIAL_F2_AVG_KEY] = zeros(Float64, L)
         end
-        if !haskey(cuts, BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY) || length(cuts[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY]) != 1
-            cuts[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY] = [0.0]
+        if !haskey(stats, BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY) || length(stats[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY]) != 1
+            stats[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY] = [0.0]
         end
         return nothing
     end
@@ -487,9 +482,9 @@ module FP
         end
 
         ensure_bond_passage_stats!(state, n_forces)
-        cuts = state.ρ_matrix_avg_cuts
+        stats = state.bond_pass_stats
 
-        n_prev = cuts[BOND_PASS_SAMPLE_COUNT_KEY][1]
+        n_prev = stats[BOND_PASS_SAMPLE_COUNT_KEY][1]
         n_new = n_prev + 1.0
 
         forward = Float64.(sweep_forward_counts)
@@ -498,17 +493,17 @@ module FP
         total = forward .+ reverse
         total_sq = total .^ 2
 
-        forward_avg = cuts[BOND_PASS_FORWARD_AVG_KEY]
-        reverse_avg = cuts[BOND_PASS_REVERSE_AVG_KEY]
-        total_avg = cuts[BOND_PASS_TOTAL_AVG_KEY]
-        total_sq_avg = cuts[BOND_PASS_TOTAL_SQ_AVG_KEY]
+        forward_avg = stats[BOND_PASS_FORWARD_AVG_KEY]
+        reverse_avg = stats[BOND_PASS_REVERSE_AVG_KEY]
+        total_avg = stats[BOND_PASS_TOTAL_AVG_KEY]
+        total_sq_avg = stats[BOND_PASS_TOTAL_SQ_AVG_KEY]
 
         @. forward_avg += (forward - forward_avg) / n_new
         @. reverse_avg += (reverse - reverse_avg) / n_new
         @. total_avg += (total - total_avg) / n_new
         @. total_sq_avg += (total_sq - total_sq_avg) / n_new
 
-        cuts[BOND_PASS_SAMPLE_COUNT_KEY][1] = n_new
+        stats[BOND_PASS_SAMPLE_COUNT_KEY][1] = n_new
         return nothing
     end
 
@@ -519,20 +514,20 @@ module FP
         end
 
         ensure_spatial_bond_passage_stats!(state, L)
-        cuts = state.ρ_matrix_avg_cuts
+        stats = state.bond_pass_stats
 
-        n_prev = cuts[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY][1]
+        n_prev = stats[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY][1]
         n_new = n_prev + 1.0
 
         f = Float64.(sweep_forward_counts) .- Float64.(sweep_reverse_counts)
         f2 = f .^ 2
 
-        f_avg = cuts[BOND_PASS_SPATIAL_F_AVG_KEY]
-        f2_avg = cuts[BOND_PASS_SPATIAL_F2_AVG_KEY]
+        f_avg = stats[BOND_PASS_SPATIAL_F_AVG_KEY]
+        f2_avg = stats[BOND_PASS_SPATIAL_F2_AVG_KEY]
         @. f_avg += (f - f_avg) / n_new
         @. f2_avg += (f2 - f2_avg) / n_new
 
-        cuts[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY][1] = n_new
+        stats[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY][1] = n_new
         return nothing
     end
 
@@ -566,26 +561,12 @@ module FP
         return total_forcing
     end
 
-    function calculate_jump_probability(particle_direction,choice_direction,D,ΔV,T,exp_table::ExpLookupTable; ϵ=0.0, ΔV_max=0.4,bond_forcing=0.0)
-        relative_direction = dot_like(particle_direction,choice_direction)
-        exp_arg = -(ΔV-relative_direction*ϵ)/T
+    function calculate_jump_probability(D,ΔV,T,exp_table::ExpLookupTable; bond_forcing=0.0)
+        exp_arg = -ΔV / T
         exp_val = lookup_exp(exp_table, exp_arg)
         p = (D-bond_forcing)*min(1,exp_val)
         return p
     end
-    # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # if ΔV!=0
-    #     p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # else
-    #     p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # end
-    # if relative_direction==1
-    #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
-    # else
-    #     p=0
-    #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
-    # end
-
     mutable struct BenchmarkResults
         action_selection_time::Float64
         jump_probability_time::Float64
@@ -641,29 +622,12 @@ module FP
         return reshape(M, Nx, Ny, Nx, Ny)
     end
 
-
-    
-
-    # p =(D+ϵ*relative_direction-ΔV)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # if ΔV!=0
-    #     p =(D+ϵ*relative_direction)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # else
-    #     p =(D+ϵ*relative_direction/2)*min(1,exp(-ΔV/T))/(D+ϵ+ΔV_max)
-    # end
-    # if relative_direction==1
-    #     p = (D+ ϵ*relative_direction- ΔV/T) / ( D+ ϵ + ΔV_max/T)
-    # else
-    #     p=0
-    #     p = (D- (ϵ*relative_direction- ΔV/T)) / ( D+ ϵ + ΔV_max/T)
-    # end
-    
     function update!(param, state, rng; benchmark=false)
         bench_results = benchmark ? BenchmarkResults() : nothing
 
         if length(param.dims) == 1
             V = state.potential.V
             T = state.T
-            α = param.α
             γ = param.γ
             ffrs = param_ffrs(param)
             forcings = get_state_forcings!(state)
@@ -685,9 +649,9 @@ module FP
                     t1 = time_ns()
                 end
                 
-                n_and_a = rand(rng,1:3*(param.N + 1))
-                action_index = mod1(n_and_a,3)
-                n = (n_and_a-action_index) ÷ 3 +1
+                n_and_a = rand(rng,1:2*(param.N + 1))
+                action_index = mod1(n_and_a,2)
+                n = (n_and_a-action_index) ÷ 2 +1
                 
                 if benchmark
                     bench_results.action_selection_time += (time_ns() - t1) / 1e9
@@ -702,32 +666,23 @@ module FP
                     
                     if action_index == 1 # left
                         candidate_spot_index = left_index
-                        choice_direction = -1
-                    elseif action_index == 2 # right
+                    else # right
                         candidate_spot_index = right_index
-                        choice_direction = 1
-                    else  # tumble ,fluctuate potential, fluctuate forcing
-                        candidate_spot_index = spot_index
-                        choice_direction = 0
                     end
-                    if action_index==3 # tumble
-                        p_candidate=α
-                    else
-                        # Benchmark jump probability calculation
-                        if benchmark
-                            t2 = time_ns()
-                        end
-                        
-                        bond_forcing = active_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
-                        p_candidate= calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index],T,state.exp_table; ϵ=param.ϵ,bond_forcing=bond_forcing)
-                        
-                        if benchmark
-                            bench_results.jump_probability_time += (time_ns() - t2) / 1e9
-                        end
+
+                    # Benchmark jump probability calculation
+                    if benchmark
+                        t2 = time_ns()
+                    end
+
+                    bond_forcing = active_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
+                    p_candidate = calculate_jump_probability(param.D, V[candidate_spot_index]-V[spot_index], T, state.exp_table; bond_forcing=bond_forcing)
+
+                    if benchmark
+                        bench_results.jump_probability_time += (time_ns() - t2) / 1e9
                     end
                 else
                     if n == param.N+1 # potential fluctuation
-                        action_index = 4
                         p_candidate = γ
                     end
                 end
@@ -757,7 +712,7 @@ module FP
                             t5 = time_ns()
                         end
 
-                        if action_index != 3 && !isempty(tracked_force_indices) && candidate_spot_index != spot_index
+                        if !isempty(tracked_force_indices) && candidate_spot_index != spot_index
                             record_bond_passage_1d!(sweep_forward_counts, sweep_reverse_counts,
                                                     forcings, tracked_force_indices,
                                                     spot_index, candidate_spot_index)
@@ -770,23 +725,13 @@ module FP
                         end
 
                         particle.position = (candidate_spot_index,)
-
-                        if particle.direction[1] == 1
-                            state.ρ₊[spot_index]-=1
-                            state.ρ₊[candidate_spot_index]+=1
-                        elseif particle.direction[1] ==-1
-                            state.ρ₋[spot_index]-=1
-                            state.ρ₋[candidate_spot_index]+=1
-                        end
-
-                        if action_index==3
-                            state.ρ₊[spot_index]-= particle.direction[1]
-                            state.ρ₋[spot_index]+= particle.direction[1]
-                            particle.direction = (-particle.direction[1],)
-                        end
                         new_position = particle.position[1]
                         state.ρ[spot_index] -= 1
                         state.ρ[new_position] += 1
+                        state.ρ₊[spot_index] -= 1
+                        state.ρ₊[new_position] += 1
+                        state.ρ₋[spot_index] -= 1
+                        state.ρ₋[new_position] += 1
                         if state.ρ[new_position] > state.max_site_occupancy
                             state.max_site_occupancy = state.ρ[new_position]
                         end
@@ -795,7 +740,7 @@ module FP
                             bench_results.density_update_time += (time_ns() - t5) / 1e9
                         end
 
-                    elseif action_index == 4
+                    elseif n == param.N + 1
                         potential_update!(state.potential,rng)
                     end
                 end
@@ -828,7 +773,6 @@ module FP
         elseif length(param.dims) == 2
             V = state.potential.V
             T = state.T
-            α = param.α
             γ = param.γ
             ffrs = param_ffrs(param)
             forcings = get_state_forcings!(state)
@@ -846,9 +790,9 @@ module FP
                     t1 = time_ns()
                 end
                 
-                n_and_a = rand(rng, 1:5*(param.N + 1))
-                action_index = mod1(n_and_a, 5)
-                n = (n_and_a - action_index) ÷ 5 + 1
+                n_and_a = rand(rng, 1:4*(param.N + 1))
+                action_index = mod1(n_and_a, 4)
+                n = (n_and_a - action_index) ÷ 4 + 1
                 
                 if benchmark
                     bench_results.action_selection_time += (time_ns() - t1) / 1e9
@@ -869,36 +813,26 @@ module FP
 
                     if action_index==1  # left
                         cand = left
-                        dirvec = (-1.0, 0.0)
                     elseif action_index==2  # right
                         cand = right
-                        dirvec = (1.0, 0.0)
                     elseif action_index==3  # down
                         cand = down
-                        dirvec = (0.0, -1.0)
                     elseif action_index==4  # up
                         cand = up
-                        dirvec = (0.0, 1.0)
                     end
-                    
-                    if action_index == 5  # tumble
-                        cand = (i,j)
-                        p_cand = α
-                    else
-                        # Benchmark jump probability calculation
-                        if benchmark
-                            t2 = time_ns()
-                        end
-                        
-                        bond_forcing = active_bond_forcing_2d(forcings, spot_index, cand)
-                        p_cand = calculate_jump_probability(particle.direction,dirvec,param.D,V[cand...]-V[i,j],T,state.exp_table;bond_forcing=bond_forcing)
-                        
-                        if benchmark
-                            bench_results.jump_probability_time += (time_ns() - t2) / 1e9
-                        end
+
+                    # Benchmark jump probability calculation
+                    if benchmark
+                        t2 = time_ns()
+                    end
+
+                    bond_forcing = active_bond_forcing_2d(forcings, spot_index, cand)
+                    p_cand = calculate_jump_probability(param.D, V[cand...]-V[i,j], T, state.exp_table; bond_forcing=bond_forcing)
+
+                    if benchmark
+                        bench_results.jump_probability_time += (time_ns() - t2) / 1e9
                     end
                 elseif n == param.N+1  # potential fluctuation
-                    action_index = 6
                     p_cand = γ
                 end
 
@@ -922,18 +856,13 @@ module FP
                 
                 if choice == 1
                     if n<=param.N
-                        if action_index != 5 && !isempty(tracked_force_indices) && cand != spot_index
+                        if !isempty(tracked_force_indices) && cand != spot_index
                             record_bond_passage_2d!(sweep_forward_counts, sweep_reverse_counts,
                                                     forcings, tracked_force_indices,
                                                     spot_index, cand)
                         end
                         particle.position = cand
-                        if action_index == 5  # tumble
-                            v = randn(rng,2)
-                            v ./= norm(v)
-                            particle.direction = Tuple(v)
-                        end
-                    elseif action_index == 6  # fluctuate potential
+                    elseif n == param.N + 1  # fluctuate potential
                         potential_update!(state.potential, rng)
                     end
                 end
@@ -961,6 +890,10 @@ module FP
                 if n<=param.N
                     state.ρ[i,j] -= 1
                     state.ρ[particle.position...] += 1
+                    state.ρ₊[i,j] -= 1
+                    state.ρ₊[particle.position...] += 1
+                    state.ρ₋[i,j] -= 1
+                    state.ρ₋[particle.position...] += 1
                     if state.ρ[particle.position...]<0
                         println("Negative density encountered at position $(particle.position)...")
                     elseif state.ρ[particle.position...] > state.max_site_occupancy
@@ -1058,7 +991,7 @@ function compute_time_correlation(ρ_history)
 end
 
 function update_and_compute_correlations!(state, param,  ρ_history, frame, rng, calc_var_frequency=1, calc_correlations=false)
-    FP.update!( param, state, rng)
+    FPDiffusive.update!( param, state, rng)
     calc_flag = true
     if frame%calc_var_frequency==0 && calc_flag 
         #println("Calculating correlations at frame $frame")
@@ -1080,7 +1013,7 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
             x_middle = div(param.dims[1],2)
             y_middle = div(param.dims[2],2)
             if haskey(state.ρ_matrix_avg_cuts, :full)
-                ρ_matrix = FP.outer_density_2D(float(state.ρ)) 
+                ρ_matrix = FPDiffusive.outer_density_2D(float(state.ρ)) 
                 # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
                 @. state.ρ_matrix_avg_cuts[:full] += (ρ_matrix-state.ρ_matrix_avg_cuts[:full])*calc_var_frequency/frame
             else
@@ -1129,7 +1062,7 @@ function calculate_statistics(state)
     if ndims(state.ρ_avg) == 1
         outer_prod_ρ = state.ρ_avg * transpose(state.ρ_avg)
     elseif ndims(state.ρ_avg) == 2
-        outer_prod_ρ = FP.outer_density_2D(state.ρ_avg)
+        outer_prod_ρ = FPDiffusive.outer_density_2D(state.ρ_avg)
     else
         throw(DomainError("Unsupported dimension: $(ndims(state.ρ_avg))"))
     end
@@ -1164,9 +1097,9 @@ function run_simulation!(state, param, n_sweeps, rng;
         
         # if run_benchmark
         #     println("\n--- Benchmarking at sweep $sweep ---")
-        #     FP.update!(param, state, rng; benchmark=true)
+        #     FPDiffusive.update!(param, state, rng; benchmark=true)
         # else
-        #     FP.update!(param, state, rng)
+        #     FPDiffusive.update!(param, state, rng)
         # end
         
         update_and_compute_correlations!(state, param, ρ_history, sweep, rng)

@@ -1,4 +1,5 @@
-############### run_and_tumble.jl ###############
+############### run_diffusive_no_activity.jl ###############
+############### Diffusive Fork (No α/ϵ) ###############
 
 using Distributed
 using Printf
@@ -17,10 +18,10 @@ using ArgParse
 
 # First, on the main process, include all necessary files.
 include("potentials.jl")
-include("modules_run_and_tumble.jl")
+include("modules_diffusive_no_activity.jl")
 include("plot_utils.jl")
 include("save_utils.jl")
-using .FP
+using .FPDiffusive
 using .PlotUtils
 using .SaveUtils
 
@@ -28,8 +29,8 @@ using .SaveUtils
 @everywhere begin
     using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
     include("potentials.jl")
-    include("modules_run_and_tumble.jl")
-    using .FP
+    include("modules_diffusive_no_activity.jl")
+    using .FPDiffusive
     include("plot_utils.jl")
     using .PlotUtils
     # include("save_utils.jl")
@@ -102,7 +103,21 @@ end
 function load_initial_state(path)
     println("Loading initial state from $path")
     @load path state param potential
-    FP.reset_statistics!(state)
+    if !hasfield(typeof(state), :bond_pass_stats)
+        legacy_stats = Dict{Symbol,Vector{Float64}}()
+        if hasfield(typeof(state), :ρ_matrix_avg_cuts)
+            legacy_cuts = getfield(state, :ρ_matrix_avg_cuts)
+            for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
+                        :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                        :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
+                if haskey(legacy_cuts, key)
+                    legacy_stats[key] = Float64.(legacy_cuts[key])
+                end
+            end
+        end
+        state = FPDiffusive.setDummyState(state, state.ρ_avg, state.ρ_matrix_avg_cuts, state.t, legacy_stats)
+    end
+    FPDiffusive.reset_statistics!(state)
     state.potential = potential
     return state, param
 end
@@ -113,7 +128,7 @@ end
     state_copy = deepcopy(state)
     t0 = time()
     for i in 1:sample_size
-         FP.update!(param, state_copy, rng)
+         FPDiffusive.update!(param, state_copy, rng)
     end
     elapsed = time() - t0
     avg_time = elapsed / sample_size
@@ -131,12 +146,10 @@ end
     return Dict(
         "dim_num" => d,
         "D" => 1.0,
-        "α" => 0.0,
         "L" => L,
         "ρ₀" => 100, # particles per site
         "T" => 1.0,
         "γ" => 0.0,
-        "ϵ" => 0,
         "n_sweeps" => 10^6,
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
@@ -327,6 +340,59 @@ end
     return dropdims(mean(stacked, dims=stack_dim), dims=stack_dim)
 end
 
+@everywhere function average_bond_pass_stats(states::Vector)
+    if isempty(states)
+        return Dict{Symbol,Vector{Float64}}()
+    end
+    stats_list = Vector{Dict{Symbol,Vector{Float64}}}(undef, length(states))
+    for (i, state) in enumerate(states)
+        if hasfield(typeof(state), :bond_pass_stats)
+            raw_stats = getfield(state, :bond_pass_stats)
+            stats_dict = Dict{Symbol,Vector{Float64}}()
+            for (k, v) in raw_stats
+                stats_dict[k] = Float64.(v)
+            end
+            stats_list[i] = stats_dict
+        elseif hasfield(typeof(state), :ρ_matrix_avg_cuts)
+            raw_cuts = getfield(state, :ρ_matrix_avg_cuts)
+            stats_dict = Dict{Symbol,Vector{Float64}}()
+            for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
+                        :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                        :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
+                if haskey(raw_cuts, key)
+                    stats_dict[key] = Float64.(raw_cuts[key])
+                end
+            end
+            stats_list[i] = stats_dict
+        else
+            stats_list[i] = Dict{Symbol,Vector{Float64}}()
+        end
+    end
+    non_empty_stats = [stats for stats in stats_list if !isempty(stats)]
+    if isempty(non_empty_stats)
+        return Dict{Symbol,Vector{Float64}}()
+    end
+
+    shared_keys = Set(keys(non_empty_stats[1]))
+    for stats in non_empty_stats[2:end]
+        intersect!(shared_keys, Set(keys(stats)))
+    end
+
+    averaged = Dict{Symbol,Vector{Float64}}()
+    for key in shared_keys
+        vectors = [stats[key] for stats in non_empty_stats]
+        if isempty(vectors)
+            continue
+        end
+        if key in (:bond_pass_sample_count, :bond_pass_spatial_sample_count)
+            averaged[key] = [sum(v[1] for v in vectors)]
+        else
+            averaged[key] = average_array_list(vectors)
+        end
+    end
+    return averaged
+end
+
 
 # Function to set up and run one independent simulation.
 @everywhere function run_one_simulation_from_state(param, state, seed,n_sweeps; relaxed_ic::Bool=false)
@@ -351,23 +417,22 @@ end
     # fluctuation_type   = get(params, "fluctuation_type", defaults["fluctuation_type"])
     # potential_magnitude= get(params, "potential_magnitude", defaults["potential_magnitude"])
     # D                  = get(params, "D", defaults["D"])
-    # α                  = get(params, "α", defaults["α"])
     # L                  = get(params, "L", defaults["L"])
     # N                  = get(params, "N", defaults["N"])
     # T                  = get(params, "T", defaults["T"])
     # γ′                 = get(params, "γ′", defaults["γ′"])
-    # ϵ                  = get(params, "ϵ", defaults["ϵ"])
     
     # dims = ntuple(i -> L, dim_num)
     # ρ₀ = N / L
     # γ = γ′ / N
 
     # Initialize simulation parameters and state.
-    # param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+    # param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
     # v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     # potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
-    # state = FP.setState(0, rng, param, T, potential)
-    dummy_state = FP.setDummyState(state,state.ρ_avg,state.ρ_matrix_avg_cuts,state.t)
+    # state = FPDiffusive.setState(0, rng, param, T, potential)
+    state_bond_pass_stats = hasfield(typeof(state), :bond_pass_stats) ? deepcopy(getfield(state, :bond_pass_stats)) : Dict{Symbol,Vector{Float64}}()
+    dummy_state = FPDiffusive.setDummyState(state, state.ρ_avg, state.ρ_matrix_avg_cuts, state.t, state_bond_pass_stats)
     estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     estimated_time_hours = estimated_time / 3600
     println("Estimated run time for this simulation: $estimated_time_hours hours")
@@ -416,12 +481,10 @@ end
     fluctuation_type   = get(params, "fluctuation_type", defaults["fluctuation_type"])
     potential_magnitude= get(params, "potential_magnitude", defaults["potential_magnitude"])
     D                  = get(params, "D", defaults["D"])
-    α                  = get(params, "α", defaults["α"])
     L                  = get(params, "L", defaults["L"])
     ρ₀              = get(params, "ρ₀", defaults["ρ₀"])
     T                  = get(params, "T", defaults["T"])
     γ                 = get(params, "γ", defaults["γ"])
-    ϵ                  = get(params, "ϵ", defaults["ϵ"])
     bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
 
     forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
@@ -432,10 +495,10 @@ end
     # ρ₀ = N / (L^dim_num)
 
     # Initialize simulation parameters and state.
-    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
+    param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
-    state = FP.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
+    state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
    
     #estimate run time
     estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
@@ -466,6 +529,20 @@ function main()
         if haskey(args, "continue") && !isnothing(args["continue"])
             println("Continuing from saved aggregation: $(args["continue"])")
             @load args["continue"] state param potential
+            if !hasfield(typeof(state), :bond_pass_stats)
+                legacy_stats = Dict{Symbol,Vector{Float64}}()
+                if hasfield(typeof(state), :ρ_matrix_avg_cuts)
+                    legacy_cuts = getfield(state, :ρ_matrix_avg_cuts)
+                    for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
+                                :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                                :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
+                        if haskey(legacy_cuts, key)
+                            legacy_stats[key] = Float64.(legacy_cuts[key])
+                        end
+                    end
+                end
+                state = FPDiffusive.setDummyState(state, state.ρ_avg, state.ρ_matrix_avg_cuts, state.t, legacy_stats)
+            end
             if haskey(args, "config") && !isnothing(args["config"])
                 println("Using configuration from file: $(args["config"])")
                 params = YAML.load_file(args["config"])
@@ -549,7 +626,8 @@ function main()
         end
         
         total_t = n_sweeps*(num_runs-1)+states[1].t 
-        dummy_state = FP.setDummyState(states[1],avg_dists,mat_cuts_averaged,total_t)
+        avg_bond_pass_stats = average_bond_pass_stats(states)
+        dummy_state = FPDiffusive.setDummyState(states[1], avg_dists, mat_cuts_averaged, total_t, avg_bond_pass_stats)
 
         dummy_state_save_dir = "dummy_states"
         save_state(dummy_state,params[1],dummy_state_save_dir; relaxed_ic=using_initial_state)
@@ -567,6 +645,20 @@ function main()
         if haskey(args, "continue") && !isnothing(args["continue"])
             println("Continuing from saved state: $(args["continue"])")
             @load args["continue"] state param potential
+            if !hasfield(typeof(state), :bond_pass_stats)
+                legacy_stats = Dict{Symbol,Vector{Float64}}()
+                if hasfield(typeof(state), :ρ_matrix_avg_cuts)
+                    legacy_cuts = getfield(state, :ρ_matrix_avg_cuts)
+                    for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
+                                :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                                :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
+                        if haskey(legacy_cuts, key)
+                            legacy_stats[key] = Float64.(legacy_cuts[key])
+                        end
+                    end
+                end
+                state = FPDiffusive.setDummyState(state, state.ρ_avg, state.ρ_matrix_avg_cuts, state.t, legacy_stats)
+            end
             if haskey(args, "config") && !isnothing(args["config"])
                 println("Using configuration from file: $(args["config"])")
                 #params = TOML.parsefile(args["config"])
@@ -616,12 +708,10 @@ function main()
             fluctuation_type   = get(params, "fluctuation_type", defaults["fluctuation_type"])
             potential_magnitude= get(params, "potential_magnitude", defaults["potential_magnitude"])
             D                  = get(params, "D", defaults["D"])
-            α                  = get(params, "α", defaults["α"])
             L                  = get(params, "L", defaults["L"])
             ρ₀                = get(params, "ρ₀", defaults["ρ₀"])
             T                  = get(params, "T", defaults["T"])
             γ                 = get(params, "γ", defaults["γ"])
-            ϵ                  = get(params, "ϵ", defaults["ϵ"])
             bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
             forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
@@ -633,14 +723,14 @@ function main()
             dims = ntuple(i -> L, dim_num)
             # ρ₀ = N / prod(dims)
             
-            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
+            param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
             
-            state = FP.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
+            state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
         end
         
         show_times = get(params, "show_times", get_default_params()["show_times"])

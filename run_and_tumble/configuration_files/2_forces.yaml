@@ -1,9 +1,9 @@
 dim_num: 1
-L: 100
-ρ₀: 10000
+L: 1000
+ρ₀: 100
 
 # New convenience mode (1D only)
-forcing_distance_d: 10      # separation in sites
+forcing_distance_d: 500    # separation in sites
 
 # Force parameters (applied to both if scalar, or per-force if vector)
 ffr: 1.0                    # equivalent to [1.0, 1.0]
@@ -12,3 +12,14 @@ forcing_magnitude: 1.0      # equivalent to [1.0, 1.0]
 # ffrs: [1.0, 1.0]
 # forcing_magnitudes: [1.0, 1.0]
 # forcing_direction_flags: [true, true]
+
+# Bond-passage statistics tracking:
+# - "nonzero_magnitude" (default): count only non-zero force bonds
+# - "all_forcing_bonds": count all bonds listed in forcing_bond_pairs/forcing_types
+# bond_pass_count_mode: "all_forcing_bonds"
+
+# Example for passive diffusion on an arbitrary monitored bond:
+# forcing_bond_pairs: [[100, 101]]
+# forcing_magnitude: 0.0
+# ffr: 0.0
+# bond_pass_count_mode: "all_forcing_bonds"

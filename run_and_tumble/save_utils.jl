@@ -15,6 +15,20 @@ function forcing_list(state)
     return [state.forcing]
 end
 
+function param_activity(param)
+    if hasfield(typeof(param), :ϵ)
+        return Float64(getfield(param, :ϵ))
+    end
+    return 0.0
+end
+
+function param_alpha(param)
+    if hasfield(typeof(param), :α)
+        return Float64(getfield(param, :α))
+    end
+    return 0.0
+end
+
 function two_force_distance_suffix(state, param)
     if !hasfield(typeof(param), :dims) || length(param.dims) != 1
         return ""
@@ -58,6 +72,8 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir)
     else
         0.0
     end
+    activity = param_activity(param)
+    alpha = param_alpha(param)
     force_distance_suffix = two_force_distance_suffix(state, param)
     dim = length(param.dims)
     filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_t-%d.jld2",
@@ -66,10 +82,10 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir)
         param.potential_type,
         param.potential_magnitude,
         param.fluctuation_type,
-        param.ϵ,
+        activity,
         param.dims[1],
         param.ρ₀,
-        param.α,
+        alpha,
         γ,
         param.D,
         forcing_magnitude,
@@ -111,6 +127,8 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     else
         0.0
     end
+    activity = param_activity(param)
+    alpha = param_alpha(param)
     force_distance_suffix = two_force_distance_suffix(state, param)
     dim = length(param.dims)
     hostname = Sockets.gethostname()
@@ -127,10 +145,10 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
         param.potential_type,
         param.potential_magnitude,
         param.fluctuation_type,
-        param.ϵ,
+        activity,
         param.dims[1],
         param.ρ₀,
-        param.α,
+        alpha,
         γ,
         param.D,
         forcing_magnitude,
