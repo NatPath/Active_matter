@@ -63,6 +63,14 @@ function parse_commandline()
             help = "Integer type for positions/densities (e.g., Int16, Int32, Int64)"
             arg_type = String
             required = false
+        "--estimate_only"
+            help = "Estimate runtime and exit without running the simulation (single-run mode)"
+            action = :store_true
+        "--estimate_sample_size"
+            help = "Number of sample sweeps to use for runtime estimation"
+            arg_type = Int
+            default = 100
+            required = false
     end
     return parse_args(s)
 end
@@ -151,6 +159,9 @@ end
         "T" => 1.0,
         "γ" => 0.0,
         "n_sweeps" => 10^6,
+        "warmup_sweeps" => 0,
+        "cluster_mode" => false,
+        "description" => "",
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
         "potential_type" => "zero",
@@ -220,6 +231,44 @@ end
         return flags
     end
     error("$key_name must be a boolean or a list of booleans.")
+end
+
+@everywhere function to_bool(value, key_name::String)
+    if value isa Bool
+        return value
+    elseif value isa Number
+        return value != 0
+    elseif value isa AbstractString
+        lv = lowercase(strip(value))
+        if lv in ("true", "t", "1", "yes", "y")
+            return true
+        elseif lv in ("false", "f", "0", "no", "n")
+            return false
+        end
+        error("$key_name has an invalid boolean value: $value")
+    end
+    error("$key_name must be boolean-like (Bool/0-1/string).")
+end
+
+@everywhere function get_warmup_sweeps(params, defaults)
+    warmup_raw = get(params, "warmup_sweeps", defaults["warmup_sweeps"])
+    if !(warmup_raw isa Number)
+        error("warmup_sweeps must be numeric.")
+    end
+    warmup_sweeps = Int(round(Float64(warmup_raw)))
+    return max(warmup_sweeps, 0)
+end
+
+@everywhere function get_cluster_mode(params, defaults)
+    return to_bool(get(params, "cluster_mode", defaults["cluster_mode"]), "cluster_mode")
+end
+
+@everywhere function get_description(params, defaults)
+    raw_description = get(params, "description", defaults["description"])
+    if isnothing(raw_description)
+        return ""
+    end
+    return strip(String(raw_description))
 end
 
 @everywhere function expand_to_length(values::Vector{T}, n::Int, key_name::String) where {T}
@@ -395,7 +444,7 @@ end
 
 
 # Function to set up and run one independent simulation.
-@everywhere function run_one_simulation_from_state(param, state, seed,n_sweeps; relaxed_ic::Bool=false)
+@everywhere function run_one_simulation_from_state(param, state, seed, n_sweeps; relaxed_ic::Bool=false, warmup_sweeps::Int=0, cluster_mode::Bool=false, description::String="")
     println("Continuing simulation with seed $seed for $n_sweeps")
     rng = MersenneTwister(seed)
     # defaults = get_default_params()
@@ -441,6 +490,10 @@ end
                                                  calc_correlations=false,
                                                  show_times=show_times,
                                                  save_times=save_times,
+                                                 warmup_sweeps=warmup_sweeps,
+                                                 plot_label=description,
+                                                 save_description=description,
+                                                 show_progress=!cluster_mode,
                                                  relaxed_ic=relaxed_ic)
     return dist, corr_mat_cuts, dummy_state, param
 end
@@ -458,6 +511,41 @@ function n_sweeps_from_args(args)
     n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
     return n_sweeps
 end
+
+function warmup_sweeps_from_args(args)
+    defaults = get_default_params()
+    if haskey(args, "config") && !isnothing(args["config"])
+        println("Using configuration from file: $(args["config"])")
+        params = YAML.load_file(args["config"])
+    else
+        println("No config file provided. Using default parameters.")
+        params = get_default_params()
+    end
+    return get_warmup_sweeps(params, defaults)
+end
+
+function cluster_mode_from_args(args)
+    defaults = get_default_params()
+    if haskey(args, "config") && !isnothing(args["config"])
+        println("Using configuration from file: $(args["config"])")
+        params = YAML.load_file(args["config"])
+    else
+        println("No config file provided. Using default parameters.")
+        params = get_default_params()
+    end
+    return get_cluster_mode(params, defaults)
+end
+
+function description_from_args(args)
+    defaults = get_default_params()
+    if haskey(args, "config") && !isnothing(args["config"])
+        params = YAML.load_file(args["config"])
+    else
+        params = defaults
+    end
+    return get_description(params, defaults)
+end
+
 @everywhere function run_one_simulation_from_config(args, seed)
     println("Starting simulation with seed $seed")
     rng = MersenneTwister(seed)
@@ -471,6 +559,9 @@ end
     end
     # For parallel runs, disable any visualization or state saving I/O.
     n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+    warmup_sweeps = get_warmup_sweeps(params, defaults)
+    cluster_mode = get_cluster_mode(params, defaults)
+    description = get_description(params, defaults)
     params["show_times"] = Int[]
     params["save_times"] = Int[]
     int_type = resolve_int_type(args, params, defaults)
@@ -509,7 +600,11 @@ end
     dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=params["show_times"],
-                                                 save_times=params["save_times"])
+                                                 save_times=params["save_times"],
+                                                 plot_label=description,
+                                                 save_description=description,
+                                                 warmup_sweeps=warmup_sweeps,
+                                                 show_progress=!cluster_mode)
     return dist, corr_mat_cuts, state, param
 end
 
@@ -517,8 +612,14 @@ end
 function main()
     args = parse_commandline()
     num_runs = get(args, "num_runs", 1)
+    estimate_only = get(args, "estimate_only", false)
+    estimate_sample_size = max(get(args, "estimate_sample_size", 100), 1)
     seeds = rand(1:2^30,num_runs)
     println("Running $num_runs independent simulations in parallel.")
+    if estimate_only && num_runs != 1
+        error("--estimate_only is supported only with --num_runs 1.")
+    end
+    run_description = description_from_args(args)
     using_initial_state = haskey(args, "initial_state") && !isnothing(args["initial_state"])
     initial_state = nothing
     initial_param = nothing
@@ -559,14 +660,20 @@ function main()
                 n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
                 println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
             end
-            results = pmap(seed -> run_one_simulation_from_state(param,state,seed,n_sweeps), seeds)
+            warmup_sweeps = get_warmup_sweeps(params, defaults)
+            cluster_mode = get_cluster_mode(params, defaults)
+            run_description = get_description(params, defaults)
+            println("Warmup sweeps per restarted run: $warmup_sweeps")
+            results = pmap(seed -> run_one_simulation_from_state(param, state, seed, n_sweeps; warmup_sweeps=warmup_sweeps, cluster_mode=cluster_mode, description=run_description), seeds)
         elseif using_initial_state
             defaults = get_default_params()
             n_sweeps = n_sweeps_from_args(args)
+            warmup_sweeps = warmup_sweeps_from_args(args)
+            cluster_mode = cluster_mode_from_args(args)
             results = pmap(seed -> begin
                     run_state = deepcopy(initial_state)
                     run_param = deepcopy(initial_param)
-                    run_one_simulation_from_state(run_param, run_state, seed, n_sweeps; relaxed_ic=true)
+                    run_one_simulation_from_state(run_param, run_state, seed, n_sweeps; relaxed_ic=true, warmup_sweeps=warmup_sweeps, cluster_mode=cluster_mode, description=run_description)
                 end, seeds)
         else
             results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
@@ -630,7 +737,7 @@ function main()
         dummy_state = FPDiffusive.setDummyState(states[1], avg_dists, mat_cuts_averaged, total_t, avg_bond_pass_stats)
 
         dummy_state_save_dir = "dummy_states"
-        save_state(dummy_state,params[1],dummy_state_save_dir; relaxed_ic=using_initial_state)
+        save_state(dummy_state,params[1],dummy_state_save_dir; relaxed_ic=using_initial_state, description=run_description)
 
         
         # Save aggregated results to a separate file.
@@ -642,6 +749,7 @@ function main()
         # println("Parallel results saved to: $filename")
     else
         # Single-run mode.
+        description = run_description
         if haskey(args, "continue") && !isnothing(args["continue"])
             println("Continuing from saved state: $(args["continue"])")
             @load args["continue"] state param potential
@@ -676,6 +784,9 @@ function main()
                 n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
                 println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
             end
+            warmup_sweeps = get_warmup_sweeps(params, defaults)
+            cluster_mode = get_cluster_mode(params, defaults)
+            description = get_description(params, defaults)
             seed = rand(1:2^30)
             rng = MersenneTwister(seed)
         elseif using_initial_state
@@ -690,6 +801,9 @@ function main()
                 params = get_default_params()
             end
             n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+            warmup_sweeps = get_warmup_sweeps(params, defaults)
+            cluster_mode = get_cluster_mode(params, defaults)
+            description = get_description(params, defaults)
             seed = rand(1:2^30)
             rng = MersenneTwister(seed)
             ic = get(params, "ic", defaults["ic"])
@@ -714,6 +828,9 @@ function main()
             γ                 = get(params, "γ", defaults["γ"])
             bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
+            warmup_sweeps      = get_warmup_sweeps(params, defaults)
+            cluster_mode       = get_cluster_mode(params, defaults)
+            description        = get_description(params, defaults)
             forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
             ic = get(params, "ic", defaults["ic"])
             int_type = resolve_int_type(args, params, defaults)
@@ -728,20 +845,41 @@ function main()
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
-            potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
+            potential_plot_flag = !cluster_mode
+            potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=potential_plot_flag)
             
             state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
         end
         
         show_times = get(params, "show_times", get_default_params()["show_times"])
         save_times = get(params, "save_times", get_default_params()["save_times"])
+        if !(@isdefined warmup_sweeps)
+            warmup_sweeps = get_warmup_sweeps(params, get_default_params())
+        end
+        if !(@isdefined cluster_mode)
+            cluster_mode = get_cluster_mode(params, get_default_params())
+        end
+        if cluster_mode
+            show_times = Int[]
+        end
+
+        if estimate_only
+            estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
+            estimated_time_hours = estimated_time / 3600
+            println("Estimated run time for this simulation: $estimated_time_hours hours")
+            return
+        end
         
         # Register an exit hook to save state at exit.
+        final_state_saved = Ref(false)
         atexit() do
+            if final_state_saved[]
+                return
+            end
             println("\nSaving current state...")
             try
                 save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-                SaveUtils.save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
+                SaveUtils.save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state, description=description)
                 println("State saved successfully")
             catch e
                 println("Error saving state: ", e)
@@ -757,7 +895,11 @@ function main()
             res_dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  show_times=show_times,
                                                  save_times=save_times,
-                                                 plot_flag=true,
+                                                 plot_flag=!cluster_mode,
+                                                 plot_label=description,
+                                                 save_description=description,
+                                                 warmup_sweeps=warmup_sweeps,
+                                                 show_progress=!cluster_mode,
                                                  relaxed_ic=using_initial_state)
         catch e
             if isa(e, InterruptException)
@@ -769,7 +911,8 @@ function main()
         end
         
         save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-        filename = save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
+        filename = save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state, description=description)
+        final_state_saved[] = true
         println("Final state saved to: ", filename)
    end
 end

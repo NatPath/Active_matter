@@ -535,6 +535,24 @@ module FPDiffusive
         return force_idx <= length(ffrs) ? Float64(ffrs[force_idx]) : 0.0
     end
 
+    @inline function is_static_zero_potential(param)
+        return param.potential_type == "zero" && param.fluctuation_type == "no-fluctuation"
+    end
+
+    @inline function precompute_periodic_neighbors_1d(L::Int)
+        left_neighbors = [i == 1 ? L : i - 1 for i in 1:L]
+        right_neighbors = [i == L ? 1 : i + 1 for i in 1:L]
+        return left_neighbors, right_neighbors
+    end
+
+    @inline function precompute_periodic_neighbors_2d(Lx::Int, Ly::Int)
+        left_x = [i == 1 ? Lx : i - 1 for i in 1:Lx]
+        right_x = [i == Lx ? 1 : i + 1 for i in 1:Lx]
+        down_y = [j == 1 ? Ly : j - 1 for j in 1:Ly]
+        up_y = [j == Ly ? 1 : j + 1 for j in 1:Ly]
+        return left_x, right_x, down_y, up_y
+    end
+
     function active_bond_forcing_1d(forcings::Vector{BondForce}, from_idx::Int, to_idx::Int)
         total_forcing = 0.0
         for force in forcings
@@ -622,17 +640,19 @@ module FPDiffusive
         return reshape(M, Nx, Ny, Nx, Ny)
     end
 
-    function update!(param, state, rng; benchmark=false)
+    function update!(param, state, rng; benchmark=false, collect_statistics::Bool=true)
         bench_results = benchmark ? BenchmarkResults() : nothing
 
         if length(param.dims) == 1
             V = state.potential.V
             T = state.T
             γ = param.γ
+            static_zero_potential = is_static_zero_potential(param)
             ffrs = param_ffrs(param)
             forcings = get_state_forcings!(state)
             n_forces = length(forcings)
             L = param.dims[1]
+            left_neighbors, right_neighbors = precompute_periodic_neighbors_1d(L)
             ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
             tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
             sweep_forward_counts = zeros(Int64, n_forces)
@@ -660,8 +680,8 @@ module FPDiffusive
                 if n<=param.N
                     particle = state.particles[n]
                     spot_index = particle.position[1]
-                    left_index= mod1(spot_index-1,param.dims[1])
-                    right_index = mod1(spot_index+1,param.dims[1])
+                    left_index = left_neighbors[spot_index]
+                    right_index = right_neighbors[spot_index]
 
                     
                     if action_index == 1 # left
@@ -676,7 +696,11 @@ module FPDiffusive
                     end
 
                     bond_forcing = active_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
-                    p_candidate = calculate_jump_probability(param.D, V[candidate_spot_index]-V[spot_index], T, state.exp_table; bond_forcing=bond_forcing)
+                    if static_zero_potential
+                        p_candidate = param.D - bond_forcing
+                    else
+                        p_candidate = calculate_jump_probability(param.D, V[candidate_spot_index]-V[spot_index], T, state.exp_table; bond_forcing=bond_forcing)
+                    end
 
                     if benchmark
                         bench_results.jump_probability_time += (time_ns() - t2) / 1e9
@@ -693,8 +717,7 @@ module FPDiffusive
                 end
                 
                 p_stay = 1-p_candidate
-                p_arr = [p_candidate, p_stay]
-                choice = tower_sampling(p_arr, sum(p_arr),rng)
+                choice = tower_sampling(p_candidate, p_stay, rng)
                 
                 if benchmark
                     bench_results.tower_sampling_time += (time_ns() - t3) / 1e9
@@ -767,16 +790,21 @@ module FPDiffusive
                 
                 t += 1/param.N
             end
-            update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
-            update_spatial_bond_passage_averages!(state, sweep_spatial_forward_counts, sweep_spatial_reverse_counts)
+            if collect_statistics
+                update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
+                update_spatial_bond_passage_averages!(state, sweep_spatial_forward_counts, sweep_spatial_reverse_counts)
+            end
             
         elseif length(param.dims) == 2
             V = state.potential.V
             T = state.T
             γ = param.γ
+            static_zero_potential = is_static_zero_potential(param)
             ffrs = param_ffrs(param)
             forcings = get_state_forcings!(state)
             n_forces = length(forcings)
+            Lx, Ly = param.dims
+            left_x, right_x, down_y, up_y = precompute_periodic_neighbors_2d(Lx, Ly)
             ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
             tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
             sweep_forward_counts = zeros(Int64, n_forces)
@@ -805,11 +833,10 @@ module FPDiffusive
 
 
                     # Calculate neighboring indices
-                    Lx,Ly = param.dims
-                    left = (mod1(i-1, Lx), j)
-                    right = (mod1(i+1, Lx), j)
-                    down = (i, mod1(j-1, Ly))
-                    up = (i, mod1(j+1, Ly))
+                    left = (left_x[i], j)
+                    right = (right_x[i], j)
+                    down = (i, down_y[j])
+                    up = (i, up_y[j])
 
                     if action_index==1  # left
                         cand = left
@@ -827,7 +854,11 @@ module FPDiffusive
                     end
 
                     bond_forcing = active_bond_forcing_2d(forcings, spot_index, cand)
-                    p_cand = calculate_jump_probability(param.D, V[cand...]-V[i,j], T, state.exp_table; bond_forcing=bond_forcing)
+                    if static_zero_potential
+                        p_cand = param.D - bond_forcing
+                    else
+                        p_cand = calculate_jump_probability(param.D, V[cand...]-V[i,j], T, state.exp_table; bond_forcing=bond_forcing)
+                    end
 
                     if benchmark
                         bench_results.jump_probability_time += (time_ns() - t2) / 1e9
@@ -842,8 +873,7 @@ module FPDiffusive
                 end
                 
                 p_stay = 1 - p_cand
-                p_arr = [p_cand, p_stay]
-                choice = tower_sampling(p_arr, sum(p_arr), rng)
+                choice = tower_sampling(p_cand, p_stay, rng)
                 
                 if benchmark
                     bench_results.tower_sampling_time += (time_ns() - t3) / 1e9
@@ -909,7 +939,9 @@ module FPDiffusive
                 
                 t += 1 / param.N
             end
-            update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
+            if collect_statistics
+                update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
+            end
         else
             throw(DomainError("Invalid input - dimension not supported yet"))
         end
@@ -933,6 +965,13 @@ module FPDiffusive
         end
 
         return selected
+    end
+
+    @inline function tower_sampling(w1::Real, w2::Real, rng)
+        w_sum = w1 + w2
+        # Keep RNG source consistent with the existing vector-based tower sampling.
+        key = w_sum * rand()
+        return key <= w1 ? 1 : 2
     end
 end
 
@@ -990,41 +1029,54 @@ function compute_time_correlation(ρ_history)
     return corr
 end
 
-function update_and_compute_correlations!(state, param,  ρ_history, frame, rng, calc_var_frequency=1, calc_correlations=false)
-    FPDiffusive.update!( param, state, rng)
-    calc_flag = true
-    if frame%calc_var_frequency==0 && calc_flag 
+function averaged_sample_count(state)
+    if hasfield(typeof(state), :bond_pass_stats)
+        stats = state.bond_pass_stats
+        if haskey(stats, FPDiffusive.BOND_PASS_SAMPLE_COUNT_KEY) &&
+           !isempty(stats[FPDiffusive.BOND_PASS_SAMPLE_COUNT_KEY])
+            return Int(round(stats[FPDiffusive.BOND_PASS_SAMPLE_COUNT_KEY][1]))
+        end
+    end
+    return max(state.t, 0)
+end
+
+function update_and_compute_correlations!(state, param,  ρ_history, frame, rng, calc_var_frequency=1, calc_correlations=false; collect_statistics::Bool=true)
+    FPDiffusive.update!(param, state, rng; collect_statistics=collect_statistics)
+    if collect_statistics && frame%calc_var_frequency==0
         #println("Calculating correlations at frame $frame")
+        n_eff = max(averaged_sample_count(state), 1)
+        weight_new = min(calc_var_frequency, n_eff)
+        weight_prev = n_eff - weight_new
 
         dim_num= length(param.dims)
         if dim_num==1
-            state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
+            state.ρ_avg = (state.ρ_avg * weight_prev + state.ρ * weight_new) / n_eff
             # @. state.ρ_avg += (state.ρ-state.ρ_avg)*calc_var_frequency/frame
             ρf = float(state.ρ)
             ρ_matrix = ρf * transpose(ρf)
             # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
-            state.ρ_matrix_avg_cuts[:full] = (state.ρ_matrix_avg_cuts[:full]*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
+            state.ρ_matrix_avg_cuts[:full] = (state.ρ_matrix_avg_cuts[:full] * weight_prev + ρ_matrix * weight_new) / n_eff
             # @. state.ρ_matrix_avg_cuts[:full] += (ρ_matrix-state.ρ_matrix_avg_cuts[:full])*calc_var_frequency/frame
             # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
         elseif dim_num==2
             # state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
-            @. state.ρ_avg += (state.ρ-state.ρ_avg)*calc_var_frequency/frame
+            @. state.ρ_avg += (state.ρ-state.ρ_avg) * weight_new / n_eff
             
             x_middle = div(param.dims[1],2)
             y_middle = div(param.dims[2],2)
             if haskey(state.ρ_matrix_avg_cuts, :full)
                 ρ_matrix = FPDiffusive.outer_density_2D(float(state.ρ)) 
                 # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
-                @. state.ρ_matrix_avg_cuts[:full] += (ρ_matrix-state.ρ_matrix_avg_cuts[:full])*calc_var_frequency/frame
+                @. state.ρ_matrix_avg_cuts[:full] += (ρ_matrix-state.ρ_matrix_avg_cuts[:full]) * weight_new / n_eff
             else
                 # @. state.ρ_matrix_avg_cuts[:x_cut] += (state.ρ[:,y_middle] * transpose(state.ρ[:,y_middle])-state.ρ_matrix_avg_cuts[:x_cut])*calc_var_frequency/frame
                 # @. state.ρ_matrix_avg_cuts[:y_cut] += (state.ρ[x_middle,:] * transpose(state.ρ[x_middle,:]) - state.ρ_matrix_avg_cuts[:y_cut])*calc_var_frequency/frame
                 ρf = float(state.ρ)
-                state.ρ_matrix_avg_cuts[:x_cut] .+= (ρf[:, y_middle] * transpose(ρf[:, y_middle]) .- state.ρ_matrix_avg_cuts[:x_cut]) * calc_var_frequency / frame
-                state.ρ_matrix_avg_cuts[:y_cut] .+= (ρf[x_middle, :] * transpose(ρf[x_middle, :]) .- state.ρ_matrix_avg_cuts[:y_cut]) * calc_var_frequency / frame
+                state.ρ_matrix_avg_cuts[:x_cut] .+= (ρf[:, y_middle] * transpose(ρf[:, y_middle]) .- state.ρ_matrix_avg_cuts[:x_cut]) * weight_new / n_eff
+                state.ρ_matrix_avg_cuts[:y_cut] .+= (ρf[x_middle, :] * transpose(ρf[x_middle, :]) .- state.ρ_matrix_avg_cuts[:y_cut]) * weight_new / n_eff
 
                 # state.ρ_matrix_avg_cuts[:diag_cut] += (state.ρ[diagind(state.ρ)] * transpose(state.ρ[diagind(state.ρ)]) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
-                state.ρ_matrix_avg_cuts[:diag_cut] += (diag(ρf) * transpose(diag(ρf)) - state.ρ_matrix_avg_cuts[:diag_cut])*calc_var_frequency/frame
+                state.ρ_matrix_avg_cuts[:diag_cut] += (diag(ρf) * transpose(diag(ρf)) - state.ρ_matrix_avg_cuts[:diag_cut]) * weight_new / n_eff
             end
             # x_middle = div(param.dims[1],2)
             # y_middle = div(param.dims[2],2)
@@ -1043,8 +1095,8 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
 end
 
 
-function initialize_simulation(state, param, n_frame, calc_correlations)
-    prg = Progress(n_frame)
+function initialize_simulation(state, param, n_frame, calc_correlations; show_progress::Bool=true)
+    prg = show_progress ? Progress(n_frame) : nothing
     decay_times = Float64[]
     if calc_correlations
         ρ_history = zeros((param.dims..., n_frame))
@@ -1075,15 +1127,24 @@ function run_simulation!(state, param, n_sweeps, rng;
                         show_times = [], 
                         save_times = [],
                         plot_flag = false,
+                        plot_label = "",
+                        save_description = nothing,
                         benchmark_frequency = 0,
+                        warmup_sweeps::Int = 0,
+                        show_progress::Bool = true,
                         relaxed_ic::Bool=false)
     println("Starting simulation")
-    prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations)
+    prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations; show_progress=show_progress)
 
     # Initialize the animation
     t_init = state.t+1
     t_end = t_init + n_sweeps-1
     println("with t_init = $t_init , t_end = $t_end")
+    warmup_sweeps = max(warmup_sweeps, 0)
+    plot_label = isnothing(plot_label) ? "" : String(plot_label)
+    if warmup_sweeps > 0
+        println("Warmup enabled: skipping statistics accumulation for first $warmup_sweeps sweeps of this run.")
+    end
 
     # # Benchmark variables
     # benchmark_results = nothing
@@ -1102,21 +1163,29 @@ function run_simulation!(state, param, n_sweeps, rng;
         #     FPDiffusive.update!(param, state, rng)
         # end
         
-        update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
+        sweep_since_start = sweep - t_init + 1
+        collect_statistics = sweep_since_start > warmup_sweeps
+        if warmup_sweeps > 0 && sweep_since_start == warmup_sweeps + 1
+            println("Warmup complete at sweep $sweep. Starting statistics accumulation.")
+        end
+
+        update_and_compute_correlations!(state, param, ρ_history, sweep, rng; collect_statistics=collect_statistics)
 
         # Save state at specified times
         if sweep in save_times
             save_dir = "saved_states"
-            save_state(state,param,save_dir; relaxed_ic=relaxed_ic)
+            save_state(state,param,save_dir; relaxed_ic=relaxed_ic, description=save_description)
             println("State saved at sweep $sweep")
         end
 
         # Your existing show_times code
         if (sweep in show_times ) && plot_flag
-            PlotUtils.plot_sweep(sweep, state, param)
+            PlotUtils.plot_sweep(sweep, state, param; label=plot_label)
         end
         
-        next!(prg)
+        if show_progress && !isnothing(prg)
+            next!(prg)
+        end
     end
 
     println("Simulation complete")

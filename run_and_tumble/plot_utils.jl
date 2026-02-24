@@ -222,6 +222,17 @@ function plot_sweep(
     end
 end
 
+function sweep_title_with_label(base_title::AbstractString, sweep, label)
+    if isnothing(label)
+        return "$(base_title) $(sweep)"
+    end
+    label_str = strip(String(label))
+    if isempty(label_str)
+        return "$(base_title) $(sweep)"
+    end
+    return "$(base_title) $(sweep) | $(label_str)"
+end
+
 function force_bond_sites_1d(state, L)
     forcings = get_forcing_list(state)
     bonds = Tuple{Int, Int}[]
@@ -296,6 +307,161 @@ function average_by_abs_distance(values::AbstractVector{<:Real}, ref_site::Int)
         end
     end
     return collect(0:max_dist), avg_vals
+end
+
+function fluctuating_bond_indices_for_plot(bonds, tracked_indices::AbstractVector{Int})
+    if isempty(bonds)
+        return Int[]
+    end
+    if isempty(tracked_indices)
+        return collect(1:length(bonds))
+    end
+    return collect(tracked_indices)
+end
+
+function density_variance_profile_1d(state, L::Int)
+    rho_avg = Float64.(state.ρ_avg)
+    if length(rho_avg) != L
+        rho_avg = zeros(Float64, L)
+    end
+
+    rho2_diag = zeros(Float64, L)
+    if haskey(state.ρ_matrix_avg_cuts, :full)
+        rho2_diag = Float64.(diag(state.ρ_matrix_avg_cuts[:full]))
+        if length(rho2_diag) != L
+            rho2_diag = zeros(Float64, L)
+        end
+    end
+
+    return max.(0.0, rho2_diag .- rho_avg .^ 2)
+end
+
+function plot_centered_corr_cuts_at_fluctuating_bonds_1d(
+    corr_mat::AbstractMatrix{<:Real},
+    bonds,
+    fluctuating_indices::AbstractVector{Int};
+    colors=[:red, :orange, :yellow, :cyan, :magenta, :green, :blue],
+    remove_diagonal_for_cuts::Bool=true,
+)
+    if isempty(fluctuating_indices)
+        return plot(title="Bond-centered correlation cuts (no fluctuating bonds)", axis=false, legend=false)
+    end
+
+    L = size(corr_mat, 1)
+    p = plot(title="C(x_bond,x') cuts at fluctuating bonds (centered)",
+             xlabel="x' - x_bond",
+             ylabel="C(x_bond,x')",
+             framestyle=:box,
+             grid=:y)
+
+    for force_idx in fluctuating_indices
+        b1, b2 = bonds[force_idx]
+        row_cut = bond_centered_cut_1d(corr_mat, b1, b2; smooth_diagonal=remove_diagonal_for_cuts)
+        x_rel, perm = centered_periodic_axis(L, b1)
+        centered_cut = Float64.(row_cut[perm])
+        color = colors[mod1(force_idx, length(colors))]
+        plot!(p, x_rel, centered_cut,
+              lw=2.2,
+              color=color,
+              label=@sprintf("j%d bond (%d,%d)", force_idx, b1, b2))
+    end
+
+    hline!(p, [0], color=:gray, linestyle=:dot, lw=1.2, label=false)
+    vline!(p, [0], color=:gray, linestyle=:dash, lw=1.6, label=false)
+    return p
+end
+
+function bond_centered_cut_1d(
+    corr_mat::AbstractMatrix{<:Real},
+    b1::Int,
+    b2::Int;
+    smooth_diagonal::Bool=true,
+)
+    L = size(corr_mat, 2)
+    cut = 0.5 .* (Float64.(corr_mat[b1, :]) .+ Float64.(corr_mat[b2, :]))
+    if smooth_diagonal
+        b1_left = mod1(b1 - 1, L)
+        b1_right = mod1(b1 + 1, L)
+        b2_left = mod1(b2 - 1, L)
+        b2_right = mod1(b2 + 1, L)
+        cut[b1] = 0.5 * (cut[b1_left] + cut[b1_right])
+        cut[b2] = 0.5 * (cut[b2_left] + cut[b2_right])
+    end
+    return cut
+end
+
+function bond_center_value_from_cut(cut::AbstractVector{<:Real}, b1::Int, b2::Int)
+    return 0.5 * (Float64(cut[b1]) + Float64(cut[b2]))
+end
+
+function plot_centered_corr_cut_at_origin_1d(
+    corr_mat::AbstractMatrix{<:Real},
+    L::Int;
+    remove_diagonal_for_cuts::Bool=true,
+)
+    origin_site = max(1, div(L, 2))
+    origin_partner = mod1(origin_site + 1, L)
+    row_cut = bond_centered_cut_1d(corr_mat, origin_site, origin_partner; smooth_diagonal=remove_diagonal_for_cuts)
+    x_rel, perm = centered_periodic_axis(L, origin_site)
+    centered_cut = Float64.(row_cut[perm])
+
+    p = plot(x_rel, centered_cut,
+             title="Connected correlation at origin bond",
+             xlabel="x' - x_origin",
+             ylabel="C_origin(x')",
+             lw=2.4,
+             color=:black,
+             label=@sprintf("origin bond (%d,%d)", origin_site, origin_partner),
+             framestyle=:box,
+             grid=:y)
+    hline!(p, [0], color=:gray, linestyle=:dot, lw=1.2, label=false)
+    vline!(p, [0], color=:gray, linestyle=:dash, lw=1.6, label=false)
+    return p
+end
+
+function plot_density_variance_at_fluctuating_bonds_1d(
+    corr_mat::AbstractMatrix{<:Real},
+    bonds,
+    fluctuating_indices::AbstractVector{Int};
+    colors=[:red, :orange, :yellow, :cyan, :magenta, :green, :blue],
+    remove_diagonal_for_cuts::Bool=true,
+)
+    if isempty(fluctuating_indices)
+        return plot(title="Bond-center variance at fluctuating bonds (none)", axis=false, legend=false)
+    end
+
+    n_lines = length(fluctuating_indices) + (length(fluctuating_indices) > 1 ? 1 : 0)
+
+    p = plot(axis=false,
+             showaxis=false,
+             framestyle=:none,
+             legend=false,
+             xlim=(0.0, 1.0),
+             ylim=(0.0, 1.0),
+             title="Bond-center variance from C_bond(Δx=0)")
+
+    dy = 1.0 / (n_lines + 2)
+    line_id = 1
+    bond_center_values = Float64[]
+    for force_idx in fluctuating_indices
+        b1, b2 = bonds[force_idx]
+        cut = bond_centered_cut_1d(corr_mat, b1, b2; smooth_diagonal=remove_diagonal_for_cuts)
+        bond_center_value = bond_center_value_from_cut(cut, b1, b2)
+        push!(bond_center_values, bond_center_value)
+        color = colors[mod1(force_idx, length(colors))]
+        y = 1.0 - line_id * dy
+        text_line = @sprintf("j%d (%d,%d): C_bond(0) = %.6g", force_idx, b1, b2, bond_center_value)
+        annotate!(p, 0.02, y, text(text_line, color, 9, :left))
+        line_id += 1
+    end
+
+    if length(fluctuating_indices) > 1
+        mean_var = sum(bond_center_values) / length(bond_center_values)
+        y = 1.0 - line_id * dy
+        annotate!(p, 0.02, y, text(@sprintf("Mean over fluctuating bonds: %.6g", mean_var), :black, 9, :left))
+    end
+
+    return p
 end
 
 function tracked_force_indices_for_plot(state, magnitudes::AbstractVector{<:Real}; tol::Float64=0.0)
@@ -377,12 +543,17 @@ function plot_spatial_force_statistics_1d(
     bonds;
     colors=[:red, :orange, :yellow, :cyan, :magenta, :green, :blue],
     include_abs_mean=false,
+    var_baseline=nothing,
+    show_reference=false,
     ref_site=nothing,
 )
     L = param.dims[1]
     f_avg, f2_avg, samples = spatial_force_moments_1d(state, L)
     var_f = max.(0.0, f2_avg .- f_avg .^ 2)
     log_floor = 1e-12
+    besseli_factor = 0.67367 # 1*exp(-1)*(I0(1)+I1(1))
+    baseline_value = isnothing(var_baseline) ? besseli_factor * param.ρ₀ : Float64(var_baseline)
+    baseline_label = @sprintf("%.4g", baseline_value)
     ref_bond_site = if ref_site === nothing
         isempty(bonds) ? max(1, div(L, 2)) : bonds[1][1]
     else
@@ -390,23 +561,24 @@ function plot_spatial_force_statistics_1d(
     end
 
     dist_var, var_sym = average_by_abs_distance(var_f, ref_bond_site)
-    mask_var = (dist_var .> 0) .& isfinite.(var_sym)
+    var_sym_shifted = var_sym .- baseline_value
+    mask_var = (dist_var .> 0) .& isfinite.(var_sym_shifted) .& (var_sym_shifted .> 0)
     x_var = Float64.(dist_var[mask_var])
-    y_var = max.(Float64.(var_sym[mask_var]), log_floor)
+    y_var = max.(Float64.(var_sym_shifted[mask_var]), log_floor)
     if isempty(x_var)
         x_var = [1.0]
         y_var = [log_floor]
     end
 
     p = plot(x_var, y_var,
-             title="Symmetrized Var(F) vs |Δx| over $(samples) sweeps",
+             title="Symmetrized Var(J)-$(baseline_label) vs |Δx| over $(samples) sweeps",
              xlabel="|Δx| from reference bond",
-             ylabel="Symmetrized Var(F) (log-log)",
+             ylabel="Symmetrized Var(J)-baseline (log-log)",
              lw=2.2,
              color=:purple,
              marker=:circle,
              markersize=3.5,
-             label="Var(F), L/R averaged",
+             label="Var(J)-$(baseline_label), L/R averaged",
              xscale=:log10,
              yscale=:log10,
              framestyle=:box,
@@ -418,11 +590,11 @@ function plot_spatial_force_statistics_1d(
         if any(mask_mean)
             x_mean = Float64.(dist_mean[mask_mean])
             y_mean = max.(Float64.(abs_mean_sym[mask_mean]), log_floor)
-            plot!(p, x_mean, y_mean, lw=2.0, color=:navy, linestyle=:dash, label="|⟨F⟩|, L/R averaged")
+            plot!(p, x_mean, y_mean, lw=2.0, color=:navy, linestyle=:dash, label="|⟨J⟩|, L/R averaged")
         end
     end
 
-    if !isempty(x_var)
+    if show_reference && !isempty(x_var)
         x_anchor = x_var[end]
         y_anchor = y_var[end]
         y_ref_m2 = y_anchor .* (x_var ./ x_anchor) .^ (-2.0)
@@ -439,9 +611,9 @@ function plot_spatial_force_second_moment_1d(state, param, bonds; colors=[:red, 
     x = 1:L
     f2_avg, samples = spatial_force_second_moment_1d(state, L)
     p = plot(x, f2_avg,
-             title="Spatial second moment ⟨F(x)^2⟩ over $(samples) sweeps",
+             title="Spatial second moment ⟨J(x)^2⟩ over $(samples) sweeps",
              xlabel="Bond index x for bond (x,x+1)",
-             ylabel="⟨F(x)^2⟩",
+             ylabel="⟨J(x)^2⟩",
              lw=2.2,
              color=:darkgreen,
              legend=false,
@@ -515,7 +687,7 @@ end
 
 function plot_force_realization_1d(state, param)
     L = param.dims[1]
-    bonds, direction_flags, _ = force_bond_sites_1d(state, L)
+    bonds, direction_flags, magnitudes = force_bond_sites_1d(state, L)
     n_forces = length(bonds)
     if n_forces == 0
         return plot(title="Instantaneous force realization", axis=false, legend=false)
@@ -563,17 +735,17 @@ function plot_force_passage_averages_1d(state, param)
     bonds_all, _, magnitudes_all = force_bond_sites_1d(state, L)
     n_forces = length(bonds_all)
     if n_forces == 0
-        return plot(title="Bond passage averages", axis=false, legend=false)
+        return plot(title="Bond flux", axis=false, legend=false)
     end
 
     tracked_indices = tracked_force_indices_for_plot(state, magnitudes_all)
     if isempty(tracked_indices)
-        return plot(title="Bond passage averages (no tracked bonds)", axis=false, legend=false)
+        return plot(title="Bond flux (no tracked bonds)", axis=false, legend=false)
     end
 
     forward_avg_all, reverse_avg_all, total_avg_all, total_sq_avg_all, samples = force_passage_averages(state, n_forces)
     n_rows = length(tracked_indices)
-    headers = ["Bond", "⟨F_left⟩", "⟨F_right⟩", "⟨F⟩", "⟨F²⟩"]
+    headers = ["Bond", "⟨J_left⟩", "⟨J_right⟩", "⟨J⟩", "⟨J²⟩"]
     n_cols = length(headers)
 
     p = plot(xlim=(0.5, n_cols + 0.5),
@@ -581,7 +753,7 @@ function plot_force_passage_averages_1d(state, param)
              legend=false,
              axis=false,
              framestyle=:none,
-             title="Bond passage averages over $(samples) sweeps")
+             title="Bond flux over $(samples) sweeps")
 
     for x in 0.5:1.0:(n_cols + 0.5)
         vline!(p, [x], color=:gray70, lw=1.1, label=false)
@@ -598,7 +770,7 @@ function plot_force_passage_averages_1d(state, param)
         y = n_rows - row_idx + 1
         b1, b2 = bonds_all[force_idx]
         row_values = [
-            @sprintf("f%d (%d,%d)", force_idx, b1, b2),
+            @sprintf("j%d (%d,%d)", force_idx, b1, b2),
             @sprintf("%.5g", forward_avg_all[force_idx]),
             @sprintf("%.5g", reverse_avg_all[force_idx]),
             @sprintf("%.5g", total_avg_all[force_idx]),
@@ -671,43 +843,41 @@ function plot_sweep_1d_multiforce(
                           clims=(-corr_scale, corr_scale),
                           framestyle=:box)
 
-    origin_site = max(1, div(L, 2))
-    quarter_shift = max(1, fld(L, 4))
-    quarter_site = mod1(origin_site + quarter_shift, L)
     tracked_indices = tracked_force_indices_for_plot(state, magnitudes)
+    fluctuating_indices = fluctuating_bond_indices_for_plot(bonds, tracked_indices)
+    origin_site = max(1, div(L, 2))
     ref_bond_site = if isempty(tracked_indices)
         isempty(bonds) ? origin_site : bonds[1][1]
     else
         bonds[first(tracked_indices)][1]
     end
 
-    vline!(p_corr_heat, [quarter_site], color=:white, linestyle=:dash, lw=2, label="x=$(quarter_site)")
     for (idx, (b1, b2)) in enumerate(bonds)
         color = colors[mod1(idx, length(colors))]
         vline!(p_corr_heat, [b1, b2], color=color, linestyle=:dot, lw=2, label=false)
         hline!(p_corr_heat, [b1, b2], color=color, linestyle=:dot, lw=2, label=false)
     end
 
-    p_corr_origin_cut = plot(corr_mat[origin_site, :],
-                             title="correlation matrix cut for x=$(origin_site)",
-                             xlabel="x'",
-                             ylabel="C(x,x')",
-                             lw=2.5,
-                             color=:black,
-                             legend=false,
-                             framestyle=:box)
+    p_corr_fluctuating_bond_cuts = plot_centered_corr_cuts_at_fluctuating_bonds_1d(
+        corr_mat,
+        bonds,
+        fluctuating_indices;
+        colors=colors,
+        remove_diagonal_for_cuts=remove_diagonal_for_cuts,
+    )
+    p_corr_origin_centered = plot_centered_corr_cut_at_origin_1d(
+        corr_mat,
+        L;
+        remove_diagonal_for_cuts=remove_diagonal_for_cuts,
+    )
 
-    quarter_cut = remove_diagonal_for_cuts ?
-        diagonal_smoothed_cut_like_plot_sweep_1d(corr_mat, quarter_site) :
-        Float64.(corr_mat[quarter_site, :])
-    p_corr_quarter_cut = plot(quarter_cut,
-                              title="correlation matrix cut for x=$(quarter_site)",
-                              xlabel="x'",
-                              ylabel="C(x,x')",
-                              lw=2.5,
-                              color=:firebrick,
-                              framestyle=:box)
-    vline!(p_corr_quarter_cut, [quarter_site], label="x=$(quarter_site)", color=:gray, linestyle=:dash)
+    p_density_var_bond_sites = plot_density_variance_at_fluctuating_bonds_1d(
+        corr_mat,
+        bonds,
+        fluctuating_indices;
+        colors=colors,
+        remove_diagonal_for_cuts=remove_diagonal_for_cuts,
+    )
 
     p_spatial_f2 = plot_spatial_force_statistics_1d(
         state,
@@ -717,15 +887,14 @@ function plot_sweep_1d_multiforce(
         include_abs_mean=include_abs_mean_in_spatial_f_plot,
         ref_site=ref_bond_site,
     )
-    p_empty = plot(axis=false, showaxis=false, grid=false, title="")
 
     p_final = plot(p_avg_density, p_inst_density,
                    p_force_averages, p_spatial_f2,
-                   p_corr_heat, p_corr_origin_cut,
-                   p_corr_quarter_cut, p_empty,
+                   p_corr_origin_centered, p_corr_fluctuating_bond_cuts,
+                   p_corr_heat, p_density_var_bond_sites,
                    layout=(4, 2),
                    size=(2200, 1800),
-                   plot_title="1D multi-force sweep $(sweep)")
+                   plot_title=sweep_title_with_label("1D multi-force sweep", sweep, label))
     if return_components
         return (
             corr_mat=corr_mat,
@@ -735,8 +904,11 @@ function plot_sweep_1d_multiforce(
             force_averages=p_force_averages,
             spatial_f_stats=p_spatial_f2,
             corr_heat=p_corr_heat,
-            corr_origin_cut=p_corr_origin_cut,
-            corr_quarter_cut=p_corr_quarter_cut,
+            corr_origin_cut=p_corr_origin_centered,
+            corr_quarter_cut=p_corr_fluctuating_bond_cuts,
+            corr_fluctuating_bond_cuts=p_corr_fluctuating_bond_cuts,
+            corr_origin_centered=p_corr_origin_centered,
+            density_variance_bond_sites=p_density_var_bond_sites,
         )
     end
     display(p_final)
@@ -771,7 +943,10 @@ function plot_sweep_1d(sweep, state, param; label="", plot_directional=false)
     corr_mat_antisym[point_to_look_at, L - point_to_look_at] = (corr_mat_antisym[point_to_look_at, L - (point_to_look_at+1)] + corr_mat_antisym[point_to_look_at, L - (point_to_look_at-1)]) / 2
 
     p7 = plot(corr_mat_antisym[point_to_look_at, 1:end], title="anti-symmetric part of corr_mat cut for x=$(point_to_look_at) ")
-    p_final = plot(p0, p1, p4, p5, p6, p7, size=(2100, 1000), plot_title="sweep $(sweep)", layout=grid(2, 3))
+    p_final = plot(p0, p1, p4, p5, p6, p7,
+                   size=(2100, 1000),
+                   plot_title=sweep_title_with_label("sweep", sweep, label),
+                   layout=grid(2, 3))
     display(p_final)
     return corr_mat
 end
@@ -996,7 +1171,7 @@ function plot_sweep_2d(sweep, state, param; label="", plot_directional=false)
                  p_corr_diag, p_diag_cut_full, p_diag_cut_positive, p_diag_cut_antisymmetric,
                  p_empty, p_diag_cut_zeroed, p_diag_cut_positive_zeroed, p_diag_cut_antisymmetric_zeroed,
                  layout=(9, 4), size=(2400, 3600),
-                 plot_title="2D sweep $(sweep)"))
+                 plot_title=sweep_title_with_label("2D sweep", sweep, label)))
     return corr_mat2
 end
 function plot_density(density, param, state; title="Density", show_directions=false)

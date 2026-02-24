@@ -647,7 +647,11 @@ function main()
         save_times = get(params, "save_times", get_default_params()["save_times"])
         
         # Register an exit hook to save state at exit.
+        final_state_saved = Ref(false)
         atexit() do
+            if final_state_saved[]
+                return
+            end
             println("\nSaving current state...")
             try
                 save_dir = get(params, "save_dir", get_default_params()["save_dir"])
@@ -680,6 +684,7 @@ function main()
         
         save_dir = get(params, "save_dir", get_default_params()["save_dir"])
         filename = save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
+        final_state_saved[] = true
         println("Final state saved to: ", filename)
    end
 end

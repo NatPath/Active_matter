@@ -52,7 +52,26 @@ function two_force_distance_suffix(state, param)
     return @sprintf("_fdist-%d_fdistmin-%d", d_forward, d_short)
 end
 
-function save_aggregation(agg_res,param,total_sweeps,save_dir)
+function sanitize_filename_token(value::AbstractString)
+    token = replace(strip(value), r"[^A-Za-z0-9._-]+" => "-")
+    token = replace(token, r"-{2,}" => "-")
+    token = replace(token, r"^-+" => "")
+    token = replace(token, r"-+$" => "")
+    return token
+end
+
+function description_prefix(description)
+    if isnothing(description)
+        return ""
+    end
+    desc = strip(String(description))
+    isempty(desc) && return ""
+    token = sanitize_filename_token(desc)
+    isempty(token) && return ""
+    return token * "_"
+end
+
+function save_aggregation(agg_res,param,total_sweeps,save_dir; description=nothing)
     mkpath(save_dir)
     state = agg_res
     γ = param.γ
@@ -75,9 +94,11 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir)
     activity = param_activity(param)
     alpha = param_alpha(param)
     force_distance_suffix = two_force_distance_suffix(state, param)
+    description_tag = description_prefix(description)
     dim = length(param.dims)
-    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_t-%d.jld2",
+    filename = @sprintf("%s/%s%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_t-%d.jld2",
         save_dir,
+        description_tag,
         dim,
         param.potential_type,
         param.potential_magnitude,
@@ -98,7 +119,7 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir)
 end
 
 # Original save_state function.
-function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic::Bool=false)
+function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic::Bool=false, description=nothing)
     mkpath(save_dir)
     # Check if param has forcing_fluctuation_rate or ffr field
     if hasfield(typeof(param), :forcing_fluctuation_rate)
@@ -130,6 +151,7 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     activity = param_activity(param)
     alpha = param_alpha(param)
     force_distance_suffix = two_force_distance_suffix(state, param)
+    description_tag = description_prefix(description)
     dim = length(param.dims)
     hostname = Sockets.gethostname()
     host_tag = split(hostname, '.')[1]
@@ -139,8 +161,9 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     if relaxed_ic
         ic_tag = string(ic_tag, "-relaxed_ic")
     end
-    filename = @sprintf("%s/%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_ic-%s_t-%d_id-%s.jld2",
+    filename = @sprintf("%s/%s%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_ic-%s_t-%d_id-%s.jld2",
         save_dir,
+        description_tag,
         dim,
         param.potential_type,
         param.potential_magnitude,
