@@ -413,6 +413,24 @@ function finite_mean(values::AbstractVector{<:Real})
     return isempty(vals) ? NaN : mean(vals)
 end
 
+function rho0_from_param(param)
+    if has_prop(param, :ρ₀)
+        value = get_prop(param, :ρ₀)
+        return value isa Number ? Float64(value) : NaN
+    elseif has_prop(param, :rho0)
+        value = get_prop(param, :rho0)
+        return value isa Number ? Float64(value) : NaN
+    elseif param isa AbstractDict
+        for key in ("ρ₀", "rho0")
+            value = get_loaded_value(param, key, nothing)
+            if value isa Number
+                return Float64(value)
+            end
+        end
+    end
+    return NaN
+end
+
 function periodic_displacement_1d(dx::Float64, L::Int)
     return mod(dx + 0.5 * L, L) - 0.5 * L
 end
@@ -930,6 +948,8 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 j2_mean=finite_mean(j2_vals),
                 j2_vals_shifted=j2_vals_shifted,
                 j2_mean_shifted=finite_mean(j2_vals_shifted),
+                j2_vals_shifted=j2_vals_shifted,
+                j2_mean_shifted=finite_mean(j2_vals_shifted),
             ))
         catch e
             println("Failed in d-analysis for ", saved_state, ": ", e)
@@ -960,6 +980,7 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
             vals_var = Float64[]
             vals_j2 = Float64[]
             vals_j2_shifted = Float64[]
+            vals_j2_shifted = Float64[]
             for row in bucket
                 if slot <= length(row.var_vals)
                     push!(vals_var, row.var_vals[slot])
@@ -970,9 +991,13 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 if slot <= length(row.j2_vals_shifted)
                     push!(vals_j2_shifted, row.j2_vals_shifted[slot])
                 end
+                if slot <= length(row.j2_vals_shifted)
+                    push!(vals_j2_shifted, row.j2_vals_shifted[slot])
+                end
             end
             y_var_slots[slot][di] = finite_mean(vals_var)
             y_j2_slots[slot][di] = finite_mean(vals_j2)
+            y_j2_slots_shifted[slot][di] = finite_mean(vals_j2_shifted)
             y_j2_slots_shifted[slot][di] = finite_mean(vals_j2_shifted)
         end
     end
@@ -1038,8 +1063,13 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
     savefig(p_var_linear, joinpath(analysis_dir, "01_bond_center_variance_vs_d_linear.png"))
     println("Saved ", joinpath(analysis_dir, "01_bond_center_variance_vs_d_linear.png"))
 
-    function save_j2_plot(file_name::String, title::String, ylabel::String;
-                          shifted::Bool=false, loglog::Bool=false, fit_mean_loglog::Bool=false)
+    baseline_title = isfinite(baseline_j2_override) ?
+        @sprintf("baseline=%.6g", baseline_j2_override) :
+        @sprintf("baseline=%.6g*ρ₀^2", baseline_rho_factor)
+
+    function save_series_plot(file_name::String, title::String, ylabel::String,
+                              y_slots::Vector{Vector{Float64}}, y_mean::Vector{Float64};
+                              loglog::Bool=false, fit_mean_loglog::Bool=false)
         p = plot(title=title,
                  xlabel="d",
                  ylabel=ylabel,
@@ -1049,7 +1079,7 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
             plot!(p; xscale=:log10, yscale=:log10)
         end
         for slot in 1:max_slots
-            y = shifted ? y_j2_slots_shifted[slot] : y_j2_slots[slot]
+            y = y_slots[slot]
             mask = isfinite.(y)
             if loglog
                 mask .&= (y .> 0)
@@ -1058,7 +1088,6 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 plot!(p, x[mask], y[mask], marker=:circle, lw=2, label="bond $(slot)")
             end
         end
-        y_mean = shifted ? y_j2_mean_shifted : y_j2_mean
         mask_mean = isfinite.(y_mean)
         if loglog
             mask_mean .&= (y_mean .> 0)
@@ -1105,7 +1134,9 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
     summary_file = joinpath(analysis_dir, "summary_vs_d.csv")
     open(summary_file, "w") do io
         println(io, "d,var_mean,j2_mean,baseline_mean,j2_minus_baseline")
+        println(io, "d,var_mean,j2_mean,baseline_mean,j2_minus_baseline")
         for (i, d) in enumerate(d_values)
+            println(io, @sprintf("%d,%.10g,%.10g,%.10g,%.10g", d, y_var_mean[i], y_j2_mean[i], y_baseline_mean[i], y_j2_mean_shifted[i]))
             println(io, @sprintf("%d,%.10g,%.10g,%.10g,%.10g", d, y_var_mean[i], y_j2_mean[i], y_baseline_mean[i], y_j2_mean_shifted[i]))
         end
     end
@@ -1206,7 +1237,8 @@ function main()
         analyze_two_force_d(
             files,
             out_dir;
-            baseline_j2=Float64(args["baseline_j2"]),
+            baseline_rho_factor=Float64(args["baseline_rho_factor"]),
+            baseline_j2_override=Float64(args["baseline_j2"]),
             smooth_diagonal=!keep_diag,
         )
     elseif mode != "single"
