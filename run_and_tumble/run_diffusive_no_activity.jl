@@ -63,6 +63,14 @@ function parse_commandline()
             help = "Integer type for positions/densities (e.g., Int16, Int32, Int64)"
             arg_type = String
             required = false
+        "--save_tag"
+            help = "Optional save tag override (mainly used for aggregated multi-run outputs)"
+            arg_type = String
+            required = false
+        "--aggregate_state_list"
+            help = "Path to newline-delimited state files to aggregate (one .jld2 path per line)"
+            arg_type = String
+            required = false
         "--estimate_only"
             help = "Estimate runtime and exit without running the simulation (single-run mode)"
             action = :store_true
@@ -393,6 +401,8 @@ end
     if isempty(states)
         return Dict{Symbol,Vector{Float64}}()
     end
+    bond_weights = Float64[]
+    spatial_weights = Float64[]
     stats_list = Vector{Dict{Symbol,Vector{Float64}}}(undef, length(states))
     for (i, state) in enumerate(states)
         if hasfield(typeof(state), :bond_pass_stats)
@@ -416,11 +426,28 @@ end
         else
             stats_list[i] = Dict{Symbol,Vector{Float64}}()
         end
+        bond_w = 1.0
+        spatial_w = 1.0
+        if haskey(stats_list[i], :bond_pass_sample_count) && !isempty(stats_list[i][:bond_pass_sample_count])
+            bond_w = max(stats_list[i][:bond_pass_sample_count][1], 1.0)
+        elseif hasfield(typeof(state), :t)
+            bond_w = max(Float64(state.t), 1.0)
+        end
+        if haskey(stats_list[i], :bond_pass_spatial_sample_count) && !isempty(stats_list[i][:bond_pass_spatial_sample_count])
+            spatial_w = max(stats_list[i][:bond_pass_spatial_sample_count][1], 1.0)
+        else
+            spatial_w = bond_w
+        end
+        push!(bond_weights, bond_w)
+        push!(spatial_weights, spatial_w)
     end
-    non_empty_stats = [stats for stats in stats_list if !isempty(stats)]
+    non_empty_indices = [i for i in eachindex(stats_list) if !isempty(stats_list[i])]
+    non_empty_stats = [stats_list[i] for i in non_empty_indices]
     if isempty(non_empty_stats)
         return Dict{Symbol,Vector{Float64}}()
     end
+    bond_weights = [bond_weights[i] for i in non_empty_indices]
+    spatial_weights = [spatial_weights[i] for i in non_empty_indices]
 
     shared_keys = Set(keys(non_empty_stats[1]))
     for stats in non_empty_stats[2:end]
@@ -433,10 +460,28 @@ end
         if isempty(vectors)
             continue
         end
-        if key in (:bond_pass_sample_count, :bond_pass_spatial_sample_count)
-            averaged[key] = [sum(v[1] for v in vectors)]
+        if key == :bond_pass_sample_count
+            averaged[key] = [sum(bond_weights)]
+        elseif key == :bond_pass_spatial_sample_count
+            averaged[key] = [sum(spatial_weights)]
+        elseif key == :bond_pass_track_mask
+            averaged[key] = Float64.(vectors[1])
         else
-            averaged[key] = average_array_list(vectors)
+            weights = if key in (:bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg)
+                spatial_weights
+            else
+                bond_weights
+            end
+            total_weight = sum(weights)
+            if total_weight <= 0
+                averaged[key] = average_array_list(vectors)
+            else
+                weighted_sum = zeros(Float64, size(vectors[1]))
+                for (vec, w) in zip(vectors, weights)
+                    weighted_sum .+= vec .* w
+                end
+                averaged[key] = weighted_sum ./ total_weight
+            end
         end
     end
     return averaged
@@ -546,6 +591,121 @@ function description_from_args(args)
     return get_description(params, defaults)
 end
 
+function save_dir_from_args(args)
+    defaults = get_default_params()
+    if haskey(args, "config") && !isnothing(args["config"])
+        params = YAML.load_file(args["config"])
+    else
+        params = defaults
+    end
+    return get(params, "save_dir", defaults["save_dir"])
+end
+
+function legacy_bond_pass_stats(state)
+    legacy_stats = Dict{Symbol,Vector{Float64}}()
+    if hasfield(typeof(state), :ρ_matrix_avg_cuts)
+        legacy_cuts = getfield(state, :ρ_matrix_avg_cuts)
+        for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
+                    :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                    :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
+            if haskey(legacy_cuts, key)
+                legacy_stats[key] = Float64.(legacy_cuts[key])
+            end
+        end
+    end
+    return legacy_stats
+end
+
+function normalize_state_for_aggregation(state)
+    if hasfield(typeof(state), :bond_pass_stats)
+        return state
+    end
+    return FPDiffusive.setDummyState(state, state.ρ_avg, state.ρ_matrix_avg_cuts, state.t, legacy_bond_pass_stats(state))
+end
+
+function read_state_list(path::String)
+    files = String[]
+    for raw_line in eachline(path)
+        line = strip(raw_line)
+        if isempty(line) || startswith(line, "#")
+            continue
+        end
+        push!(files, line)
+    end
+    return files
+end
+
+function aggregate_and_save_states(states::Vector, result_params::Vector, args; using_initial_state::Bool=false, run_description::String="")
+    if isempty(states) || isempty(result_params)
+        error("No states were provided for aggregation.")
+    end
+    first_state = states[1]
+    state_weights = [max(Float64(averaged_sample_count(state)), 1.0) for state in states]
+    total_weight = sum(state_weights)
+    if total_weight <= 0
+        error("Invalid aggregation weights: total effective sample weight is non-positive.")
+    end
+
+    avg_dists = zeros(Float64, size(first_state.ρ_avg))
+    for (state, weight) in zip(states, state_weights)
+        avg_dists .+= state.ρ_avg .* weight
+    end
+    avg_dists ./= total_weight
+
+    shared_corr_keys = Set(keys(first_state.ρ_matrix_avg_cuts))
+    for state in states[2:end]
+        intersect!(shared_corr_keys, Set(keys(state.ρ_matrix_avg_cuts)))
+    end
+    mat_cuts_averaged = Dict{Symbol,AbstractArray{Float64}}()
+    for key in shared_corr_keys
+        weighted_sum = zeros(Float64, size(first_state.ρ_matrix_avg_cuts[key]))
+        for (state, weight) in zip(states, state_weights)
+            weighted_sum .+= state.ρ_matrix_avg_cuts[key] .* weight
+        end
+        mat_cuts_averaged[key] = weighted_sum ./ total_weight
+    end
+
+    total_t = Int(round(total_weight))
+    avg_bond_pass_stats = average_bond_pass_stats(states)
+    dummy_state = FPDiffusive.setDummyState(first_state, avg_dists, mat_cuts_averaged, total_t, avg_bond_pass_stats)
+
+    dummy_state_save_dir = save_dir_from_args(args)
+    save_tag = if haskey(args, "save_tag") && !isnothing(args["save_tag"])
+        String(args["save_tag"])
+    else
+        Dates.format(now(), "yyyymmdd-HHMMSS")
+    end
+    if !startswith(save_tag, "aggregated_")
+        save_tag = "aggregated_" * save_tag
+    end
+    filename = save_state(dummy_state, result_params[1], dummy_state_save_dir;
+                          tag=save_tag, ic="aggregated", relaxed_ic=using_initial_state, description=run_description)
+    println("Final aggregated state saved to: ", filename)
+    return filename
+end
+
+function aggregate_state_list_and_save(args; run_description::String="")
+    if !haskey(args, "aggregate_state_list") || isnothing(args["aggregate_state_list"])
+        error("Internal error: aggregate_state_list_and_save called without --aggregate_state_list.")
+    end
+    state_list_path = String(args["aggregate_state_list"])
+    state_files = read_state_list(state_list_path)
+    if isempty(state_files)
+        error("No state files found in aggregate list: $state_list_path")
+    end
+    println("Aggregating $(length(state_files)) precomputed states from list: $state_list_path")
+
+    states = Any[]
+    result_params = Any[]
+    for state_path in state_files
+        println("Loading state for aggregation: $state_path")
+        @load state_path state param potential
+        push!(states, normalize_state_for_aggregation(state))
+        push!(result_params, param)
+    end
+    aggregate_and_save_states(states, result_params, args; using_initial_state=false, run_description=run_description)
+end
+
 @everywhere function run_one_simulation_from_config(args, seed)
     println("Starting simulation with seed $seed")
     rng = MersenneTwister(seed)
@@ -611,6 +771,11 @@ end
 # Main function.
 function main()
     args = parse_commandline()
+    run_description = description_from_args(args)
+    if haskey(args, "aggregate_state_list") && !isnothing(args["aggregate_state_list"])
+        aggregate_state_list_and_save(args; run_description=run_description)
+        return
+    end
     num_runs = get(args, "num_runs", 1)
     estimate_only = get(args, "estimate_only", false)
     estimate_sample_size = max(get(args, "estimate_sample_size", 100), 1)
@@ -619,7 +784,6 @@ function main()
     if estimate_only && num_runs != 1
         error("--estimate_only is supported only with --num_runs 1.")
     end
-    run_description = description_from_args(args)
     using_initial_state = haskey(args, "initial_state") && !isnothing(args["initial_state"])
     initial_state = nothing
     initial_param = nothing
@@ -679,65 +843,9 @@ function main()
             results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
             n_sweeps=n_sweeps_from_args(args)
         end
-        # Use different seeds for each independent simulation.
-        # Aggregate results (here we average the correlation matrices).
-        dists = [res[1] for res in results]
-        mat_cuts = [res[2] for res in results]
         states = [res[3] for res in results]
-        params = [res[4] for res in results]
-        
-        dim_num = length(params[1].dims)
-        if dim_num == 1
-            full_mats = [mat_cut[:full] for mat_cut in mat_cuts]
-            stacked_corr = cat(full_mats..., dims=3)  # Stack matrices along a new third dimension
-            avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
-            stacked_dists = cat(dists..., dims=2)
-            avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
-        elseif dim_num == 2
-            if haskey(mat_cuts[1],:full)
-                full_mats = [mat_cut[:full] for mat_cut in mat_cuts]
-                stacked_corr = cat(full_mats..., dims=5)  # Stack 4D tensors along 5th dimension
-                avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)  # Average over 5th dimension
-            else
-                x_cut_mats = [mat_cut[:x_cut] for mat_cut in mat_cuts]
-                y_cut_mats = [mat_cut[:y_cut] for mat_cut in mat_cuts]
-                diagonal_cut_mats = [mat_cut[:diag_cut] for mat_cut in mat_cuts]
-                stacked_corr_x_cut = cat(x_cut_mats..., dims=3)
-                stacked_corr_y_cut = cat(y_cut_mats..., dims=3)
-                stacked_corr_diagonal_cut = cat(diagonal_cut_mats..., dims=3)
-                avg_corr_x_cut = dropdims(mean(stacked_corr_x_cut, dims=3), dims=3)
-                avg_corr_y_cut = dropdims(mean(stacked_corr_y_cut, dims=3), dims=3)
-                avg_corr_diagonal_cut = dropdims(mean(stacked_corr_diagonal_cut, dims=3), dims=3)
-            end
-            stacked_dists = cat(dists..., dims=3)  # Stack 2D matrices along 3rd dimension
-            avg_dists = dropdims(mean(stacked_dists, dims=3), dims=3)  # Average over 3rd dimension
-        else
-            error("Unsupported correlation matrix dimensions: $(ndims(corr_mats[1]))")
-        end
-        if haskey(mat_cuts[1],:full)
-            mat_cuts_averaged = Dict(:full => avg_corr)
-        else
-            mat_cuts_averaged = Dict(:x_cut => avg_corr_x_cut, :y_cut => avg_corr_y_cut, :diag_cut => avg_corr_diagonal_cut)
-        end
-
-        shared_extra_keys = Set(keys(mat_cuts[1]))
-        for mat_cut in mat_cuts[2:end]
-            intersect!(shared_extra_keys, Set(keys(mat_cut)))
-        end
-        for base_key in (:full, :x_cut, :y_cut, :diag_cut)
-            delete!(shared_extra_keys, base_key)
-        end
-        for key in shared_extra_keys
-            arrays_to_average = [mat_cut[key] for mat_cut in mat_cuts]
-            mat_cuts_averaged[key] = average_array_list(arrays_to_average)
-        end
-        
-        total_t = n_sweeps*(num_runs-1)+states[1].t 
-        avg_bond_pass_stats = average_bond_pass_stats(states)
-        dummy_state = FPDiffusive.setDummyState(states[1], avg_dists, mat_cuts_averaged, total_t, avg_bond_pass_stats)
-
-        dummy_state_save_dir = "dummy_states"
-        save_state(dummy_state,params[1],dummy_state_save_dir; relaxed_ic=using_initial_state, description=run_description)
+        result_params = [res[4] for res in results]
+        aggregate_and_save_states(states, result_params, args; using_initial_state=using_initial_state, run_description=run_description)
 
         
         # Save aggregated results to a separate file.

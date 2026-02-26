@@ -15,6 +15,9 @@ const BOND_PASS_SPATIAL_F_AVG_KEY = :bond_pass_spatial_f_avg
 const BOND_PASS_SPATIAL_F2_AVG_KEY = :bond_pass_spatial_f2_avg
 const BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY = :bond_pass_spatial_sample_count
 
+# Exact (Float64) value of exp(-1)*(I0(1)+I1(1)), where I0/I1 are modified Bessel functions.
+const SINGLE_ORIGIN_VARJ_BASELINE_FACTOR = 0.6736700229433489
+
 function remove_antisymmetric_part_reflection(matrix, x0)
     n = size(matrix, 1)
     indices = mod1.(2 * x0 .- (1:n), n)  # Compute the reflected indices for each row
@@ -551,8 +554,7 @@ function plot_spatial_force_statistics_1d(
     f_avg, f2_avg, samples = spatial_force_moments_1d(state, L)
     var_f = max.(0.0, f2_avg .- f_avg .^ 2)
     log_floor = 1e-12
-    besseli_factor = 0.67367 # 1*exp(-1)*(I0(1)+I1(1))
-    baseline_value = isnothing(var_baseline) ? besseli_factor * param.ρ₀ : Float64(var_baseline)
+    baseline_value = isnothing(var_baseline) ? SINGLE_ORIGIN_VARJ_BASELINE_FACTOR * param.ρ₀ : Float64(var_baseline)
     baseline_label = @sprintf("%.4g", baseline_value)
     ref_bond_site = if ref_site === nothing
         isempty(bonds) ? max(1, div(L, 2)) : bonds[1][1]

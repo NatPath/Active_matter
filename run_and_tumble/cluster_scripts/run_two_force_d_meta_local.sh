@@ -14,16 +14,21 @@ Required:
 
 Optional:
   --warmup_state_dir  warmup state directory for production mode
+  --num_replicas      number of independent replicas to run and aggregate per d (default: 1)
   --d_min             minimum d (default: 2)
   --d_max             maximum d (default: L/4)
   --d_step            d step (default: 2)
   --status_interval   progress snapshot period in seconds (default: 20)
   --plot_sweeps       enable plot_sweep display during local runs
+  --run_label         optional custom run label prefix
   -h, --help          show this help
 
 Behavior:
   - warmup: runs configs without --initial_state
   - production: finds matching warmup state for each d and errors if any is missing
+  - with --num_replicas > 1: each d-run executes replicated simulations in parallel workers and saves an aggregated state
+  - creates a local run folder under runs/two_force_d/local/<mode>/<run_id>
+  - runs load_and_plot.jl (mode=two_force_d) and saves analysis under run reports
 EOF
 }
 
@@ -52,8 +57,10 @@ warmup_state_dir=""
 d_min="2"
 d_max=""
 d_step="2"
+num_replicas="1"
 status_interval="20"
 plot_sweeps="false"
+run_label=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -77,6 +84,10 @@ while [[ $# -gt 0 ]]; do
             warmup_state_dir="${2:-}"
             shift 2
             ;;
+        --num_replicas)
+            num_replicas="${2:-}"
+            shift 2
+            ;;
         --d_min)
             d_min="${2:-}"
             shift 2
@@ -96,6 +107,10 @@ while [[ $# -gt 0 ]]; do
         --plot_sweeps)
             plot_sweeps="true"
             shift 1
+            ;;
+        --run_label)
+            run_label="${2:-}"
+            shift 2
             ;;
         -h|--help)
             usage
@@ -127,6 +142,10 @@ fi
 
 if ! [[ "${n_sweeps_val}" =~ ^[0-9]+$ ]] || (( n_sweeps_val <= 0 )); then
     echo "--n_sweeps must be a positive integer. Got '${n_sweeps_val}'."
+    exit 1
+fi
+if ! [[ "${num_replicas}" =~ ^[0-9]+$ ]] || (( num_replicas <= 0 )); then
+    echo "--num_replicas must be a positive integer. Got '${num_replicas}'."
     exit 1
 fi
 
@@ -170,18 +189,29 @@ build_show_times_csv() {
     echo "${times[*]}"
 }
 
+slugify() {
+    printf "%s" "$1" | sed -E 's/[^A-Za-z0-9._-]+/_/g'
+}
+
 write_runtime_config() {
     local src_cfg="$1"
     local dst_cfg="$2"
     local show_csv="$3"
+    local save_dir="$4"
     local show_line="show_times: [${show_csv}]"
+    local save_dir_line="save_dir: \"${save_dir}\""
 
-    awk -v show_line="${show_line}" '
-    BEGIN {seen_cluster=0; seen_show=0}
+    awk -v show_line="${show_line}" -v save_dir_line="${save_dir_line}" '
+    BEGIN {seen_cluster=0; seen_show=0; seen_save=0}
     {
         if ($0 ~ /^cluster_mode:[[:space:]]*/) {
             print "cluster_mode: false"
             seen_cluster=1
+            next
+        }
+        if ($0 ~ /^save_dir:[[:space:]]*/) {
+            print save_dir_line
+            seen_save=1
             next
         }
         if ($0 ~ /^show_times:[[:space:]]*/) {
@@ -193,6 +223,7 @@ write_runtime_config() {
     }
     END {
         if (!seen_cluster) print "cluster_mode: false"
+        if (!seen_save) print save_dir_line
         if (!seen_show) print show_line
     }' "${src_cfg}" > "${dst_cfg}"
 }
@@ -214,6 +245,7 @@ echo "  mode=${mode}"
 echo "  L=${L}"
 echo "  rho0=${RHO0}"
 echo "  n_sweeps=${n_sweeps_val}"
+echo "  num_replicas=${num_replicas}"
 echo "  d range: ${D_MIN}:${D_STEP}:${D_MAX}"
 echo "  status_interval=${status_interval}s"
 echo "  plot_sweeps=${plot_sweeps}"
@@ -226,12 +258,9 @@ if [[ "${mode}" == "production" ]]; then
     fi
 fi
 
-tmp_cfg_dir=""
 show_csv=""
 if [[ "${plot_sweeps}" == "true" ]]; then
     show_csv="$(build_show_times_csv "${n_sweeps_val}")"
-    tmp_cfg_dir="$(mktemp -d)"
-    trap '[[ -n "${tmp_cfg_dir}" ]] && rm -rf "${tmp_cfg_dir}"' EXIT
 fi
 
 render_bar() {
@@ -302,10 +331,27 @@ extract_progress_percent() {
 }
 
 logs_root="${REPO_ROOT}/condor_logs/local_two_force_d"
-run_stamp="$(date +%Y%m%d-%H%M%S)"
-logs_dir="${logs_root}/${mode}_${run_stamp}"
+timestamp="$(date +%Y%m%d-%H%M%S)"
+rho_tag="$(slugify "${rho_val}")"
+if [[ -z "${run_label}" ]]; then
+    run_label="${mode}_L${L_val}_rho${rho_tag}_ns${n_sweeps_val}_d${D_MIN}-${D_MAX}-s${D_STEP}_local"
+    if (( num_replicas > 1 )); then
+        run_label="${run_label}_nr${num_replicas}"
+    fi
+fi
+run_label="$(slugify "${run_label}")"
+run_id="${run_label}_${timestamp}"
+
+logs_dir="${logs_root}/${run_id}"
 mkdir -p "${logs_dir}"
-plot_out_dir="${REPO_ROOT}/results_figures/fitting/local_two_force_d/${mode}_${run_stamp}"
+run_root_local="${REPO_ROOT}/runs/two_force_d/local/${mode}/${run_id}"
+state_root_local="${run_root_local}/states"
+config_root_local="${run_root_local}/configs"
+plot_out_dir="${run_root_local}/reports/load_and_plot"
+run_info="${run_root_local}/run_info.txt"
+run_manifest="${run_root_local}/manifest.csv"
+local_registry="${REPO_ROOT}/runs/two_force_d/local/run_registry.csv"
+mkdir -p "${state_root_local}" "${config_root_local}" "${plot_out_dir}"
 
 declare -a job_ds=()
 declare -a job_configs=()
@@ -313,6 +359,24 @@ declare -a job_init_states=()
 declare -a job_logs=()
 declare -a job_pids=()
 declare -a job_statuses=()
+
+latest_matching_two_force_state() {
+    local search_root="$1"
+    local d="$2"
+    local newest_path=""
+    local newest_mtime=0
+    local candidate mtime
+
+    while IFS= read -r -d '' candidate; do
+        mtime="$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)"
+        if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= newest_mtime )); then
+            newest_mtime="${mtime}"
+            newest_path="${candidate}"
+        fi
+    done < <(find "${search_root}" -type f \( -name "two_force_d${d}_warmup_*.jld2" -o -name "two_force_d${d}_*.jld2" \) -print0 2>/dev/null)
+
+    printf "%s" "${newest_path}"
+}
 
 for d in $(seq "${D_MIN}" "${D_STEP}" "${D_MAX}"); do
     if (( d % 2 != 0 )); then
@@ -325,19 +389,18 @@ for d in $(seq "${D_MIN}" "${D_STEP}" "${D_MAX}"); do
         exit 1
     fi
 
-    runtime_config="${config_path}"
-    if [[ "${plot_sweeps}" == "true" ]]; then
-        runtime_config="${tmp_cfg_dir}/${mode}_d_${d}.yaml"
-        write_runtime_config "${config_path}" "${runtime_config}" "${show_csv}"
-    fi
+    runtime_config="${config_root_local}/${mode}_d_${d}.yaml"
+    save_dir_for_d="${state_root_local}/d_${d}"
+    mkdir -p "${save_dir_for_d}"
+    write_runtime_config "${config_path}" "${runtime_config}" "${show_csv}" "${save_dir_for_d}"
 
     init_state=""
     if [[ "${mode}" == "warmup" ]]; then
         :
     else
-        init_state="$(ls -1t "${warmup_state_dir}"/two_force_d${d}_warmup_* 2>/dev/null | head -n 1 || true)"
+        init_state="$(latest_matching_two_force_state "${warmup_state_dir}" "${d}")"
         if [[ -z "${init_state}" ]]; then
-            echo "ERROR: no warmup state matching ${warmup_state_dir}/two_force_d${d}_warmup_* for d=${d}"
+            echo "ERROR: no warmup state matching two_force_d${d}_warmup_* under ${warmup_state_dir} for d=${d}"
             exit 1
         fi
     fi
@@ -371,10 +434,14 @@ for idx in "${!job_ds[@]}"; do
     cfg="${job_configs[idx]}"
     log="${job_logs[idx]}"
     init_state="${job_init_states[idx]}"
+    runner_args=()
+    if (( num_replicas > 1 )); then
+        runner_args+=(--num_runs "${num_replicas}" --save_tag "aggregated_${run_id}_d${d}")
+    fi
     if [[ "${mode}" == "warmup" ]]; then
-        bash "${RUNNER_SCRIPT}" "${cfg}" > "${log}" 2>&1 &
+        bash "${RUNNER_SCRIPT}" "${cfg}" "${runner_args[@]}" > "${log}" 2>&1 &
     else
-        bash "${RUNNER_SCRIPT}" "${cfg}" --initial_state "${init_state}" > "${log}" 2>&1 &
+        bash "${RUNNER_SCRIPT}" "${cfg}" --initial_state "${init_state}" "${runner_args[@]}" > "${log}" 2>&1 &
     fi
     job_pids+=("$!")
     job_statuses[idx]="RUN"
@@ -449,6 +516,9 @@ run_load_and_plot_batch() {
         log="${job_logs[idx]}"
         recovered="$(extract_saved_state_from_log "${log}")"
         if [[ -z "${recovered}" || ! -f "${recovered}" ]]; then
+            recovered="$(ls -1t "${state_root_local}/d_${d}"/*.jld2 2>/dev/null | head -n 1 || true)"
+        fi
+        if [[ -z "${recovered}" || ! -f "${recovered}" ]]; then
             local mode_tag
             if [[ "${mode}" == "warmup" ]]; then
                 mode_tag="warmup"
@@ -487,11 +557,74 @@ run_load_and_plot_batch() {
 }
 
 echo
+run_status="DONE"
+plot_status="SKIPPED"
 if (( fail_count == 0 )); then
     echo "Local ${mode} run completed successfully for d values in ${D_MIN}:${D_STEP}:${D_MAX}."
-    run_load_and_plot_batch
+    if run_load_and_plot_batch; then
+        plot_status="DONE"
+    else
+        plot_status="FAILED"
+    fi
 else
+    run_status="FAILED"
     echo "Local ${mode} run completed with ${fail_count} failed job(s)."
     echo "Inspect logs in: ${logs_dir}"
+fi
+
+saved_state_sample="$(find "${state_root_local}" -type f -name '*.jld2' | sort | tail -n 1 || true)"
+
+cat > "${run_info}" <<EOF
+run_id=${run_id}
+timestamp=${timestamp}
+mode=${mode}
+L=${L}
+rho0=${RHO0}
+n_sweeps=${n_sweeps_val}
+d_min=${D_MIN}
+d_max=${D_MAX}
+d_step=${D_STEP}
+num_replicas=${num_replicas}
+status_interval=${status_interval}
+plot_sweeps=${plot_sweeps}
+run_status=${run_status}
+plot_status=${plot_status}
+run_root=${run_root_local}
+logs_dir=${logs_dir}
+state_dir=${state_root_local}
+saved_state_sample=${saved_state_sample}
+reports_dir=${plot_out_dir}
+warmup_state_dir=${warmup_state_dir}
+EOF
+
+echo "d,status,config_path,log_file,state_file,initial_state" > "${run_manifest}"
+for idx in "${!job_ds[@]}"; do
+    d="${job_ds[idx]}"
+    status="${job_statuses[idx]}"
+    cfg="${job_configs[idx]}"
+    log="${job_logs[idx]}"
+    init_state="${job_init_states[idx]}"
+    state_file="$(extract_saved_state_from_log "${log}")"
+    if [[ -z "${state_file}" || ! -f "${state_file}" ]]; then
+        state_file="$(ls -1t "${state_root_local}/d_${d}"/*.jld2 2>/dev/null | head -n 1 || true)"
+    fi
+    printf "%s,%s,%s,%s,%s,%s\n" \
+        "${d}" "${status}" "${cfg}" "${log}" "${state_file}" "${init_state}" >> "${run_manifest}"
+done
+
+mkdir -p "$(dirname "${local_registry}")"
+if [[ ! -f "${local_registry}" ]]; then
+    echo "timestamp,run_id,mode,L,rho0,n_sweeps,d_min,d_max,d_step,num_replicas,run_status,plot_status,run_root,logs_dir,state_dir,reports_dir,warmup_state_dir" > "${local_registry}"
+fi
+printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+    "${timestamp}" "${run_id}" "${mode}" "${L}" "${RHO0}" "${n_sweeps_val}" \
+    "${D_MIN}" "${D_MAX}" "${D_STEP}" "${num_replicas}" "${run_status}" "${plot_status}" \
+    "${run_root_local}" "${logs_dir}" "${state_root_local}" "${plot_out_dir}" "${warmup_state_dir}" >> "${local_registry}"
+
+echo "Manifest: ${run_manifest}"
+echo "Run info: ${run_info}"
+echo "Reports: ${plot_out_dir}"
+
+if [[ "${run_status}" != "DONE" ]]; then
     exit 1
 fi

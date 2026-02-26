@@ -143,9 +143,9 @@ function parse_commandline()
             help = "Skip per-state sweep/component plots"
             action = :store_true
         "--baseline_j2"
-            help = "Baseline for (<J^2>-baseline) vs d analysis"
+            help = "Baseline override for (<J^2>-baseline) vs d analysis (default: auto 0.089*rho0^2)"
             arg_type = Float64
-            default = 89000.0
+            default = NaN
         "--corr_model_c"
             help = "Fixed constant offset C in bond-correlation model fit (default 0)"
             arg_type = Float64
@@ -154,32 +154,67 @@ function parse_commandline()
     return parse_args(s)
 end
 
+function candidate_two_force_run_bases(cluster_results_root::AbstractString)
+    requested_root = abspath(String(cluster_results_root))
+    repo_root = abspath(@__DIR__)
+    bases = String[]
+    seen = Set{String}()
+    for root in (requested_root, repo_root)
+        base = joinpath(root, "runs", "two_force_d")
+        if !(base in seen)
+            push!(bases, base)
+            push!(seen, base)
+        end
+    end
+    return bases
+end
+
 function resolve_run_id_dir(run_id::AbstractString, cluster_results_root::AbstractString, run_result_mode::AbstractString)
     run_id_str = String(run_id)
     run_result_mode_str = String(run_result_mode)
-    cluster_results_root_str = String(cluster_results_root)
-    root = abspath(cluster_results_root_str)
-    base = joinpath(root, "runs", "two_force_d")
-    warmup_dir = joinpath(base, "warmup", run_id_str)
-    production_dir = joinpath(base, "production", run_id_str)
+    bases = candidate_two_force_run_bases(cluster_results_root)
+    tried = String[]
 
     if run_result_mode_str == "warmup"
-        isdir(warmup_dir) || error("run_id not found at $(warmup_dir)")
-        return warmup_dir, "warmup"
+        for base in bases
+            dir = joinpath(base, "warmup", run_id_str)
+            push!(tried, dir)
+            if isdir(dir)
+                return dir, "warmup"
+            end
+        end
+        error("run_id not found in warmup mode. Tried: $(join(tried, ", "))")
     elseif run_result_mode_str == "production"
-        isdir(production_dir) || error("run_id not found at $(production_dir)")
-        return production_dir, "production"
+        for base in bases
+            dir = joinpath(base, "production", run_id_str)
+            push!(tried, dir)
+            if isdir(dir)
+                return dir, "production"
+            end
+        end
+        error("run_id not found in production mode. Tried: $(join(tried, ", "))")
     elseif run_result_mode_str == "auto"
-        has_warmup = isdir(warmup_dir)
-        has_production = isdir(production_dir)
-        if has_warmup && !has_production
-            return warmup_dir, "warmup"
-        elseif has_production && !has_warmup
-            return production_dir, "production"
-        elseif has_warmup && has_production
-            error("run_id exists in both warmup and production. Use --run_result_mode to disambiguate.")
+        matches = Vector{Tuple{String,String}}()
+        for base in bases
+            warmup_dir = joinpath(base, "warmup", run_id_str)
+            production_dir = joinpath(base, "production", run_id_str)
+            push!(tried, warmup_dir)
+            push!(tried, production_dir)
+            if isdir(warmup_dir)
+                push!(matches, (warmup_dir, "warmup"))
+            end
+            if isdir(production_dir)
+                push!(matches, (production_dir, "production"))
+            end
+        end
+
+        if length(matches) == 1
+            return matches[1]
+        elseif isempty(matches)
+            error("run_id not found for mode=auto. Tried: $(join(tried, ", "))")
         else
-            error("run_id not found under $(base) for mode=auto.")
+            choices = join(["$(m[1]) [$(m[2])]" for m in matches], ", ")
+            error("run_id is ambiguous (found in multiple locations). Use --run_result_mode/--cluster_results_root to disambiguate. Found: $choices")
         end
     else
         error("--run_result_mode must be warmup, production, or auto. Got '$run_result_mode_str'.")
@@ -187,18 +222,23 @@ function resolve_run_id_dir(run_id::AbstractString, cluster_results_root::Abstra
 end
 
 function collect_files_from_run_id(run_id::AbstractString, cluster_results_root::AbstractString, run_result_mode::AbstractString)
-    run_id_str = String(run_id)
-    cluster_results_root_str = String(cluster_results_root)
-    run_result_mode_str = String(run_result_mode)
     run_dir, resolved_mode = resolve_run_id_dir(run_id, cluster_results_root, run_result_mode)
     states_dir = joinpath(run_dir, "states")
     isdir(states_dir) || error("States directory not found for run_id: $(states_dir)")
 
-    files = sort(filter(path -> isfile(path) && endswith(lowercase(path), ".jld2"),
-                        readdir(states_dir; join=true)))
+    files = String[]
+    for (root, _, names) in walkdir(states_dir)
+        for name in names
+            if endswith(lowercase(name), ".jld2")
+                push!(files, joinpath(root, name))
+            end
+        end
+    end
+    sort!(files)
     isempty(files) && error("No JLD2 files found in run states directory: $(states_dir)")
 
-    default_out_dir = joinpath(abspath(cluster_results_root_str), "fitting", "two_force_d", resolved_mode, run_id_str)
+    ts = Dates.format(now(), "yyyymmdd-HHMMSS")
+    default_out_dir = joinpath(run_dir, "reports", "load_and_plot_" * ts)
     return files, default_out_dir, resolved_mode, run_dir
 end
 
@@ -503,6 +543,132 @@ function add_reference_slopes!(p, x::Vector{Float64}, anchor_x::Float64, anchor_
     end
 end
 
+function center_origin_bond_1d(L::Int)
+    b1 = max(1, div(L, 2))
+    b2 = mod1(b1 + 1, L)
+    return b1, b2
+end
+
+function is_single_origin_fluctuating_state_1d(state, param)
+    if length(param.dims) != 1
+        return false, 0, 0
+    end
+    L = param.dims[1]
+    bonds, magnitudes = forcing_bonds_1d(state, L)
+    tracked = tracked_force_indices(state, magnitudes)
+    if isempty(tracked)
+        tracked = collect(1:length(bonds))
+    end
+    if length(tracked) != 1
+        return false, 0, 0
+    end
+    idx = tracked[1]
+    if idx > length(bonds)
+        return false, 0, 0
+    end
+    b1, b2 = bonds[idx]
+    origin_b1, origin_b2 = center_origin_bond_1d(L)
+    is_origin = (b1 == origin_b1 && b2 == origin_b2) || (b1 == origin_b2 && b2 == origin_b1)
+    return is_origin, b1, b2
+end
+
+function symmetrized_varj_shifted_profile_1d(state, param; ref_site::Int)
+    L = param.dims[1]
+    f_avg, f2_avg, samples = PlotUtils.spatial_force_moments_1d(state, L)
+    var_f = max.(0.0, f2_avg .- f_avg .^ 2)
+    baseline = PlotUtils.SINGLE_ORIGIN_VARJ_BASELINE_FACTOR * param.ρ₀
+    dist_var, var_sym = PlotUtils.average_by_abs_distance(var_f, ref_site)
+    var_sym_shifted = var_sym .- baseline
+    mask = (dist_var .> 0) .& isfinite.(var_sym_shifted) .& (var_sym_shifted .> 0)
+    x = Float64.(dist_var[mask])
+    y = Float64.(var_sym_shifted[mask])
+    return x, y, samples, baseline
+end
+
+function plot_single_origin_varj_reference_slopes(state, param; title_suffix::AbstractString="")
+    is_origin, b1, _ = is_single_origin_fluctuating_state_1d(state, param)
+    if !is_origin
+        return nothing
+    end
+    x, y, samples, baseline = symmetrized_varj_shifted_profile_1d(state, param; ref_site=b1)
+    if isempty(x)
+        return nothing
+    end
+
+    p = plot(title=@sprintf("Symmetrized Var(J)-%.4g vs |Δx|%s (%d sweeps)", baseline, title_suffix, samples),
+             xlabel="|Δx| from origin bond",
+             ylabel="Symmetrized Var(J)-baseline (log-log)",
+             xscale=:log10,
+             yscale=:log10,
+             framestyle=:box,
+             legend=:outerright,
+             grid=:both)
+
+    fit = fit_loglog_powerlaw(x, y)
+    if !isnothing(fit)
+        anchor_x = exp(mean(log.(fit.x)))
+        anchor_y = 10^(fit.intercept + fit.slope * log10(anchor_x))
+        add_reference_slopes!(p, x, anchor_x, anchor_y)
+    else
+        anchor_x = exp(mean(log.(x)))
+        anchor_y = exp(mean(log.(y)))
+        add_reference_slopes!(p, x, anchor_x, anchor_y)
+    end
+
+    plot!(p, x, y,
+          lw=2.3,
+          color=:purple,
+          marker=:circle,
+          markersize=3.8,
+          alpha=0.95,
+          label="Var(J)-baseline")
+    return p
+end
+
+function plot_single_origin_varj_loglog_fit(state, param; title_suffix::AbstractString="")
+    is_origin, b1, _ = is_single_origin_fluctuating_state_1d(state, param)
+    if !is_origin
+        return nothing
+    end
+    x, y, samples, baseline = symmetrized_varj_shifted_profile_1d(state, param; ref_site=b1)
+    if isempty(x)
+        return nothing
+    end
+
+    p = plot(x, y,
+             title=@sprintf("Symmetrized Var(J)-%.4g log-log fit%s (%d sweeps)", baseline, title_suffix, samples),
+             xlabel="|Δx| from origin bond",
+             ylabel="Symmetrized Var(J)-baseline (log-log)",
+             lw=2.1,
+             color=:purple,
+             marker=:circle,
+             markersize=3.5,
+             label="Var(J)-baseline",
+             xscale=:log10,
+             yscale=:log10,
+             framestyle=:box,
+             legend=:outerright,
+             grid=:both)
+
+    fit = fit_loglog_powerlaw(x, y)
+    if !isnothing(fit)
+        x_fit = fit.x
+        y_fit = 10 .^ (fit.intercept .+ fit.slope .* log10.(x_fit))
+        plot!(p, x_fit, y_fit,
+              lw=2.3,
+              color=:black,
+              linestyle=:dashdot,
+              alpha=0.9,
+              label=@sprintf("log-log fit slope=%.3f (R²=%.3f)", fit.slope, fit.r2))
+
+        anchor_x = exp(mean(log.(x_fit)))
+        anchor_y = 10^(fit.intercept + fit.slope * log10(anchor_x))
+        add_reference_slopes!(p, x_fit, anchor_x, anchor_y)
+    end
+
+    return p
+end
+
 function plot_bond_cut_model_fits_1d(state, param; smooth_diagonal::Bool=true, corr_model_c::Float64=0.0)
     L = param.dims[1]
     bonds, magnitudes = forcing_bonds_1d(state, L)
@@ -638,6 +804,20 @@ function save_diffusive_sweep_components(saved_state::String, state, param, out_
             savefig(plt, output_file)
             println("Saved ", output_file)
         end
+
+        p_varj_ref = plot_single_origin_varj_reference_slopes(state, param)
+        if !isnothing(p_varj_ref)
+            output_file = joinpath(state_dir, "10_symmetrized_varj_reference_slopes.png")
+            savefig(p_varj_ref, output_file)
+            println("Saved ", output_file)
+        end
+
+        p_varj_fit = plot_single_origin_varj_loglog_fit(state, param)
+        if !isnothing(p_varj_fit)
+            output_file = joinpath(state_dir, "11_symmetrized_varj_loglog_fit.png")
+            savefig(p_varj_fit, output_file)
+            println("Saved ", output_file)
+        end
     else
         PlotUtils.plot_sweep(state.t, state, param)
         output_file = joinpath(state_dir, "00_composite.png")
@@ -684,7 +864,7 @@ function save_legacy_sweep_plot(saved_state::String, state, param, out_dir::Stri
 end
 
 function analyze_two_force_d(files::Vector{String}, out_dir::String;
-                             baseline_j2::Float64=89000.0,
+                             baseline_j2::Float64=NaN,
                              smooth_diagonal::Bool=true)
     rows = NamedTuple[]
 
@@ -735,13 +915,21 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 end
             end
 
+            rho0 = Float64(param.ρ₀)
+            baseline_row = isfinite(baseline_j2) ? baseline_j2 : (0.089 * rho0^2)
+            j2_vals_shifted = [isfinite(v) ? (v - baseline_row) : NaN for v in j2_vals]
+
             push!(rows, (
                 file=saved_state,
                 d=Int(d),
+                rho0=rho0,
+                baseline_j2=baseline_row,
                 var_vals=var_vals,
                 var_mean=finite_mean(var_vals),
                 j2_vals=j2_vals,
                 j2_mean=finite_mean(j2_vals),
+                j2_vals_shifted=j2_vals_shifted,
+                j2_mean_shifted=finite_mean(j2_vals_shifted),
             ))
         catch e
             println("Failed in d-analysis for ", saved_state, ": ", e)
@@ -760,7 +948,8 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
     x = Float64.(d_values)
     y_var_mean = [finite_mean([row.var_mean for row in grouped[d]]) for d in d_values]
     y_j2_mean = [finite_mean([row.j2_mean for row in grouped[d]]) for d in d_values]
-    y_j2_mean_shifted = [y - baseline_j2 for y in y_j2_mean]
+    y_baseline_mean = [finite_mean([row.baseline_j2 for row in grouped[d]]) for d in d_values]
+    y_j2_mean_shifted = [finite_mean([row.j2_mean_shifted for row in grouped[d]]) for d in d_values]
 
     y_var_slots = [fill(NaN, length(d_values)) for _ in 1:max_slots]
     y_j2_slots = [fill(NaN, length(d_values)) for _ in 1:max_slots]
@@ -770,6 +959,7 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
         for slot in 1:max_slots
             vals_var = Float64[]
             vals_j2 = Float64[]
+            vals_j2_shifted = Float64[]
             for row in bucket
                 if slot <= length(row.var_vals)
                     push!(vals_var, row.var_vals[slot])
@@ -777,12 +967,17 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 if slot <= length(row.j2_vals)
                     push!(vals_j2, row.j2_vals[slot])
                 end
+                if slot <= length(row.j2_vals_shifted)
+                    push!(vals_j2_shifted, row.j2_vals_shifted[slot])
+                end
             end
             y_var_slots[slot][di] = finite_mean(vals_var)
             y_j2_slots[slot][di] = finite_mean(vals_j2)
-            y_j2_slots_shifted[slot][di] = y_j2_slots[slot][di] - baseline_j2
+            y_j2_slots_shifted[slot][di] = finite_mean(vals_j2_shifted)
         end
     end
+
+    baseline_label = isfinite(baseline_j2) ? @sprintf("baseline=%.6g", baseline_j2) : "baseline=0.089*rho0^2 (per-state)"
 
     analysis_dir = joinpath(out_dir, "two_force_d_analysis")
     mkpath(analysis_dir)
@@ -896,12 +1091,12 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                  shifted=false,
                  loglog=true)
     save_j2_plot("04_j2_minus_baseline_vs_d_linear.png",
-                 @sprintf("⟨J²⟩-baseline vs d, baseline=%.0f", baseline_j2),
+                 "⟨J²⟩-baseline vs d, " * baseline_label,
                  "⟨J²⟩ - baseline";
                  shifted=true,
                  loglog=false)
     save_j2_plot("05_j2_minus_baseline_vs_d_loglog.png",
-                 @sprintf("⟨J²⟩-baseline vs d (log-log), baseline=%.0f", baseline_j2),
+                 "⟨J²⟩-baseline vs d (log-log), " * baseline_label,
                  "⟨J²⟩ - baseline";
                  shifted=true,
                  loglog=true,
@@ -909,9 +1104,9 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
 
     summary_file = joinpath(analysis_dir, "summary_vs_d.csv")
     open(summary_file, "w") do io
-        println(io, "d,var_mean,j2_mean,j2_minus_baseline")
+        println(io, "d,var_mean,j2_mean,baseline_mean,j2_minus_baseline")
         for (i, d) in enumerate(d_values)
-            println(io, @sprintf("%d,%.10g,%.10g,%.10g", d, y_var_mean[i], y_j2_mean[i], y_j2_mean_shifted[i]))
+            println(io, @sprintf("%d,%.10g,%.10g,%.10g,%.10g", d, y_var_mean[i], y_j2_mean[i], y_baseline_mean[i], y_j2_mean_shifted[i]))
         end
     end
     println("Saved ", summary_file)
@@ -925,8 +1120,12 @@ function main()
     skip_per_state = get(args, "skip_per_state_sweep", false)
     corr_model_c = Float64(get(args, "corr_model_c", 0.0))
     mode_raw = String(args["mode"])
-    mode = mode_raw == "run_id" ? "two_force_d" : mode_raw
     run_id = strip(String(get(args, "run_id", "")))
+    if !isempty(run_id) && mode_raw == "single"
+        println("run_id was provided with mode=single; using two_force_d analysis mode.")
+        mode_raw = "run_id"
+    end
+    mode = mode_raw == "run_id" ? "two_force_d" : mode_raw
     run_result_mode = String(get(args, "run_result_mode", "auto"))
     cluster_results_root = String(get(args, "cluster_results_root", "cluster_results"))
     out_dir_arg = String(args["out_dir"])
@@ -942,6 +1141,9 @@ function main()
 
     if mode_raw == "run_id" && isempty(run_id)
         error("--mode run_id requires --run_id.")
+    end
+    if !isempty(run_id) && mode != "two_force_d"
+        error("--run_id is supported only with --mode run_id or --mode two_force_d.")
     end
 
     if !isempty(run_id)

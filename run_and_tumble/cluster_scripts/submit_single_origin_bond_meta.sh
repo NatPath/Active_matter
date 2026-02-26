@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  bash submit_two_force_d_meta.sh --n_sweeps <int> [--mode <warmup|production|warmup_production>] [--L <int>] [--rho <value>] [options]
+  bash submit_single_origin_bond_meta.sh --n_sweeps <int> [--mode <warmup|production|warmup_production>] [--L <int>] [--rho <value>] [options]
 
 Required:
   --n_sweeps          number of sweeps for selected mode (production sweeps for warmup_production)
@@ -17,11 +17,10 @@ Optional:
   --replica_strategy  replica execution strategy on cluster: mp or dag (default: mp)
   --warmup_n_sweeps   warmup sweeps for --mode warmup_production
   --warmup_run_id     specific warmup run_id to initialize production from
+  --continue_run_id   specific production run_id to continue from
   --warmup_state_dir  warmup state directory for production mode
-  --continue_run_id   continue accumulation from an existing run_id (same mode)
-  --d_min             minimum d (default: 2)
-  --d_max             maximum d (default: L/4)
-  --d_step            d step (default: 2)
+  --ffr               fluctuation rate at origin bond (default: 1.0)
+  --force_strength    forcing magnitude at origin bond (default: 1.0)
   --run_label         optional custom run label prefix
   -h, --help          show this help
 
@@ -30,16 +29,13 @@ Behavior:
   - production initialization: starts from warmup state (via --warmup_run_id, --warmup_state_dir, or auto-registry lookup)
   - production continuation: starts from latest state under --continue_run_id
   - warmup_production: submits one chained DAG
-      1) warmup single-process sweep per d (no replicas)
-      2) production run(s) initialized from those warmup states (num_replicas + replica_strategy)
-  - with --replica_strategy mp and --num_replicas > 1: each d uses one Condor job with Julia multi-process workers, saving one aggregated state per d
+      1) warmup single-process run (no replicas)
+      2) production run(s) initialized from that warmup state (num_replicas + replica_strategy)
+  - with --replica_strategy mp and --num_replicas > 1: one Condor job uses Julia multi-process workers and saves one aggregated state
     default request_cpus is num_replicas + 1 (main process + workers)
-  - with --replica_strategy dag and --num_replicas > 1: each d uses DAG nodes (replica jobs -> aggregation child)
+  - with --replica_strategy dag and --num_replicas > 1: Condor DAG submits one job per replica, then an aggregation child job
     default request_cpus is 1 per replica node (unless --request_cpus is provided)
-  - with --continue_run_id: mode/L/rho (and default d-range) are inferred from registry
-  - with --continue_run_id: submits with --continue per d and accumulates averages
-  - creates a run folder under runs/two_force_d/<mode>/<run_id> with
-    per-run configs, submit files, logs, states, manifest, and run_info
+  - creates run folder under runs/single_origin_bond/<mode>/<run_id> with configs, submit files, logs, states, manifest, and run_info
 EOF
 }
 
@@ -53,14 +49,14 @@ else
     exit 1
 fi
 
-WARMUP_SCRIPT="${SCRIPT_DIR}/submit_two_force_d_warmup.sh"
-PRODUCTION_SCRIPT="${SCRIPT_DIR}/submit_two_force_d_production.sh"
+WARMUP_SCRIPT="${SCRIPT_DIR}/submit_single_origin_bond_warmup.sh"
+PRODUCTION_SCRIPT="${SCRIPT_DIR}/submit_single_origin_bond_production.sh"
 if [[ ! -f "${WARMUP_SCRIPT}" || ! -f "${PRODUCTION_SCRIPT}" ]]; then
-    echo "Could not find submit scripts in ${SCRIPT_DIR}"
+    echo "Could not find single-origin-bond submit scripts in ${SCRIPT_DIR}"
     exit 1
 fi
 
-registry_file="${REPO_ROOT}/runs/two_force_d/run_registry.csv"
+registry_file="${REPO_ROOT}/runs/single_origin_bond/run_registry.csv"
 
 lookup_registry_row_by_run_id() {
     local lookup_run_id="$1"
@@ -79,12 +75,12 @@ read_run_info_value() {
 }
 
 submit_chained_warmup_production() {
-    local self_script="${SCRIPT_DIR}/submit_two_force_d_meta.sh"
+    local self_script="${SCRIPT_DIR}/submit_single_origin_bond_meta.sh"
     if [[ ! -f "${self_script}" ]]; then
-        self_script="${REPO_ROOT}/cluster_scripts/submit_two_force_d_meta.sh"
+        self_script="${REPO_ROOT}/cluster_scripts/submit_single_origin_bond_meta.sh"
     fi
     if [[ ! -f "${self_script}" ]]; then
-        echo "Could not locate submit_two_force_d_meta.sh for chained submission."
+        echo "Could not locate submit_single_origin_bond_meta.sh for chained submission."
         exit 1
     fi
 
@@ -97,12 +93,11 @@ submit_chained_warmup_production() {
     chain_timestamp="$(date +%Y%m%d-%H%M%S)"
     local rho_tag
     rho_tag="$(local_slugify "${rho_val}")"
-    local d_max_for_label="${d_max:-auto}"
     local chain_base
     if [[ -n "${run_label}" ]]; then
         chain_base="$(local_slugify "${run_label}")"
     else
-        chain_base="two_force_warmup_production_L${L_val}_rho${rho_tag}_wns${warmup_n_sweeps}_pns${n_sweeps_val}_d${d_min}-${d_max_for_label}-s${d_step}"
+        chain_base="single_warmup_production_L${L_val}_rho${rho_tag}_wns${warmup_n_sweeps}_pns${n_sweeps_val}_f${force_strength_val}_ffr${ffr_val}"
         if (( num_replicas > 1 )); then
             chain_base="${chain_base}_nr${num_replicas}_${replica_strategy}"
         fi
@@ -121,18 +116,15 @@ submit_chained_warmup_production() {
         --num_replicas 1
         --replica_strategy mp
         --request_cpus 1
-        --d_min "${d_min}"
-        --d_step "${d_step}"
+        --ffr "${ffr_val}"
+        --force_strength "${force_strength_val}"
         --run_label "${warmup_label}"
     )
-    if [[ -n "${d_max}" ]]; then
-        warmup_cmd+=(--d_max "${d_max}")
-    fi
     if [[ -n "${request_memory}" ]]; then
         warmup_cmd+=(--request_memory "${request_memory}")
     fi
 
-    echo "Preparing chained warmup stage (single process per d, NO_SUBMIT)..."
+    echo "Preparing chained warmup stage (single process, NO_SUBMIT)..."
     local warmup_output
     warmup_output="$(
         NO_SUBMIT=true "${warmup_cmd[@]}"
@@ -145,16 +137,13 @@ submit_chained_warmup_production() {
         echo "Failed to resolve warmup run_info from chained warmup stage."
         exit 1
     fi
-    local warmup_run_id_local warmup_state_dir_local warmup_manifest_local
-    local warmup_d_min_local warmup_d_max_local warmup_d_step_local
+    local warmup_run_id_local warmup_state_dir_local warmup_submit_dir warmup_submit_file
     warmup_run_id_local="$(read_run_info_value "${warmup_run_info}" "run_id")"
     warmup_state_dir_local="$(read_run_info_value "${warmup_run_info}" "state_dir")"
-    warmup_manifest_local="$(read_run_info_value "${warmup_run_info}" "manifest")"
-    warmup_d_min_local="$(read_run_info_value "${warmup_run_info}" "d_min")"
-    warmup_d_max_local="$(read_run_info_value "${warmup_run_info}" "d_max")"
-    warmup_d_step_local="$(read_run_info_value "${warmup_run_info}" "d_step")"
-    if [[ -z "${warmup_manifest_local}" || ! -f "${warmup_manifest_local}" ]]; then
-        echo "Warmup manifest is missing: ${warmup_manifest_local}"
+    warmup_submit_dir="$(read_run_info_value "${warmup_run_info}" "submit_dir")"
+    warmup_submit_file="${warmup_submit_dir}/single_origin_bond_warmup.sub"
+    if [[ ! -f "${warmup_submit_file}" ]]; then
+        echo "Expected warmup submit file not found: ${warmup_submit_file}"
         exit 1
     fi
 
@@ -168,9 +157,8 @@ submit_chained_warmup_production() {
         --num_replicas "${num_replicas}"
         --replica_strategy "${replica_strategy}"
         --warmup_state_dir "${warmup_state_dir_local}"
-        --d_min "${warmup_d_min_local}"
-        --d_max "${warmup_d_max_local}"
-        --d_step "${warmup_d_step_local}"
+        --ffr "${ffr_val}"
+        --force_strength "${force_strength_val}"
         --run_label "${production_label}"
     )
     if [[ -n "${request_memory}" ]]; then
@@ -193,79 +181,37 @@ submit_chained_warmup_production() {
         echo "Failed to resolve production run_info from chained production stage."
         exit 1
     fi
-
-    local production_run_id_local production_manifest_local production_submit_dir
+    local production_run_id_local production_submit_dir production_submit_file production_dag_file
     production_run_id_local="$(read_run_info_value "${production_run_info}" "run_id")"
-    production_manifest_local="$(read_run_info_value "${production_run_info}" "manifest")"
     production_submit_dir="$(read_run_info_value "${production_run_info}" "submit_dir")"
-    if [[ -z "${production_manifest_local}" || ! -f "${production_manifest_local}" ]]; then
-        echo "Production manifest is missing: ${production_manifest_local}"
-        exit 1
-    fi
+    production_submit_file="${production_submit_dir}/single_origin_bond_production.sub"
+    production_dag_file="${production_submit_dir}/single_origin_bond_production.dag"
 
     local chain_run_id="${chain_base}_${chain_timestamp}"
-    local chain_root="${REPO_ROOT}/runs/two_force_d/warmup_production/${chain_run_id}"
+    local chain_root="${REPO_ROOT}/runs/single_origin_bond/warmup_production/${chain_run_id}"
     local chain_submit_dir="${chain_root}/submit"
     local chain_log_dir="${chain_root}/logs"
     local chain_run_info_file="${chain_root}/run_info.txt"
-    local chain_dag_file="${chain_submit_dir}/two_force_d_warmup_production.dag"
+    local chain_dag_file="${chain_submit_dir}/single_origin_bond_warmup_production.dag"
     mkdir -p "${chain_submit_dir}" "${chain_log_dir}"
-    : > "${chain_dag_file}"
 
-    local -A warmup_job_by_d=()
-    local -a warmup_job_ids=()
-    local job_id
-    while IFS=, read -r mf_d mf_mode mf_cluster mf_cfg mf_submit mf_out mf_err mf_log mf_save mf_init; do
-        if [[ "${mf_d}" == "d" ]]; then
-            continue
-        fi
-        if [[ -z "${mf_d}" || -z "${mf_submit}" ]]; then
-            continue
-        fi
-        if [[ ! -f "${mf_submit}" ]]; then
-            echo "Warmup submit file missing for d=${mf_d}: ${mf_submit}"
-            exit 1
-        fi
-        job_id="W${mf_d}"
-        warmup_job_by_d["${mf_d}"]="${job_id}"
-        warmup_job_ids+=("${job_id}")
-        printf "JOB %s %s\n" "${job_id}" "${mf_submit}" >> "${chain_dag_file}"
-    done < "${warmup_manifest_local}"
-
-    if (( ${#warmup_job_ids[@]} == 0 )); then
-        echo "No warmup jobs were generated for chained run."
-        exit 1
-    fi
-
-    if [[ "${replica_strategy}" == "dag" && "${num_replicas}" -gt 1 ]]; then
-        local production_dag_file="${production_submit_dir}/two_force_d_production.dag"
-        if [[ ! -f "${production_dag_file}" ]]; then
-            echo "Production DAG file missing: ${production_dag_file}"
-            exit 1
-        fi
-        printf "SUBDAG EXTERNAL PRODUCTION %s\n" "${production_dag_file}" >> "${chain_dag_file}"
-        printf "PARENT %s CHILD PRODUCTION\n" "${warmup_job_ids[*]}" >> "${chain_dag_file}"
-    else
-        while IFS=, read -r mf_d mf_mode mf_cluster mf_cfg mf_submit mf_out mf_err mf_log mf_save mf_init; do
-            if [[ "${mf_d}" == "d" ]]; then
-                continue
-            fi
-            if [[ -z "${mf_d}" || -z "${mf_submit}" ]]; then
-                continue
-            fi
-            if [[ ! -f "${mf_submit}" ]]; then
-                echo "Production submit file missing for d=${mf_d}: ${mf_submit}"
+    {
+        echo "JOB WARMUP ${warmup_submit_file}"
+        if [[ "${replica_strategy}" == "dag" && "${num_replicas}" -gt 1 ]]; then
+            if [[ ! -f "${production_dag_file}" ]]; then
+                echo "Expected production DAG not found: ${production_dag_file}"
                 exit 1
             fi
-            if [[ -z "${warmup_job_by_d[${mf_d}]:-}" ]]; then
-                echo "No matching warmup job found for production d=${mf_d}."
+            echo "SUBDAG EXTERNAL PRODUCTION ${production_dag_file}"
+        else
+            if [[ ! -f "${production_submit_file}" ]]; then
+                echo "Expected production submit file not found: ${production_submit_file}"
                 exit 1
             fi
-            job_id="P${mf_d}"
-            printf "JOB %s %s\n" "${job_id}" "${mf_submit}" >> "${chain_dag_file}"
-            printf "PARENT %s CHILD %s\n" "${warmup_job_by_d[${mf_d}]}" "${job_id}" >> "${chain_dag_file}"
-        done < "${production_manifest_local}"
-    fi
+            echo "JOB PRODUCTION ${production_submit_file}"
+        fi
+        echo "PARENT WARMUP CHILD PRODUCTION"
+    } > "${chain_dag_file}"
 
     local chain_cluster_id
     if [[ "${chain_no_submit}" == "true" ]]; then
@@ -289,16 +235,13 @@ warmup_n_sweeps=${warmup_n_sweeps}
 production_n_sweeps=${n_sweeps_val}
 num_replicas=${num_replicas}
 replica_strategy=${replica_strategy}
-d_min=${warmup_d_min_local}
-d_max=${warmup_d_max_local}
-d_step=${warmup_d_step_local}
+ffr=${ffr_val}
+force_strength=${force_strength_val}
 warmup_run_id=${warmup_run_id_local}
 warmup_run_info=${warmup_run_info}
-warmup_manifest=${warmup_manifest_local}
 warmup_state_dir=${warmup_state_dir_local}
 production_run_id=${production_run_id_local}
 production_run_info=${production_run_info}
-production_manifest=${production_manifest_local}
 chain_dag=${chain_dag_file}
 chain_cluster_id=${chain_cluster_id}
 EOF
@@ -323,14 +266,11 @@ num_replicas="1"
 replica_strategy="mp"
 warmup_state_dir=""
 warmup_run_id=""
-d_min="2"
-d_max=""
-d_step="2"
-d_min_set="false"
-d_max_set="false"
-d_step_set="false"
-run_label=""
 continue_run_id=""
+continue_state_dir=""
+run_label=""
+ffr_val="1.0"
+force_strength_val="1.0"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -370,10 +310,6 @@ while [[ $# -gt 0 ]]; do
             replica_strategy="${2:-}"
             shift 2
             ;;
-        --warmup_state_dir)
-            warmup_state_dir="${2:-}"
-            shift 2
-            ;;
         --warmup_run_id)
             warmup_run_id="${2:-}"
             shift 2
@@ -382,19 +318,16 @@ while [[ $# -gt 0 ]]; do
             continue_run_id="${2:-}"
             shift 2
             ;;
-        --d_min)
-            d_min="${2:-}"
-            d_min_set="true"
+        --warmup_state_dir)
+            warmup_state_dir="${2:-}"
             shift 2
             ;;
-        --d_max)
-            d_max="${2:-}"
-            d_max_set="true"
+        --ffr)
+            ffr_val="${2:-}"
             shift 2
             ;;
-        --d_step)
-            d_step="${2:-}"
-            d_step_set="true"
+        --force_strength)
+            force_strength_val="${2:-}"
             shift 2
             ;;
         --run_label)
@@ -419,82 +352,88 @@ if [[ -z "${n_sweeps_val}" ]]; then
     exit 1
 fi
 
-continue_state_dir=""
+if ! [[ "${n_sweeps_val}" =~ ^[0-9]+$ ]] || (( n_sweeps_val <= 0 )); then
+    echo "--n_sweeps must be a positive integer. Got '${n_sweeps_val}'."
+    exit 1
+fi
+
+is_number() {
+    local value="$1"
+    [[ "${value}" =~ ^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]]
+}
+
+if ! is_number "${ffr_val}"; then
+    echo "--ffr must be numeric. Got '${ffr_val}'."
+    exit 1
+fi
+if ! is_number "${force_strength_val}"; then
+    echo "--force_strength must be numeric. Got '${force_strength_val}'."
+    exit 1
+fi
+if ! [[ "${num_replicas}" =~ ^[0-9]+$ ]] || (( num_replicas <= 0 )); then
+    echo "--num_replicas must be a positive integer. Got '${num_replicas}'."
+    exit 1
+fi
+if [[ "${replica_strategy}" != "mp" && "${replica_strategy}" != "dag" ]]; then
+    echo "--replica_strategy must be 'mp' or 'dag'. Got '${replica_strategy}'."
+    exit 1
+fi
+if [[ -n "${warmup_run_id}" && -n "${continue_run_id}" ]]; then
+    echo "Set only one of --warmup_run_id or --continue_run_id."
+    exit 1
+fi
+
 if [[ -n "${continue_run_id}" ]]; then
     if [[ ! -f "${registry_file}" ]]; then
         echo "Cannot continue from run_id='${continue_run_id}': registry file not found: ${registry_file}"
         exit 1
     fi
-
     continue_registry_row="$(lookup_registry_row_by_run_id "${continue_run_id}" "${registry_file}")"
     if [[ -z "${continue_registry_row}" ]]; then
         echo "Cannot continue from run_id='${continue_run_id}': not found in ${registry_file}"
         exit 1
     fi
-
-    IFS=',' read -r cont_ts cont_run_id cont_mode cont_L cont_rho cont_ns cont_dmin cont_dmax cont_dstep cont_cpus cont_mem cont_run_root cont_log_dir cont_state_dir cont_warmup_state_dir <<< "${continue_registry_row}"
-
+    IFS=',' read -r cont_ts cont_run_id cont_mode cont_L cont_rho cont_ns cont_cpus cont_mem cont_run_root cont_log_dir cont_state_dir cont_warmup_state_dir cont_ffr cont_force <<< "${continue_registry_row}"
+    if [[ "${cont_mode}" != "production" ]]; then
+        echo "--continue_run_id expects a production run. Got mode='${cont_mode}'."
+        exit 1
+    fi
     if [[ -z "${mode}" ]]; then
         mode="${cont_mode}"
     elif [[ "${mode}" != "${cont_mode}" ]]; then
-        echo "Cannot continue from run_id='${continue_run_id}': source mode='${cont_mode}', requested mode='${mode}'."
+        echo "continue_run_id mismatch: source mode='${cont_mode}', requested mode='${mode}'."
         exit 1
     fi
-
     if [[ -z "${L_val}" ]]; then
         L_val="${cont_L}"
     elif [[ "${L_val}" != "${cont_L}" ]]; then
-        echo "Cannot continue from run_id='${continue_run_id}': source L='${cont_L}', requested L='${L_val}'."
+        echo "continue_run_id mismatch: source L='${cont_L}', requested L='${L_val}'."
         exit 1
     fi
-
     if [[ -z "${rho_val}" ]]; then
         rho_val="${cont_rho}"
     elif [[ "${rho_val}" != "${cont_rho}" ]]; then
-        echo "Cannot continue from run_id='${continue_run_id}': source rho='${cont_rho}', requested rho='${rho_val}'."
+        echo "continue_run_id mismatch: source rho='${cont_rho}', requested rho='${rho_val}'."
         exit 1
     fi
-
-    if [[ "${d_min_set}" != "true" && -n "${cont_dmin}" ]]; then
-        d_min="${cont_dmin}"
-    fi
-    if [[ "${d_max_set}" != "true" && -n "${cont_dmax}" ]]; then
-        d_max="${cont_dmax}"
-    fi
-    if [[ "${d_step_set}" != "true" && -n "${cont_dstep}" ]]; then
-        d_step="${cont_dstep}"
-    fi
-
     continue_state_dir="${cont_state_dir}"
-    if [[ -z "${continue_state_dir}" ]]; then
-        echo "Cannot continue from run_id='${continue_run_id}': empty state_dir in registry."
+    if [[ -z "${continue_state_dir}" || ! -d "${continue_state_dir}" ]]; then
+        echo "Resolved continue state_dir is invalid: ${continue_state_dir}"
         exit 1
     fi
-    if [[ ! -d "${continue_state_dir}" ]]; then
-        echo "Cannot continue from run_id='${continue_run_id}': state_dir does not exist: ${continue_state_dir}"
-        exit 1
-    fi
-
-    if [[ "${d_min}" != "${cont_dmin}" || "${d_max}" != "${cont_dmax}" || "${d_step}" != "${cont_dstep}" ]]; then
-        echo "WARNING: continuation source d-range is ${cont_dmin}:${cont_dstep}:${cont_dmax}; requested d-range is ${d_min}:${d_step}:${d_max}."
-    fi
-fi
-if [[ -n "${continue_run_id}" && -n "${warmup_run_id}" ]]; then
-    echo "Set only one of --continue_run_id or --warmup_run_id."
-    exit 1
 fi
 
 if [[ -n "${warmup_run_id}" ]]; then
     if [[ ! -f "${registry_file}" ]]; then
-        echo "Cannot initialize from warmup_run_id='${warmup_run_id}': registry file not found: ${registry_file}"
+        echo "Cannot resolve warmup_run_id='${warmup_run_id}': registry file not found: ${registry_file}"
         exit 1
     fi
     warmup_registry_row="$(lookup_registry_row_by_run_id "${warmup_run_id}" "${registry_file}")"
     if [[ -z "${warmup_registry_row}" ]]; then
-        echo "Cannot initialize from warmup_run_id='${warmup_run_id}': not found in ${registry_file}"
+        echo "Cannot resolve warmup_run_id='${warmup_run_id}': not found in ${registry_file}"
         exit 1
     fi
-    IFS=',' read -r warm_ts warm_run_id warm_mode warm_L warm_rho warm_ns warm_dmin warm_dmax warm_dstep warm_cpus warm_mem warm_run_root warm_log_dir warm_state_dir warm_warmup_state_dir <<< "${warmup_registry_row}"
+    IFS=',' read -r warm_ts warm_run_id warm_mode warm_L warm_rho warm_ns warm_cpus warm_mem warm_run_root warm_log_dir warm_state_dir warm_warmup_state_dir warm_ffr warm_force <<< "${warmup_registry_row}"
     if [[ "${warm_mode}" != "warmup" ]]; then
         echo "--warmup_run_id expects a warmup run. Got mode='${warm_mode}'."
         exit 1
@@ -516,15 +455,6 @@ if [[ -n "${warmup_run_id}" ]]; then
     elif [[ "${rho_val}" != "${warm_rho}" ]]; then
         echo "warmup_run_id mismatch: source rho='${warm_rho}', requested rho='${rho_val}'."
         exit 1
-    fi
-    if [[ "${d_min_set}" != "true" && -n "${warm_dmin}" ]]; then
-        d_min="${warm_dmin}"
-    fi
-    if [[ "${d_max_set}" != "true" && -n "${warm_dmax}" ]]; then
-        d_max="${warm_dmax}"
-    fi
-    if [[ "${d_step_set}" != "true" && -n "${warm_dstep}" ]]; then
-        d_step="${warm_dstep}"
     fi
     warmup_state_dir="${warm_state_dir}"
     if [[ -z "${warmup_state_dir}" || ! -d "${warmup_state_dir}" ]]; then
@@ -549,36 +479,6 @@ if ! [[ "${L_val}" =~ ^[0-9]+$ ]] || (( L_val <= 0 )) || (( L_val % 2 != 0 )); t
     exit 1
 fi
 
-if ! [[ "${n_sweeps_val}" =~ ^[0-9]+$ ]] || (( n_sweeps_val <= 0 )); then
-    echo "--n_sweeps must be a positive integer. Got '${n_sweeps_val}'."
-    exit 1
-fi
-if ! [[ "${num_replicas}" =~ ^[0-9]+$ ]] || (( num_replicas <= 0 )); then
-    echo "--num_replicas must be a positive integer. Got '${num_replicas}'."
-    exit 1
-fi
-if [[ "${replica_strategy}" != "mp" && "${replica_strategy}" != "dag" ]]; then
-    echo "--replica_strategy must be 'mp' or 'dag'. Got '${replica_strategy}'."
-    exit 1
-fi
-
-if ! [[ "${d_min}" =~ ^[0-9]+$ ]] || ! [[ "${d_step}" =~ ^[0-9]+$ ]]; then
-    echo "--d_min and --d_step must be positive integers."
-    exit 1
-fi
-
-if [[ -z "${d_max}" ]]; then
-    d_max="$((L_val / 4))"
-fi
-if ! [[ "${d_max}" =~ ^[0-9]+$ ]]; then
-    echo "--d_max must be an integer. Got '${d_max}'."
-    exit 1
-fi
-if (( d_step <= 0 || d_max < d_min )); then
-    echo "Invalid d range: d_min=${d_min}, d_max=${d_max}, d_step=${d_step}."
-    exit 1
-fi
-
 if [[ "${mode}" == "warmup_production" ]]; then
     if [[ -n "${continue_run_id}" || -n "${warmup_run_id}" || -n "${warmup_state_dir}" ]]; then
         echo "--mode warmup_production does not accept --continue_run_id, --warmup_run_id, or --warmup_state_dir."
@@ -596,11 +496,15 @@ if [[ "${mode}" == "warmup_production" ]]; then
     exit 0
 fi
 
+if [[ "${mode}" != "production" && ( -n "${warmup_run_id}" || -n "${continue_run_id}" ) ]]; then
+    echo "--warmup_run_id/--continue_run_id are valid only for --mode production."
+    exit 1
+fi
+
 export L="${L_val}"
 export RHO0="${rho_val}"
-export D_MIN="${d_min}"
-export D_MAX="${d_max}"
-export D_STEP="${d_step}"
+export FFR="${ffr_val}"
+export FORCE_STRENGTH="${force_strength_val}"
 export NUM_REPLICAS="${num_replicas}"
 export REPLICA_STRATEGY="${replica_strategy}"
 
@@ -611,14 +515,14 @@ slugify() {
 timestamp="$(date +%Y%m%d-%H%M%S)"
 rho_tag="$(slugify "${rho_val}")"
 if [[ -z "${run_label}" ]]; then
-    run_label="two_force_${mode}_L${L_val}_rho${rho_tag}_ns${n_sweeps_val}_d${d_min}-${d_max}-s${d_step}"
+    run_label="single_${mode}_L${L_val}_rho${rho_tag}_ns${n_sweeps_val}_f${force_strength_val}_ffr${ffr_val}"
     if (( num_replicas > 1 )); then
         run_label="${run_label}_nr${num_replicas}_${replica_strategy}"
     fi
 fi
 run_label="$(slugify "${run_label}")"
 run_id="${run_label}_${timestamp}"
-run_root="${REPO_ROOT}/runs/two_force_d/${mode}/${run_id}"
+run_root="${REPO_ROOT}/runs/single_origin_bond/${mode}/${run_id}"
 run_config_dir="${run_root}/configs"
 run_submit_dir="${run_root}/submit"
 run_log_dir="${run_root}/logs"
@@ -653,12 +557,39 @@ fi
 request_cpus_effective="${REQUEST_CPUS:-1}"
 request_memory_effective="${REQUEST_MEMORY:-2 GB}"
 
-if [[ -n "${continue_run_id}" ]]; then
-    export CONTINUE_STATE_DIR="${continue_state_dir}"
-    export REQUIRE_CONTINUE_STATE="true"
+if [[ "${mode}" == "production" ]]; then
+    if [[ -n "${continue_run_id}" ]]; then
+        if [[ -z "${continue_state_dir}" || ! -d "${continue_state_dir}" ]]; then
+            echo "Resolved continue state_dir is invalid: ${continue_state_dir}"
+            exit 1
+        fi
+    elif [[ -n "${warmup_run_id}" ]]; then
+        if [[ -z "${warmup_state_dir}" || ! -d "${warmup_state_dir}" ]]; then
+            echo "Resolved warmup state_dir is invalid: ${warmup_state_dir}"
+            exit 1
+        fi
+    elif [[ -z "${warmup_state_dir}" ]]; then
+        if [[ -f "${registry_file}" ]]; then
+            warmup_state_dir="$(
+                awk -F, -v L="${L}" -v rho="${RHO0}" -v ffr="${FFR}" -v fmag="${FORCE_STRENGTH}" '
+                    $3=="warmup" && $4==L && $5==rho {
+                        if (NF >= 14 && ($13 != ffr || $14 != fmag)) next
+                        state_dir=$11
+                    }
+                    END {
+                        if (state_dir != "") print state_dir
+                    }' "${registry_file}"
+            )"
+        fi
+        if [[ -z "${warmup_state_dir}" ]]; then
+            warmup_state_dir="${REPO_ROOT}/saved_states/single_origin_bond/warmup"
+        fi
+    fi
+elif [[ "${mode}" == "warmup" && -z "${warmup_state_dir}" ]]; then
+    warmup_state_dir="${run_state_dir}"
 fi
 
-echo "Preparing two-force d sweep:"
+echo "Preparing single-origin-bond run:"
 echo "  run_id=${run_id}"
 echo "  mode=${mode}"
 echo "  L=${L}"
@@ -666,37 +597,19 @@ echo "  rho0=${RHO0}"
 echo "  n_sweeps=${n_sweeps_val}"
 echo "  num_replicas=${NUM_REPLICAS}"
 echo "  replica_strategy=${REPLICA_STRATEGY}"
-echo "  d range: ${D_MIN}:${D_STEP}:${D_MAX}"
+echo "  force_strength=${FORCE_STRENGTH}"
+echo "  ffr=${FFR}"
 echo "  request_cpus=${request_cpus_effective}"
 echo "  request_memory=${request_memory_effective}"
 echo "  run_root=${run_root}"
 echo "  run_logs=${run_log_dir}"
 echo "  run_states=${run_state_dir}"
-if [[ -n "${continue_run_id}" ]]; then
-    echo "  continue_from_run_id=${continue_run_id}"
-    echo "  continue_state_dir=${continue_state_dir}"
-fi
 if [[ -n "${warmup_run_id}" ]]; then
     echo "  warmup_run_id=${warmup_run_id}"
 fi
-
-if [[ "${mode}" == "production" && -z "${continue_run_id}" && -z "${warmup_state_dir}" ]]; then
-    if [[ -f "${registry_file}" ]]; then
-        warmup_state_dir="$(
-            awk -F, -v L="${L}" -v rho="${RHO0}" -v dmin="${D_MIN}" -v dmax="${D_MAX}" -v dstep="${D_STEP}" '
-                $3=="warmup" && $4==L && $5==rho && $7==dmin && $8==dmax && $9==dstep {
-                    state_dir=$14
-                }
-                END {
-                    if (state_dir != "") print state_dir
-                }' "${registry_file}"
-        )"
-    fi
-    if [[ -z "${warmup_state_dir}" ]]; then
-        warmup_state_dir="${REPO_ROOT}/saved_states/two_force_d_sweep/warmup"
-    fi
-elif [[ "${mode}" == "warmup" && -z "${warmup_state_dir}" ]]; then
-    warmup_state_dir="${run_state_dir}"
+if [[ -n "${continue_run_id}" ]]; then
+    echo "  continue_run_id=${continue_run_id}"
+    echo "  continue_state_dir=${continue_state_dir}"
 fi
 
 cat > "${run_info}" <<EOF
@@ -708,9 +621,8 @@ rho0=${RHO0}
 n_sweeps=${n_sweeps_val}
 num_replicas=${NUM_REPLICAS}
 replica_strategy=${REPLICA_STRATEGY}
-d_min=${D_MIN}
-d_max=${D_MAX}
-d_step=${D_STEP}
+force_strength=${FORCE_STRENGTH}
+ffr=${FFR}
 request_cpus=${request_cpus_effective}
 request_memory=${request_memory_effective}
 run_root=${run_root}
@@ -720,19 +632,19 @@ log_dir=${run_log_dir}
 state_dir=${run_state_dir}
 manifest=${run_manifest}
 warmup_state_dir=${warmup_state_dir}
+warmup_run_id=${warmup_run_id}
 continue_run_id=${continue_run_id}
 continue_state_dir=${continue_state_dir}
-warmup_run_id=${warmup_run_id}
 EOF
 
 mkdir -p "$(dirname "${registry_file}")"
 if [[ ! -f "${registry_file}" ]]; then
-    echo "timestamp,run_id,mode,L,rho0,n_sweeps,d_min,d_max,d_step,request_cpus,request_memory,run_root,log_dir,state_dir,warmup_state_dir" > "${registry_file}"
+    echo "timestamp,run_id,mode,L,rho0,n_sweeps,request_cpus,request_memory,run_root,log_dir,state_dir,warmup_state_dir,ffr,force_strength" > "${registry_file}"
 fi
-printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
     "${timestamp}" "${run_id}" "${mode}" "${L}" "${RHO0}" "${n_sweeps_val}" \
-    "${D_MIN}" "${D_MAX}" "${D_STEP}" "${request_cpus_effective}" "${request_memory_effective}" \
-    "${run_root}" "${run_log_dir}" "${run_state_dir}" "${warmup_state_dir}" >> "${registry_file}"
+    "${request_cpus_effective}" "${request_memory_effective}" \
+    "${run_root}" "${run_log_dir}" "${run_state_dir}" "${warmup_state_dir}" "${FFR}" "${FORCE_STRENGTH}" >> "${registry_file}"
 
 if [[ "${mode}" == "warmup" ]]; then
     export WARMUP_SWEEPS="${n_sweeps_val}"
@@ -740,6 +652,7 @@ if [[ "${mode}" == "warmup" ]]; then
 else
     export PRODUCTION_SWEEPS="${n_sweeps_val}"
     if [[ -n "${continue_run_id}" ]]; then
+        export CONTINUE_STATE_DIR="${continue_state_dir}"
         export REQUIRE_CONTINUE_STATE="true"
     else
         export REQUIRE_INITIAL_STATE="true"
