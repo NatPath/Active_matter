@@ -13,6 +13,7 @@ using .PlotUtils
 
 const BOND_PASS_TOTAL_SQ_AVG_KEY = :bond_pass_total_sq_avg
 const BOND_PASS_TRACK_MASK_KEY = :bond_pass_track_mask
+const TWO_FORCE_J2_BASELINE_RHO_FACTOR = 0.0894
 
 function wildcard_to_regex(pattern::String)
     special = Set(['.', '^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\'])
@@ -143,7 +144,7 @@ function parse_commandline()
             help = "Skip per-state sweep/component plots"
             action = :store_true
         "--baseline_j2"
-            help = "Baseline override for (<J^2>-baseline) vs d analysis (default: auto 0.089*rho0^2)"
+            help = @sprintf("Baseline override for (<J^2>-baseline) vs d analysis (default: auto %.6g*rho0^2)", TWO_FORCE_J2_BASELINE_RHO_FACTOR)
             arg_type = Float64
             default = NaN
         "--corr_model_c"
@@ -620,7 +621,11 @@ function plot_single_origin_varj_reference_slopes(state, param; title_suffix::Ab
              yscale=:log10,
              framestyle=:box,
              legend=:outerright,
-             grid=:both)
+             grid=:both,
+             size=(980, 620),
+             top_margin=8Plots.mm,
+             left_margin=4Plots.mm,
+             right_margin=4Plots.mm)
 
     fit = fit_loglog_powerlaw(x, y)
     if !isnothing(fit)
@@ -666,7 +671,11 @@ function plot_single_origin_varj_loglog_fit(state, param; title_suffix::Abstract
              yscale=:log10,
              framestyle=:box,
              legend=:outerright,
-             grid=:both)
+             grid=:both,
+             size=(980, 620),
+             top_margin=8Plots.mm,
+             left_margin=4Plots.mm,
+             right_margin=4Plots.mm)
 
     fit = fit_loglog_powerlaw(x, y)
     if !isnothing(fit)
@@ -934,7 +943,7 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
             end
 
             rho0 = Float64(param.ρ₀)
-            baseline_row = isfinite(baseline_j2) ? baseline_j2 : (0.089 * rho0^2)
+            baseline_row = isfinite(baseline_j2) ? baseline_j2 : (TWO_FORCE_J2_BASELINE_RHO_FACTOR * rho0^2)
             j2_vals_shifted = [isfinite(v) ? (v - baseline_row) : NaN for v in j2_vals]
 
             push!(rows, (
@@ -946,8 +955,6 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 var_mean=finite_mean(var_vals),
                 j2_vals=j2_vals,
                 j2_mean=finite_mean(j2_vals),
-                j2_vals_shifted=j2_vals_shifted,
-                j2_mean_shifted=finite_mean(j2_vals_shifted),
                 j2_vals_shifted=j2_vals_shifted,
                 j2_mean_shifted=finite_mean(j2_vals_shifted),
             ))
@@ -980,7 +987,6 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
             vals_var = Float64[]
             vals_j2 = Float64[]
             vals_j2_shifted = Float64[]
-            vals_j2_shifted = Float64[]
             for row in bucket
                 if slot <= length(row.var_vals)
                     push!(vals_var, row.var_vals[slot])
@@ -991,18 +997,51 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 if slot <= length(row.j2_vals_shifted)
                     push!(vals_j2_shifted, row.j2_vals_shifted[slot])
                 end
-                if slot <= length(row.j2_vals_shifted)
-                    push!(vals_j2_shifted, row.j2_vals_shifted[slot])
-                end
             end
             y_var_slots[slot][di] = finite_mean(vals_var)
             y_j2_slots[slot][di] = finite_mean(vals_j2)
             y_j2_slots_shifted[slot][di] = finite_mean(vals_j2_shifted)
-            y_j2_slots_shifted[slot][di] = finite_mean(vals_j2_shifted)
         end
     end
 
-    baseline_label = isfinite(baseline_j2) ? @sprintf("baseline=%.6g", baseline_j2) : "baseline=0.089*rho0^2 (per-state)"
+    var_baseline_candidates = Float64[]
+    append!(var_baseline_candidates, [v for v in y_var_mean if isfinite(v)])
+    for slot in 1:max_slots
+        append!(var_baseline_candidates, [v for v in y_var_slots[slot] if isfinite(v)])
+    end
+    var_baseline = isempty(var_baseline_candidates) ? NaN : minimum(var_baseline_candidates)
+    y_var_mean_shifted = [
+        (isfinite(v) && isfinite(var_baseline)) ? (v - var_baseline) : NaN
+        for v in y_var_mean
+    ]
+    y_var_slots_shifted = [
+        [
+            (isfinite(v) && isfinite(var_baseline)) ? (v - var_baseline) : NaN
+            for v in y_var_slots[slot]
+        ]
+        for slot in 1:max_slots
+    ]
+    j2_min_baseline_candidates = Float64[]
+    append!(j2_min_baseline_candidates, [v for v in y_j2_mean if isfinite(v)])
+    for slot in 1:max_slots
+        append!(j2_min_baseline_candidates, [v for v in y_j2_slots[slot] if isfinite(v)])
+    end
+    j2_min_baseline = isempty(j2_min_baseline_candidates) ? NaN : minimum(j2_min_baseline_candidates)
+    y_j2_mean_min_shifted = [
+        (isfinite(v) && isfinite(j2_min_baseline)) ? (v - j2_min_baseline) : NaN
+        for v in y_j2_mean
+    ]
+    y_j2_slots_min_shifted = [
+        [
+            (isfinite(v) && isfinite(j2_min_baseline)) ? (v - j2_min_baseline) : NaN
+            for v in y_j2_slots[slot]
+        ]
+        for slot in 1:max_slots
+    ]
+
+    baseline_label = isfinite(baseline_j2) ? @sprintf("baseline=%.6g", baseline_j2) : @sprintf("baseline=%.6g*rho0^2 (per-state)", TWO_FORCE_J2_BASELINE_RHO_FACTOR)
+    var_baseline_label = @sprintf("baseline(min C_bond(0))=%.6g", var_baseline)
+    j2_min_baseline_label = @sprintf("baseline(min ⟨J²⟩)=%.6g", j2_min_baseline)
 
     analysis_dir = joinpath(out_dir, "two_force_d_analysis")
     mkpath(analysis_dir)
@@ -1063,21 +1102,95 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
     savefig(p_var_linear, joinpath(analysis_dir, "01_bond_center_variance_vs_d_linear.png"))
     println("Saved ", joinpath(analysis_dir, "01_bond_center_variance_vs_d_linear.png"))
 
-    baseline_title = isfinite(baseline_j2_override) ?
-        @sprintf("baseline=%.6g", baseline_j2_override) :
-        @sprintf("baseline=%.6g*ρ₀^2", baseline_rho_factor)
+    p_var_shifted_linear = plot(title="Bond-center variance - baseline vs d, " * var_baseline_label,
+                                xlabel="d",
+                                ylabel="C_bond(0) - baseline",
+                                framestyle=:box,
+                                legend=:outerright)
+    hline!(p_var_shifted_linear, [0.0], color=:gray55, linestyle=:dash, label=false)
+    plot!(p_var_shifted_linear, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=var_baseline_label)
+    for slot in 1:max_slots
+        y = y_var_slots_shifted[slot]
+        mask = isfinite.(y)
+        if any(mask)
+            plot!(p_var_shifted_linear, x[mask], y[mask], marker=:circle, lw=2, label="bond $(slot)")
+        end
+    end
+    mask_var_mean_shifted_linear = isfinite.(y_var_mean_shifted)
+    if any(mask_var_mean_shifted_linear)
+        plot!(p_var_shifted_linear, x[mask_var_mean_shifted_linear], y_var_mean_shifted[mask_var_mean_shifted_linear], marker=:diamond, lw=2.8, color=:black, label="mean")
+    end
+    savefig(p_var_shifted_linear, joinpath(analysis_dir, "06_bond_center_variance_minus_min_baseline_vs_d_linear.png"))
+    println("Saved ", joinpath(analysis_dir, "06_bond_center_variance_minus_min_baseline_vs_d_linear.png"))
 
-    function save_series_plot(file_name::String, title::String, ylabel::String,
-                              y_slots::Vector{Vector{Float64}}, y_mean::Vector{Float64};
-                              loglog::Bool=false, fit_mean_loglog::Bool=false)
-        p = plot(title=title,
+    p_var_shifted_loglog = plot(title="Bond-center variance - baseline vs d (log-log), " * var_baseline_label,
+                                xlabel="d",
+                                ylabel="C_bond(0) - baseline",
+                                xscale=:log10,
+                                yscale=:log10,
+                                framestyle=:box,
+                                legend=:outerright)
+    plot!(p_var_shifted_loglog, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=var_baseline_label)
+    for slot in 1:max_slots
+        y = y_var_slots_shifted[slot]
+        mask = isfinite.(y) .& (y .> 0)
+        if any(mask)
+            plot!(p_var_shifted_loglog, x[mask], y[mask], marker=:circle, lw=2, label="bond $(slot)")
+        end
+    end
+    mask_var_mean_shifted_loglog = isfinite.(y_var_mean_shifted) .& (y_var_mean_shifted .> 0)
+    if any(mask_var_mean_shifted_loglog)
+        plot!(p_var_shifted_loglog, x[mask_var_mean_shifted_loglog], y_var_mean_shifted[mask_var_mean_shifted_loglog], marker=:diamond, lw=2.8, color=:black, label="mean")
+    end
+    fit_var_shifted = fit_loglog_powerlaw(x, y_var_mean_shifted)
+    if !isnothing(fit_var_shifted)
+        x_fit = fit_var_shifted.x
+        y_fit = 10 .^ (fit_var_shifted.intercept .+ fit_var_shifted.slope .* log10.(x_fit))
+        plot!(p_var_shifted_loglog, x_fit, y_fit, lw=2.2, color=:black, linestyle=:dashdot, alpha=0.9,
+              label=@sprintf("mean fit slope=%.3f (R²=%.3f)", fit_var_shifted.slope, fit_var_shifted.r2))
+        anchor_x = exp(mean(log.(x_fit)))
+        anchor_y = 10^(fit_var_shifted.intercept + fit_var_shifted.slope * log10(anchor_x))
+        add_reference_slopes!(p_var_shifted_loglog, x_fit, anchor_x, anchor_y)
+    elseif any(mask_var_mean_shifted_loglog)
+        x_ref = x[mask_var_mean_shifted_loglog]
+        y_ref = y_var_mean_shifted[mask_var_mean_shifted_loglog]
+        anchor_x = exp(mean(log.(x_ref)))
+        anchor_y = exp(mean(log.(y_ref)))
+        add_reference_slopes!(p_var_shifted_loglog, x_ref, anchor_x, anchor_y)
+    end
+    savefig(p_var_shifted_loglog, joinpath(analysis_dir, "07_bond_center_variance_minus_min_baseline_vs_d_loglog.png"))
+    println("Saved ", joinpath(analysis_dir, "07_bond_center_variance_minus_min_baseline_vs_d_loglog.png"))
+
+    function save_j2_plot(file_name::String, title::String, ylabel::String;
+                          shifted::Bool=false,
+                          loglog::Bool=false,
+                          fit_mean_loglog::Bool=false,
+                          y_slots_override=nothing,
+                          y_mean_override=nothing,
+                          baseline_annot::AbstractString="",
+                          zero_line::Bool=false,
+                          add_reference_slope_guides::Bool=false)
+        title_text = shifted ? replace(title, ", " => ",\n"; count=1) : title
+        p = plot(title=title_text,
                  xlabel="d",
                  ylabel=ylabel,
                  framestyle=:box,
-                 legend=:outerright)
+                 legend=:outerright,
+                 size=(1080, 620),
+                 top_margin=10Plots.mm,
+                 left_margin=4Plots.mm,
+                 right_margin=4Plots.mm)
         if loglog
             plot!(p; xscale=:log10, yscale=:log10)
         end
+        if zero_line && !loglog
+            hline!(p, [0.0], color=:gray55, linestyle=:dash, label=false)
+        end
+        if !isempty(strip(baseline_annot))
+            plot!(p, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=baseline_annot)
+        end
+        y_slots = isnothing(y_slots_override) ? (shifted ? y_j2_slots_shifted : y_j2_slots) : y_slots_override
+        y_mean = isnothing(y_mean_override) ? (shifted ? y_j2_mean_shifted : y_j2_mean) : y_mean_override
         for slot in 1:max_slots
             y = y_slots[slot]
             mask = isfinite.(y)
@@ -1102,6 +1215,17 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 y_fit = 10 .^ (fit.intercept .+ fit.slope .* log10.(x_fit))
                 plot!(p, x_fit, y_fit, lw=2.2, color=:gray20, linestyle=:dashdot,
                       label=@sprintf("mean fit slope=%.3f (R²=%.3f)", fit.slope, fit.r2))
+                if add_reference_slope_guides
+                    anchor_x = exp(mean(log.(x_fit)))
+                    anchor_y = 10^(fit.intercept + fit.slope * log10(anchor_x))
+                    add_reference_slopes!(p, x_fit, anchor_x, anchor_y)
+                end
+            elseif add_reference_slope_guides && any(mask_mean)
+                x_ref = x[mask_mean]
+                y_ref = y_mean[mask_mean]
+                anchor_x = exp(mean(log.(x_ref)))
+                anchor_y = exp(mean(log.(y_ref)))
+                add_reference_slopes!(p, x_ref, anchor_x, anchor_y)
             end
         end
         out_path = joinpath(analysis_dir, file_name)
@@ -1130,13 +1254,29 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                  shifted=true,
                  loglog=true,
                  fit_mean_loglog=true)
+    save_j2_plot("08_j2_minus_min_baseline_vs_d_linear.png",
+                 "⟨J²⟩-baseline(min) vs d, " * j2_min_baseline_label,
+                 "⟨J²⟩ - baseline(min)";
+                 shifted=true,
+                 y_slots_override=y_j2_slots_min_shifted,
+                 y_mean_override=y_j2_mean_min_shifted,
+                 baseline_annot=j2_min_baseline_label,
+                 zero_line=true)
+    save_j2_plot("09_j2_minus_min_baseline_vs_d_loglog.png",
+                 "⟨J²⟩-baseline(min) vs d (log-log), " * j2_min_baseline_label,
+                 "⟨J²⟩ - baseline(min)";
+                 shifted=true,
+                 loglog=true,
+                 fit_mean_loglog=true,
+                 y_slots_override=y_j2_slots_min_shifted,
+                 y_mean_override=y_j2_mean_min_shifted,
+                 baseline_annot=j2_min_baseline_label,
+                 add_reference_slope_guides=true)
 
     summary_file = joinpath(analysis_dir, "summary_vs_d.csv")
     open(summary_file, "w") do io
         println(io, "d,var_mean,j2_mean,baseline_mean,j2_minus_baseline")
-        println(io, "d,var_mean,j2_mean,baseline_mean,j2_minus_baseline")
         for (i, d) in enumerate(d_values)
-            println(io, @sprintf("%d,%.10g,%.10g,%.10g,%.10g", d, y_var_mean[i], y_j2_mean[i], y_baseline_mean[i], y_j2_mean_shifted[i]))
             println(io, @sprintf("%d,%.10g,%.10g,%.10g,%.10g", d, y_var_mean[i], y_j2_mean[i], y_baseline_mean[i], y_j2_mean_shifted[i]))
         end
     end
@@ -1237,8 +1377,7 @@ function main()
         analyze_two_force_d(
             files,
             out_dir;
-            baseline_rho_factor=Float64(args["baseline_rho_factor"]),
-            baseline_j2_override=Float64(args["baseline_j2"]),
+            baseline_j2=Float64(args["baseline_j2"]),
             smooth_diagonal=!keep_diag,
         )
     elseif mode != "single"

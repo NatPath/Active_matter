@@ -276,7 +276,7 @@ end
     if isnothing(raw_description)
         return ""
     end
-    return strip(String(raw_description))
+    return String(strip(String(raw_description)))
 end
 
 @everywhere function expand_to_length(values::Vector{T}, n::Int, key_name::String) where {T}
@@ -397,49 +397,46 @@ end
     return dropdims(mean(stacked, dims=stack_dim), dims=stack_dim)
 end
 
-@everywhere function average_bond_pass_stats(states::Vector)
-    if isempty(states)
-        return Dict{Symbol,Vector{Float64}}()
+@everywhere function bond_pass_stats_with_weights(state)
+    stats_dict = Dict{Symbol,Vector{Float64}}()
+    if hasfield(typeof(state), :bond_pass_stats)
+        raw_stats = getfield(state, :bond_pass_stats)
+        for (k, v) in raw_stats
+            stats_dict[k] = Float64.(v)
+        end
+    elseif hasfield(typeof(state), :ρ_matrix_avg_cuts)
+        raw_cuts = getfield(state, :ρ_matrix_avg_cuts)
+        for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
+                    :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                    :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
+            if haskey(raw_cuts, key)
+                stats_dict[key] = Float64.(raw_cuts[key])
+            end
+        end
     end
-    bond_weights = Float64[]
-    spatial_weights = Float64[]
-    stats_list = Vector{Dict{Symbol,Vector{Float64}}}(undef, length(states))
-    for (i, state) in enumerate(states)
-        if hasfield(typeof(state), :bond_pass_stats)
-            raw_stats = getfield(state, :bond_pass_stats)
-            stats_dict = Dict{Symbol,Vector{Float64}}()
-            for (k, v) in raw_stats
-                stats_dict[k] = Float64.(v)
-            end
-            stats_list[i] = stats_dict
-        elseif hasfield(typeof(state), :ρ_matrix_avg_cuts)
-            raw_cuts = getfield(state, :ρ_matrix_avg_cuts)
-            stats_dict = Dict{Symbol,Vector{Float64}}()
-            for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
-                        :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
-                        :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
-                if haskey(raw_cuts, key)
-                    stats_dict[key] = Float64.(raw_cuts[key])
-                end
-            end
-            stats_list[i] = stats_dict
-        else
-            stats_list[i] = Dict{Symbol,Vector{Float64}}()
-        end
-        bond_w = 1.0
-        spatial_w = 1.0
-        if haskey(stats_list[i], :bond_pass_sample_count) && !isempty(stats_list[i][:bond_pass_sample_count])
-            bond_w = max(stats_list[i][:bond_pass_sample_count][1], 1.0)
-        elseif hasfield(typeof(state), :t)
-            bond_w = max(Float64(state.t), 1.0)
-        end
-        if haskey(stats_list[i], :bond_pass_spatial_sample_count) && !isempty(stats_list[i][:bond_pass_spatial_sample_count])
-            spatial_w = max(stats_list[i][:bond_pass_spatial_sample_count][1], 1.0)
-        else
-            spatial_w = bond_w
-        end
-        push!(bond_weights, bond_w)
-        push!(spatial_weights, spatial_w)
+
+    bond_w = 1.0
+    spatial_w = 1.0
+    if haskey(stats_dict, :bond_pass_sample_count) && !isempty(stats_dict[:bond_pass_sample_count])
+        bond_w = max(stats_dict[:bond_pass_sample_count][1], 1.0)
+    elseif hasfield(typeof(state), :t)
+        bond_w = max(Float64(state.t), 1.0)
+    end
+    if haskey(stats_dict, :bond_pass_spatial_sample_count) && !isempty(stats_dict[:bond_pass_spatial_sample_count])
+        spatial_w = max(stats_dict[:bond_pass_spatial_sample_count][1], 1.0)
+    else
+        spatial_w = bond_w
+    end
+    return stats_dict, bond_w, spatial_w
+end
+
+@everywhere function average_bond_pass_stats_from_prepared(
+    stats_list::Vector{Dict{Symbol,Vector{Float64}}},
+    bond_weights::Vector{Float64},
+    spatial_weights::Vector{Float64},
+)
+    if isempty(stats_list)
+        return Dict{Symbol,Vector{Float64}}()
     end
     non_empty_indices = [i for i in eachindex(stats_list) if !isempty(stats_list[i])]
     non_empty_stats = [stats_list[i] for i in non_empty_indices]
@@ -485,6 +482,22 @@ end
         end
     end
     return averaged
+end
+
+@everywhere function average_bond_pass_stats(states::Vector)
+    if isempty(states)
+        return Dict{Symbol,Vector{Float64}}()
+    end
+    stats_list = Vector{Dict{Symbol,Vector{Float64}}}(undef, length(states))
+    bond_weights = Float64[]
+    spatial_weights = Float64[]
+    for (i, state) in enumerate(states)
+        stats_dict, bond_w, spatial_w = bond_pass_stats_with_weights(state)
+        stats_list[i] = stats_dict
+        push!(bond_weights, bond_w)
+        push!(spatial_weights, spatial_w)
+    end
+    return average_bond_pass_stats_from_prepared(stats_list, bond_weights, spatial_weights)
 end
 
 
@@ -695,15 +708,96 @@ function aggregate_state_list_and_save(args; run_description::String="")
     end
     println("Aggregating $(length(state_files)) precomputed states from list: $state_list_path")
 
-    states = Any[]
-    result_params = Any[]
-    for state_path in state_files
-        println("Loading state for aggregation: $state_path")
+    first_state = nothing
+    first_param = nothing
+    avg_dists = nothing
+    mat_cuts_weighted = Dict{Symbol,Any}()
+    shared_corr_keys = Set{Symbol}()
+    total_weight = 0.0
+
+    stats_list = Dict{Symbol,Vector{Float64}}[]
+    bond_weights = Float64[]
+    spatial_weights = Float64[]
+
+    for (idx, state_path) in enumerate(state_files)
+        println("Loading state for aggregation ($idx/$(length(state_files))): $state_path")
         @load state_path state param potential
-        push!(states, normalize_state_for_aggregation(state))
-        push!(result_params, param)
+        norm_state = normalize_state_for_aggregation(state)
+        state_weight = max(Float64(averaged_sample_count(norm_state)), 1.0)
+
+        if idx == 1
+            first_state = norm_state
+            first_param = param
+            avg_dists = zeros(Float64, size(norm_state.ρ_avg))
+            avg_dists .+= norm_state.ρ_avg .* state_weight
+            shared_corr_keys = Set{Symbol}(keys(norm_state.ρ_matrix_avg_cuts))
+            for key in shared_corr_keys
+                weighted_sum = zeros(Float64, size(norm_state.ρ_matrix_avg_cuts[key]))
+                weighted_sum .+= norm_state.ρ_matrix_avg_cuts[key] .* state_weight
+                mat_cuts_weighted[key] = weighted_sum
+            end
+        else
+            if size(avg_dists) != size(norm_state.ρ_avg)
+                error("Cannot aggregate states with different ρ_avg sizes: got $(size(norm_state.ρ_avg)), expected $(size(avg_dists)).")
+            end
+            avg_dists .+= norm_state.ρ_avg .* state_weight
+
+            current_keys = Set{Symbol}(keys(norm_state.ρ_matrix_avg_cuts))
+            new_shared = intersect(shared_corr_keys, current_keys)
+            for key in collect(keys(mat_cuts_weighted))
+                if !(key in new_shared)
+                    delete!(mat_cuts_weighted, key)
+                end
+            end
+            for key in new_shared
+                if size(mat_cuts_weighted[key]) != size(norm_state.ρ_matrix_avg_cuts[key])
+                    error("Cannot aggregate key $(key): shape mismatch $(size(norm_state.ρ_matrix_avg_cuts[key])) vs $(size(mat_cuts_weighted[key])).")
+                end
+                mat_cuts_weighted[key] .+= norm_state.ρ_matrix_avg_cuts[key] .* state_weight
+            end
+            shared_corr_keys = new_shared
+        end
+
+        stats_dict, bond_w, spatial_w = bond_pass_stats_with_weights(norm_state)
+        push!(stats_list, stats_dict)
+        push!(bond_weights, bond_w)
+        push!(spatial_weights, spatial_w)
+        total_weight += state_weight
+
+        if idx % 5 == 0
+            GC.gc(false)
+        end
     end
-    aggregate_and_save_states(states, result_params, args; using_initial_state=false, run_description=run_description)
+
+    if isnothing(first_state) || isnothing(first_param)
+        error("No valid states were loaded for aggregation.")
+    end
+    if total_weight <= 0
+        error("Invalid aggregation weights: total effective sample weight is non-positive.")
+    end
+
+    avg_dists ./= total_weight
+    mat_cuts_averaged = Dict{Symbol,AbstractArray{Float64}}()
+    for (key, weighted_sum) in mat_cuts_weighted
+        mat_cuts_averaged[key] = weighted_sum ./ total_weight
+    end
+
+    total_t = Int(round(total_weight))
+    avg_bond_pass_stats = average_bond_pass_stats_from_prepared(stats_list, bond_weights, spatial_weights)
+    dummy_state = FPDiffusive.setDummyState(first_state, avg_dists, mat_cuts_averaged, total_t, avg_bond_pass_stats)
+
+    dummy_state_save_dir = save_dir_from_args(args)
+    save_tag = if haskey(args, "save_tag") && !isnothing(args["save_tag"])
+        String(args["save_tag"])
+    else
+        Dates.format(now(), "yyyymmdd-HHMMSS")
+    end
+    if !startswith(save_tag, "aggregated_")
+        save_tag = "aggregated_" * save_tag
+    end
+    filename = save_state(dummy_state, first_param, dummy_state_save_dir;
+                          tag=save_tag, ic="aggregated", relaxed_ic=false, description=run_description)
+    println("Final aggregated state saved to: ", filename)
 end
 
 @everywhere function run_one_simulation_from_config(args, seed)

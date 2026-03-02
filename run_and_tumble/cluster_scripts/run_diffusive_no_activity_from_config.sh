@@ -35,6 +35,18 @@ if ! command -v "${JULIA_BIN}" >/dev/null 2>&1; then
 fi
 
 julia_procs="${JULIA_NUM_PROCS:-}"
+is_aggregate_mode="false"
+for arg in "${EXTRA_ARGS[@]}"; do
+    if [[ "${arg}" == "--aggregate_state_list" ]]; then
+        is_aggregate_mode="true"
+        break
+    fi
+done
+if [[ "${is_aggregate_mode}" == "true" ]]; then
+    # Aggregation loads many state files and can exceed memory when multiple Julia workers are started.
+    # Default to a single process unless explicitly overridden.
+    julia_procs="${JULIA_NUM_PROCS_AGGREGATE:-1}"
+fi
 if [[ -z "${julia_procs}" ]]; then
     for ((i = 0; i < ${#EXTRA_ARGS[@]}; i++)); do
         if [[ "${EXTRA_ARGS[$i]}" == "--num_runs" ]]; then

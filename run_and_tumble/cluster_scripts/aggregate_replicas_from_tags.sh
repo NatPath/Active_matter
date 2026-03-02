@@ -88,12 +88,30 @@ if ! [[ "${num_replicas}" =~ ^[0-9]+$ ]] || (( num_replicas <= 0 )); then
     exit 1
 fi
 
+latest_state_for_id_tag() {
+    local root_dir="$1"
+    local id_tag="$2"
+    local best_path=""
+    local best_mtime=0
+    local candidate mtime
+
+    while IFS= read -r -d '' candidate; do
+        mtime="$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)"
+        if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= best_mtime )); then
+            best_mtime="${mtime}"
+            best_path="${candidate}"
+        fi
+    done < <(find "${root_dir}" -type f -name "*_id-${id_tag}.jld2" -print0 2>/dev/null)
+
+    printf "%s" "${best_path}"
+}
+
 state_list_file="$(mktemp)"
 trap 'rm -f "${state_list_file}"' EXIT
 
 for ((replica_idx = 1; replica_idx <= num_replicas; replica_idx++)); do
     replica_tag="${replica_tag_prefix}${replica_idx}"
-    matched_state="$(ls -1t "${state_dir}"/*"_id-${replica_tag}.jld2" 2>/dev/null | head -n 1 || true)"
+    matched_state="$(latest_state_for_id_tag "${state_dir}" "${replica_tag}")"
     if [[ -z "${matched_state}" ]]; then
         echo "Missing replica state for replica ${replica_idx} (tag=${replica_tag}) in ${state_dir}"
         exit 1
@@ -104,4 +122,3 @@ done
 echo "Aggregating ${num_replicas} replica states from ${state_dir}"
 echo "Save tag: ${save_tag}"
 bash "${RUNNER_SCRIPT}" "${config_path}" --aggregate_state_list "${state_list_file}" --save_tag "${save_tag}"
-

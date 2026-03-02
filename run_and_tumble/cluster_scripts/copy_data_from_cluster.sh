@@ -30,14 +30,19 @@ Paths / connection:
   --local_root <path>                     Local root for downloaded data (default: <repo>/cluster_results)
   --sync_scope <auto|aggregation|full>    Data sync scope:
                                           auto (default): if run_id looks aggregated (_nr...), fetch aggregated artifacts only
-                                          aggregation: fetch only aggregated state files + run metadata
+                                          aggregation: fetch aggregated state files + run metadata
+                                          (prefers states/aggregated, with legacy fallback)
                                           full: fetch full run directory
 
 Post-processing:
   --plot                                  Run load_and_plot.jl after sync
+  --aggregated_saved_only                 Restrict copy/plot to *_id-aggregated_saved_*.jld2
+                                          (forces --sync_scope aggregation)
+  --state_glob <pattern>                  File glob for state selection in aggregation sync/plot
+                                          (default aggregation glob: *id-aggregated_*.jld2)
   --skip_per_state_sweep                  Pass --skip_per_state_sweep to load_and_plot.jl
   --baseline_j2 <value>                   Baseline override for two_force_d analysis
-                                          (default when omitted: 0.089*rho0^2 per state)
+                                          (default when omitted: automatic rho0^2-based baseline from load_and_plot.jl)
   --mode_plot <single|two_force_d>        load_and_plot mode; auto-selected from run family when omitted
 
 Examples:
@@ -45,6 +50,7 @@ Examples:
   bash copy_data_from_cluster.sh --latest --run_family single_origin_bond --mode production --L 128 --rho 100 --n_sweeps 1000000
   bash copy_data_from_cluster.sh --run_id single_production_L128_rho100_ns1000000_f1.0_ffr1.0_20260225-152138 --plot
   bash copy_data_from_cluster.sh --run_id two_force_production_L128_rho100_ns1000000_d2-32-s2_nr8_dag_20260225-180000 --sync_scope aggregation
+  bash copy_data_from_cluster.sh --run_id two_force_warmup_production_L256_rho100_..._production_20260226-032016 --aggregated_saved_only --plot
 USAGE_EOF
 }
 
@@ -80,7 +86,11 @@ local_root="${LOCAL_RESULTS_ROOT:-${REPO_ROOT}/cluster_results}"
 sync_scope="auto"
 
 plot_after_sync="false"
+aggregated_saved_only="false"
+state_glob=""
+state_glob_explicit="false"
 skip_per_state="false"
+skip_per_state_explicit="false"
 baseline_j2=""
 plot_mode="two_force_d"
 plot_mode_explicit="false"
@@ -165,8 +175,18 @@ while [[ $# -gt 0 ]]; do
             plot_after_sync="true"
             shift 1
             ;;
+        --aggregated_saved_only)
+            aggregated_saved_only="true"
+            shift 1
+            ;;
+        --state_glob)
+            state_glob="${2:-}"
+            state_glob_explicit="true"
+            shift 2
+            ;;
         --skip_per_state_sweep)
             skip_per_state="true"
+            skip_per_state_explicit="true"
             shift 1
             ;;
         --baseline_j2)
@@ -206,6 +226,10 @@ if [[ "${sync_scope}" != "auto" && "${sync_scope}" != "aggregation" && "${sync_s
     echo "--sync_scope must be auto, aggregation, or full. Got '${sync_scope}'."
     exit 1
 fi
+if [[ "${state_glob_explicit}" == "true" && -z "${state_glob}" ]]; then
+    echo "--state_glob cannot be empty."
+    exit 1
+fi
 if [[ "${plot_mode_explicit}" == "true" && "${plot_mode}" != "single" && "${plot_mode}" != "two_force_d" ]]; then
     echo "--mode_plot must be single or two_force_d. Got '${plot_mode}'."
     exit 1
@@ -213,6 +237,12 @@ fi
 if [[ -n "${baseline_j2}" && ! "${baseline_j2}" =~ ^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]]; then
     echo "--baseline_j2 must be numeric when provided. Got '${baseline_j2}'."
     exit 1
+fi
+if [[ "${aggregated_saved_only}" == "true" ]]; then
+    sync_scope="aggregation"
+    if [[ "${state_glob_explicit}" != "true" ]]; then
+        state_glob="*id-aggregated_saved_*.jld2"
+    fi
 fi
 
 sync_registry() {
@@ -469,13 +499,25 @@ if [[ "${sync_scope_effective}" == "auto" ]]; then
 fi
 echo "  sync_scope=${sync_scope_effective}"
 
+aggregation_glob="*id-aggregated_*.jld2"
+if [[ "${state_glob_explicit}" == "true" ]]; then
+    aggregation_glob="${state_glob}"
+elif [[ -n "${state_glob}" ]]; then
+    aggregation_glob="${state_glob}"
+fi
+if [[ "${sync_scope_effective}" == "aggregation" ]]; then
+    echo "  aggregation_state_glob=${aggregation_glob}"
+fi
+
 if [[ "${sync_scope_effective}" == "aggregation" ]]; then
     rsync -av --progress --prune-empty-dirs \
         --include='*/' \
         --include='run_info.txt' \
         --include='manifest.csv' \
         --include='reports/***' \
-        --include='*id-aggregated_*.jld2' \
+        --include="states/aggregated/${aggregation_glob}" \
+        --include="states/${aggregation_glob}" \
+        --include="${aggregation_glob}" \
         --exclude='*' \
         "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
 else
@@ -491,14 +533,31 @@ if [[ "${plot_after_sync}" == "true" ]]; then
         fi
     fi
 
-    states_dir="${local_run_dir}/states"
+    plot_glob="*.jld2"
+    if [[ "${sync_scope_effective}" == "aggregation" ]]; then
+        plot_glob="${aggregation_glob}"
+    fi
+
+    states_dir_aggregated="${local_run_dir}/states/aggregated"
+    states_dir_legacy="${local_run_dir}/states"
+    states_dir="${states_dir_legacy}"
+    if [[ "${sync_scope_effective}" == "aggregation" && -d "${states_dir_aggregated}" ]]; then
+        states_dir="${states_dir_aggregated}"
+    fi
     if [[ ! -d "${states_dir}" ]]; then
         echo "No states directory found at ${states_dir}; skipping plot."
         exit 0
     fi
-    mapfile -t state_files < <(find "${states_dir}" -type f -name '*.jld2' | sort)
+
+    mapfile -t state_files < <(find "${states_dir}" -type f -name "${plot_glob}" | sort)
+    if (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" == "${states_dir_aggregated}" && -d "${states_dir_legacy}" ]]; then
+        mapfile -t state_files < <(find "${states_dir_legacy}" -type f -name "${plot_glob}" | sort)
+        if (( ${#state_files[@]} > 0 )); then
+            states_dir="${states_dir_legacy}"
+        fi
+    fi
     if (( ${#state_files[@]} == 0 )); then
-        echo "No JLD2 states found in ${states_dir}; skipping plot."
+        echo "No matching states found in ${states_dir} (pattern: ${plot_glob}); skipping plot."
         exit 0
     fi
 
@@ -522,11 +581,14 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     if [[ -n "${baseline_j2}" ]]; then
         cmd+=("--baseline_j2" "${baseline_j2}")
     fi
+    if [[ "${skip_per_state_explicit}" != "true" && "${plot_mode}" == "two_force_d" && "${sync_scope_effective}" == "aggregation" ]]; then
+        skip_per_state="true"
+    fi
     if [[ "${skip_per_state}" == "true" ]]; then
         cmd+=("--skip_per_state_sweep")
     fi
 
-    echo "Running load_and_plot on ${#state_files[@]} state(s)..."
+    echo "Running load_and_plot on ${#state_files[@]} state(s) (pattern: ${plot_glob})..."
     "${cmd[@]}"
     echo "Plots saved to: ${out_dir}"
 fi
