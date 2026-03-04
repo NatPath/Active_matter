@@ -31,6 +31,7 @@ Simulation parameters:
   --rho <value>        Density
 
 two_force_d options:
+  --d_spacing <linear|log_midpoints>
   --d_min <int>
   --d_max <int>
   --d_step <int>
@@ -47,6 +48,9 @@ Defaults policy (strict):
   - two_force_d d-range is all-or-none:
       if none provided => defaults d_min=2,d_max=L/4,d_step=2
       if any provided  => require all three
+  - two_force_d spacing:
+      default          => linear
+      --d_spacing log_midpoints => d in {2,4,8,...} ∪ {6,12,24,...} up to d_max (odd d skipped)
   - single_origin_force forcing params are all-or-none:
       if none provided => defaults ffr=1.0,force_strength=1.0
       if any provided  => require both
@@ -86,6 +90,7 @@ rho_val=""
 d_min=""
 d_max=""
 d_step=""
+d_spacing="linear"
 ffr_val=""
 force_strength_val=""
 
@@ -126,6 +131,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --d_min)
             d_min="${2:-}"
+            shift 2
+            ;;
+        --d_spacing)
+            d_spacing="${2:-}"
             shift 2
             ;;
         --d_max)
@@ -290,6 +299,14 @@ if ! [[ "${L_val}" =~ ^[0-9]+$ ]] || (( L_val <= 0 )) || (( L_val % 2 != 0 )); t
 fi
 
 if [[ "${simulation}" == "two_force_d" ]]; then
+    case "${d_spacing}" in
+        linear|log_midpoints)
+            ;;
+        *)
+            echo "--d_spacing must be linear or log_midpoints. Got '${d_spacing}'."
+            exit 1
+            ;;
+    esac
     if [[ -z "${d_min}" && -z "${d_max}" && -z "${d_step}" ]]; then
         d_min="2"
         d_max="$((L_val / 4))"
@@ -310,6 +327,10 @@ if [[ "${simulation}" == "two_force_d" ]]; then
         exit 1
     fi
 else
+    if [[ "${d_spacing}" != "linear" ]]; then
+        echo "--d_spacing is only supported for simulation=two_force_d."
+        exit 1
+    fi
     if [[ -z "${ffr_val}" && -z "${force_strength_val}" ]]; then
         ffr_val="1.0"
         force_strength_val="1.0"
@@ -333,6 +354,7 @@ if [[ "${simulation}" == "two_force_d" ]]; then
         --L "${L_val}"
         --rho "${rho_val}"
         --n_sweeps "${n_sweeps}"
+        --d_spacing "${d_spacing}"
         --d_min "${d_min}"
         --d_max "${d_max}"
         --d_step "${d_step}"
@@ -382,6 +404,7 @@ echo "  defaults_used=${defaults_used}"
 echo "  L=${L_val}"
 echo "  rho=${rho_val}"
 if [[ "${simulation}" == "two_force_d" ]]; then
+    echo "  d_spacing=${d_spacing}"
     echo "  d_range=${d_min}:${d_step}:${d_max}"
 else
     echo "  ffr=${ffr_val}"

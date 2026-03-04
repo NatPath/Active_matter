@@ -29,12 +29,12 @@ else
     exit 1
 fi
 
-if [[ -f "${SCRIPT_DIR}/aggregate_replicas_from_tags.sh" ]]; then
-    AGGREGATE_SCRIPT="${SCRIPT_DIR}/aggregate_replicas_from_tags.sh"
-elif [[ -f "${REPO_ROOT}/cluster_scripts/aggregate_replicas_from_tags.sh" ]]; then
-    AGGREGATE_SCRIPT="${REPO_ROOT}/cluster_scripts/aggregate_replicas_from_tags.sh"
+if [[ -f "${SCRIPT_DIR}/aggregate_two_force_d_saved_files.sh" ]]; then
+    AGGREGATE_SCRIPT="${SCRIPT_DIR}/aggregate_two_force_d_saved_files.sh"
+elif [[ -f "${REPO_ROOT}/cluster_scripts/aggregate_two_force_d_saved_files.sh" ]]; then
+    AGGREGATE_SCRIPT="${REPO_ROOT}/cluster_scripts/aggregate_two_force_d_saved_files.sh"
 else
-    echo "Could not find aggregate_replicas_from_tags.sh"
+    echo "Could not find aggregate_two_force_d_saved_files.sh"
     exit 1
 fi
 
@@ -46,13 +46,36 @@ else
     echo "Could not find run_diffusive_no_activity_from_latest_state.sh"
     exit 1
 fi
+SPACING_UTILS="${SCRIPT_DIR}/two_force_d_spacing_utils.sh"
+if [[ ! -f "${SPACING_UTILS}" ]]; then
+    echo "Could not find spacing utils script: ${SPACING_UTILS}"
+    exit 1
+fi
+source "${SPACING_UTILS}"
 
 "${GENERATE_SCRIPT}"
 
 D_MIN="${D_MIN:-2}"
 D_MAX="${D_MAX:-128}"
 D_STEP="${D_STEP:-2}"
-D_VALUES=($(seq "${D_MIN}" "${D_STEP}" "${D_MAX}"))
+D_SPACING="${D_SPACING:-linear}"
+D_SPACING="$(two_force_d_normalize_spacing_mode "${D_SPACING}")" || {
+    echo "Invalid D_SPACING='${D_SPACING}'."
+    exit 1
+}
+if [[ -n "${D_VALUES_CSV:-}" ]]; then
+    D_VALUES=()
+    if ! two_force_d_csv_to_array "${D_VALUES_CSV}" D_VALUES; then
+        echo "Invalid D_VALUES_CSV='${D_VALUES_CSV}'."
+        exit 1
+    fi
+else
+    mapfile -t D_VALUES < <(two_force_d_generate_d_values "${D_SPACING}" "${D_MIN}" "${D_MAX}" "${D_STEP}")
+fi
+if (( ${#D_VALUES[@]} == 0 )); then
+    echo "No d values to submit (spacing='${D_SPACING}', range=${D_MIN}:${D_STEP}:${D_MAX})."
+    exit 1
+fi
 SOURCE_CONFIG_DIR="${REPO_ROOT}/configuration_files/two_force_d_sweep/production"
 DEFAULT_WARMUP_STATE_DIR="${REPO_ROOT}/saved_states/two_force_d_sweep/warmup"
 DEFAULT_SUBMIT_DIR="${SCRIPT_DIR}/generated_submit/two_force_d_sweep/production"
@@ -153,8 +176,19 @@ if [[ -n "${MANIFEST_PATH}" ]]; then
 fi
 
 save_tag_base="${RUN_ID:-two_force_d_production}"
+aggregate_run_id="${RUN_ID:-}"
+if [[ -z "${aggregate_run_id}" ]]; then
+    config_dir_abs="$(cd "${CONFIG_DIR}" 2>/dev/null && pwd || true)"
+    if [[ -n "${config_dir_abs}" && "${config_dir_abs}" =~ /runs/two_force_d/(warmup|production)/([^/]+)/configs$ ]]; then
+        aggregate_run_id="${BASH_REMATCH[2]}"
+    fi
+fi
 dag_file="${SUBMIT_DIR}/two_force_d_production.dag"
 if [[ "${REPLICA_STRATEGY}" == "dag" && "${NUM_REPLICAS}" -gt 1 ]]; then
+    if [[ -z "${aggregate_run_id}" ]]; then
+        echo "DAG aggregation requires a resolvable run_id (set RUN_ID or use run config dir under runs/two_force_d/.../configs)."
+        exit 1
+    fi
     : > "${dag_file}"
 fi
 
@@ -193,6 +227,9 @@ for d in "${D_VALUES[@]}"; do
     runner_arguments="${RUNNER_SCRIPT} ${runtime_config}"
     if [[ -n "${CONTINUE_STATE_DIR}" ]]; then
         latest_state="$(latest_matching_state "${CONTINUE_STATE_DIR}" \
+            "aggregated/two_force_d${d}_prod_*.jld2" \
+            "aggregated/two_force_d${d}_production_*.jld2" \
+            "aggregated/two_force_d${d}_*.jld2" \
             "two_force_d${d}_prod_*.jld2" \
             "two_force_d${d}_production_*.jld2" \
             "two_force_d${d}_*.jld2" || true)"
@@ -209,9 +246,15 @@ for d in "${D_VALUES[@]}"; do
     else
         if [[ "${DEFER_INITIAL_STATE_LOOKUP}" == "true" ]]; then
             latest_state="DEFERRED:${WARMUP_STATE_DIR}/two_force_d${d}_warmup_*"
-            runner_arguments="${LATEST_STATE_RUNNER_SCRIPT} --runner_script ${RUNNER_SCRIPT} --config ${runtime_config} --state_dir ${WARMUP_STATE_DIR} --pattern two_force_d${d}_warmup_*.jld2 --pattern two_force_d${d}_*.jld2"
+            runner_arguments="${LATEST_STATE_RUNNER_SCRIPT} --runner_script ${RUNNER_SCRIPT} --config ${runtime_config} --state_dir ${WARMUP_STATE_DIR} --pattern aggregated/two_force_d${d}_warmup_*.jld2 --pattern aggregated/two_force_d${d}_*.jld2 --pattern two_force_d${d}_warmup_*.jld2 --pattern two_force_d${d}_*.jld2"
         else
             latest_state="$(ls -1t "${WARMUP_STATE_DIR}"/two_force_d${d}_warmup_* 2>/dev/null | head -n 1 || true)"
+            if [[ -z "${latest_state}" ]]; then
+                latest_state="$(ls -1t "${WARMUP_STATE_DIR}"/aggregated/two_force_d${d}_warmup_* 2>/dev/null | head -n 1 || true)"
+            fi
+            if [[ -z "${latest_state}" ]]; then
+                latest_state="$(ls -1t "${WARMUP_STATE_DIR}"/aggregated/two_force_d${d}_* 2>/dev/null | head -n 1 || true)"
+            fi
             if [[ -z "${latest_state}" ]]; then
                 if [[ "${REQUIRE_INITIAL_STATE}" == "true" ]]; then
                     echo "ERROR: no warmup state matching ${WARMUP_STATE_DIR}/two_force_d${d}_warmup_* for d=${d}"
@@ -257,7 +300,7 @@ EOF
         aggregate_error_file="${LOG_DIR}/d_${d}_aggregate.err"
         aggregate_log_file="${LOG_DIR}/d_${d}_aggregate.log"
         aggregate_request_cpus="${AGGREGATE_REQUEST_CPUS:-1}"
-        aggregate_arguments="${AGGREGATE_SCRIPT} --config ${runtime_config} --state_dir ${STATE_DIR} --num_replicas ${NUM_REPLICAS} --replica_tag_prefix replica_${save_tag_base}_d${d}_r --save_tag aggregated_${save_tag_base}_d${d}"
+        aggregate_arguments="${AGGREGATE_SCRIPT} --run_id ${aggregate_run_id} --mode production --state_dir ${STATE_DIR} --config_dir ${CONFIG_DIR} --d_min ${d} --d_max ${d} --d_step 1 --num_files ${NUM_REPLICAS} --aggregated_subdir aggregated"
         cat > "${aggregate_submit_file}" <<EOF
 Universe   = vanilla
 Executable = /bin/bash

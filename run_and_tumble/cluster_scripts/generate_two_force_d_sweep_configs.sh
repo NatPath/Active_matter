@@ -10,6 +10,12 @@ else
     echo "Could not locate repo root from script location: ${SCRIPT_DIR}"
     exit 1
 fi
+SPACING_UTILS="${SCRIPT_DIR}/two_force_d_spacing_utils.sh"
+if [[ ! -f "${SPACING_UTILS}" ]]; then
+    echo "Could not find spacing utils script: ${SPACING_UTILS}"
+    exit 1
+fi
+source "${SPACING_UTILS}"
 
 CONFIG_ROOT="${REPO_ROOT}/configuration_files/two_force_d_sweep"
 WARMUP_DIR="${CONFIG_ROOT}/warmup"
@@ -34,6 +40,7 @@ PRODUCTION_SWEEPS="${PRODUCTION_SWEEPS:-1000000}"
 
 D_MIN="${D_MIN:-2}"
 D_STEP="${D_STEP:-2}"
+D_SPACING="${D_SPACING:-linear}"
 DEFAULT_D_MAX=$((L / 4))
 D_MAX="${D_MAX:-${DEFAULT_D_MAX}}"
 
@@ -49,7 +56,24 @@ if (( D_MAX < D_MIN )); then
     echo "D_MAX (${D_MAX}) must be >= D_MIN (${D_MIN})."
     exit 1
 fi
-D_VALUES=($(seq "${D_MIN}" "${D_STEP}" "${D_MAX}"))
+
+D_SPACING="$(two_force_d_normalize_spacing_mode "${D_SPACING}")" || {
+    echo "Invalid D_SPACING='${D_SPACING}'."
+    exit 1
+}
+if [[ -n "${D_VALUES_CSV:-}" ]]; then
+    D_VALUES=()
+    if ! two_force_d_csv_to_array "${D_VALUES_CSV}" D_VALUES; then
+        echo "Invalid D_VALUES_CSV='${D_VALUES_CSV}'."
+        exit 1
+    fi
+else
+    mapfile -t D_VALUES < <(two_force_d_generate_d_values "${D_SPACING}" "${D_MIN}" "${D_MAX}" "${D_STEP}")
+fi
+if (( ${#D_VALUES[@]} == 0 )); then
+    echo "No d values generated for spacing='${D_SPACING}' and range ${D_MIN}:${D_STEP}:${D_MAX}."
+    exit 1
+fi
 
 periodic_site() {
     local raw="$1"
@@ -58,14 +82,11 @@ periodic_site() {
 }
 
 for d in "${D_VALUES[@]}"; do
-    if (( d % 2 != 0 )); then
-        echo "Skipping d=${d}: only even d values are supported for exact site-centered symmetry."
-        continue
-    fi
-
-    left_bond_right="$(periodic_site "$((CENTER_SITE - d / 2))" "${L}")"
+    left_offset=$((d / 2))
+    right_offset=$(((d + 1) / 2))
+    left_bond_right="$(periodic_site "$((CENTER_SITE - left_offset))" "${L}")"
     left_bond_left="$(periodic_site "$((left_bond_right - 1))" "${L}")"
-    right_bond_left="$(periodic_site "$((CENTER_SITE + d / 2))" "${L}")"
+    right_bond_left="$(periodic_site "$((CENTER_SITE + right_offset))" "${L}")"
     right_bond_right="$(periodic_site "$((right_bond_left + 1))" "${L}")"
 
     warmup_cfg="${WARMUP_DIR}/d_${d}.yaml"

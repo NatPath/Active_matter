@@ -19,6 +19,7 @@ Optional:
   --warmup_run_id     specific warmup run_id to initialize production from
   --warmup_state_dir  warmup state directory for production mode
   --continue_run_id   continue accumulation from an existing run_id (same mode)
+  --d_spacing         d spacing mode: linear (default) or log_midpoints
   --d_min             minimum d (default: 2)
   --d_max             maximum d (default: L/4)
   --d_step            d step (default: 2)
@@ -55,10 +56,16 @@ fi
 
 WARMUP_SCRIPT="${SCRIPT_DIR}/submit_two_force_d_warmup.sh"
 PRODUCTION_SCRIPT="${SCRIPT_DIR}/submit_two_force_d_production.sh"
+SPACING_UTILS="${SCRIPT_DIR}/two_force_d_spacing_utils.sh"
 if [[ ! -f "${WARMUP_SCRIPT}" || ! -f "${PRODUCTION_SCRIPT}" ]]; then
     echo "Could not find submit scripts in ${SCRIPT_DIR}"
     exit 1
 fi
+if [[ ! -f "${SPACING_UTILS}" ]]; then
+    echo "Could not find spacing utils script: ${SPACING_UTILS}"
+    exit 1
+fi
+source "${SPACING_UTILS}"
 
 registry_file="${REPO_ROOT}/runs/two_force_d/run_registry.csv"
 
@@ -76,6 +83,15 @@ read_run_info_value() {
     local run_info_path="$1"
     local key="$2"
     awk -F= -v k="${key}" '$1 == k {print substr($0, index($0, "=") + 1)}' "${run_info_path}" | tail -n 1
+}
+
+infer_d_spacing_from_run_id() {
+    local rid="$1"
+    if [[ "${rid}" =~ -lm(_|$) ]]; then
+        echo "log_midpoints"
+    else
+        echo "linear"
+    fi
 }
 
 submit_chained_warmup_production() {
@@ -98,11 +114,16 @@ submit_chained_warmup_production() {
     local rho_tag
     rho_tag="$(local_slugify "${rho_val}")"
     local d_max_for_label="${d_max:-auto}"
+    local spacing_tag
+    spacing_tag="$(two_force_d_spacing_tag "${d_spacing}" "${d_step}")"
     local chain_base
     if [[ -n "${run_label}" ]]; then
         chain_base="$(local_slugify "${run_label}")"
+        if [[ "${chain_base}" != *"-${spacing_tag}"* && "${chain_base}" != *"_${spacing_tag}"* ]]; then
+            chain_base="${chain_base}_${spacing_tag}"
+        fi
     else
-        chain_base="two_force_warmup_production_L${L_val}_rho${rho_tag}_wns${warmup_n_sweeps}_pns${n_sweeps_val}_d${d_min}-${d_max_for_label}-s${d_step}"
+        chain_base="two_force_warmup_production_L${L_val}_rho${rho_tag}_wns${warmup_n_sweeps}_pns${n_sweeps_val}_d${d_min}-${d_max_for_label}-${spacing_tag}"
         if (( num_replicas > 1 )); then
             chain_base="${chain_base}_nr${num_replicas}_${replica_strategy}"
         fi
@@ -121,6 +142,7 @@ submit_chained_warmup_production() {
         --num_replicas 1
         --replica_strategy mp
         --request_cpus 1
+        --d_spacing "${d_spacing}"
         --d_min "${d_min}"
         --d_step "${d_step}"
         --run_label "${warmup_label}"
@@ -168,6 +190,7 @@ submit_chained_warmup_production() {
         --num_replicas "${num_replicas}"
         --replica_strategy "${replica_strategy}"
         --warmup_state_dir "${warmup_state_dir_local}"
+        --d_spacing "${d_spacing}"
         --d_min "${warmup_d_min_local}"
         --d_max "${warmup_d_max_local}"
         --d_step "${warmup_d_step_local}"
@@ -292,6 +315,8 @@ replica_strategy=${replica_strategy}
 d_min=${warmup_d_min_local}
 d_max=${warmup_d_max_local}
 d_step=${warmup_d_step_local}
+d_spacing=${d_spacing}
+d_values=${d_values_csv}
 warmup_run_id=${warmup_run_id_local}
 warmup_run_info=${warmup_run_info}
 warmup_manifest=${warmup_manifest_local}
@@ -326,6 +351,8 @@ warmup_run_id=""
 d_min="2"
 d_max=""
 d_step="2"
+d_spacing="linear"
+d_spacing_set="false"
 d_min_set="false"
 d_max_set="false"
 d_step_set="false"
@@ -387,6 +414,11 @@ while [[ $# -gt 0 ]]; do
             d_min_set="true"
             shift 2
             ;;
+        --d_spacing)
+            d_spacing="${2:-}"
+            d_spacing_set="true"
+            shift 2
+            ;;
         --d_max)
             d_max="${2:-}"
             d_max_set="true"
@@ -412,6 +444,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+d_spacing="$(two_force_d_normalize_spacing_mode "${d_spacing}")" || {
+    echo "--d_spacing must be linear or log_midpoints. Got '${d_spacing}'."
+    exit 1
+}
 
 if [[ -z "${n_sweeps_val}" ]]; then
     echo "Missing required arguments."
@@ -463,6 +500,14 @@ if [[ -n "${continue_run_id}" ]]; then
     fi
     if [[ "${d_step_set}" != "true" && -n "${cont_dstep}" ]]; then
         d_step="${cont_dstep}"
+    fi
+
+    cont_spacing="$(infer_d_spacing_from_run_id "${cont_run_id}")"
+    if [[ "${d_spacing_set}" != "true" ]]; then
+        d_spacing="${cont_spacing}"
+    elif [[ "${d_spacing}" != "${cont_spacing}" ]]; then
+        echo "Cannot continue from run_id='${continue_run_id}': source spacing='${cont_spacing}', requested spacing='${d_spacing}'."
+        exit 1
     fi
 
     continue_state_dir="${cont_state_dir}"
@@ -526,6 +571,13 @@ if [[ -n "${warmup_run_id}" ]]; then
     if [[ "${d_step_set}" != "true" && -n "${warm_dstep}" ]]; then
         d_step="${warm_dstep}"
     fi
+    warm_spacing="$(infer_d_spacing_from_run_id "${warm_run_id}")"
+    if [[ "${d_spacing_set}" != "true" ]]; then
+        d_spacing="${warm_spacing}"
+    elif [[ "${d_spacing}" != "${warm_spacing}" ]]; then
+        echo "warmup_run_id mismatch: source spacing='${warm_spacing}', requested spacing='${d_spacing}'."
+        exit 1
+    fi
     warmup_state_dir="${warm_state_dir}"
     if [[ -z "${warmup_state_dir}" || ! -d "${warmup_state_dir}" ]]; then
         echo "Resolved warmup state_dir is invalid: ${warmup_state_dir}"
@@ -579,6 +631,14 @@ if (( d_step <= 0 || d_max < d_min )); then
     exit 1
 fi
 
+mapfile -t D_VALUES < <(two_force_d_generate_d_values "${d_spacing}" "${d_min}" "${d_max}" "${d_step}")
+if (( ${#D_VALUES[@]} == 0 )); then
+    echo "No d values produced for spacing='${d_spacing}' and range ${d_min}:${d_step}:${d_max}."
+    exit 1
+fi
+d_values_csv="$(IFS=,; echo "${D_VALUES[*]}")"
+d_spacing_tag="$(two_force_d_spacing_tag "${d_spacing}" "${d_step}")"
+
 if [[ "${mode}" == "warmup_production" ]]; then
     if [[ -n "${continue_run_id}" || -n "${warmup_run_id}" || -n "${warmup_state_dir}" ]]; then
         echo "--mode warmup_production does not accept --continue_run_id, --warmup_run_id, or --warmup_state_dir."
@@ -601,6 +661,8 @@ export RHO0="${rho_val}"
 export D_MIN="${d_min}"
 export D_MAX="${d_max}"
 export D_STEP="${d_step}"
+export D_SPACING="${d_spacing}"
+export D_VALUES_CSV="${d_values_csv}"
 export NUM_REPLICAS="${num_replicas}"
 export REPLICA_STRATEGY="${replica_strategy}"
 
@@ -611,10 +673,12 @@ slugify() {
 timestamp="$(date +%Y%m%d-%H%M%S)"
 rho_tag="$(slugify "${rho_val}")"
 if [[ -z "${run_label}" ]]; then
-    run_label="two_force_${mode}_L${L_val}_rho${rho_tag}_ns${n_sweeps_val}_d${d_min}-${d_max}-s${d_step}"
+    run_label="two_force_${mode}_L${L_val}_rho${rho_tag}_ns${n_sweeps_val}_d${d_min}-${d_max}-${d_spacing_tag}"
     if (( num_replicas > 1 )); then
         run_label="${run_label}_nr${num_replicas}_${replica_strategy}"
     fi
+elif [[ "${run_label}" != *"-${d_spacing_tag}"* && "${run_label}" != *"_${d_spacing_tag}"* ]]; then
+    run_label="${run_label}_${d_spacing_tag}"
 fi
 run_label="$(slugify "${run_label}")"
 run_id="${run_label}_${timestamp}"
@@ -666,7 +730,9 @@ echo "  rho0=${RHO0}"
 echo "  n_sweeps=${n_sweeps_val}"
 echo "  num_replicas=${NUM_REPLICAS}"
 echo "  replica_strategy=${REPLICA_STRATEGY}"
+echo "  d_spacing=${D_SPACING}"
 echo "  d range: ${D_MIN}:${D_STEP}:${D_MAX}"
+echo "  d values: ${D_VALUES_CSV}"
 echo "  request_cpus=${request_cpus_effective}"
 echo "  request_memory=${request_memory_effective}"
 echo "  run_root=${run_root}"
@@ -683,8 +749,10 @@ fi
 if [[ "${mode}" == "production" && -z "${continue_run_id}" && -z "${warmup_state_dir}" ]]; then
     if [[ -f "${registry_file}" ]]; then
         warmup_state_dir="$(
-            awk -F, -v L="${L}" -v rho="${RHO0}" -v dmin="${D_MIN}" -v dmax="${D_MAX}" -v dstep="${D_STEP}" '
+            awk -F, -v L="${L}" -v rho="${RHO0}" -v dmin="${D_MIN}" -v dmax="${D_MAX}" -v dstep="${D_STEP}" -v spacing="${D_SPACING}" '
                 $3=="warmup" && $4==L && $5==rho && $7==dmin && $8==dmax && $9==dstep {
+                    if (spacing == "log_midpoints" && $2 !~ /-lm(_|$)/) next
+                    if (spacing != "log_midpoints" && $2 ~ /-lm(_|$)/) next
                     state_dir=$14
                 }
                 END {
@@ -711,6 +779,8 @@ replica_strategy=${REPLICA_STRATEGY}
 d_min=${D_MIN}
 d_max=${D_MAX}
 d_step=${D_STEP}
+d_spacing=${D_SPACING}
+d_values=${D_VALUES_CSV}
 request_cpus=${request_cpus_effective}
 request_memory=${request_memory_effective}
 run_root=${run_root}

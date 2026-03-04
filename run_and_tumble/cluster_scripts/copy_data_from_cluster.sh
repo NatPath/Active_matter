@@ -90,7 +90,6 @@ aggregated_saved_only="false"
 state_glob=""
 state_glob_explicit="false"
 skip_per_state="false"
-skip_per_state_explicit="false"
 baseline_j2=""
 plot_mode="two_force_d"
 plot_mode_explicit="false"
@@ -186,7 +185,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip_per_state_sweep)
             skip_per_state="true"
-            skip_per_state_explicit="true"
             shift 1
             ;;
         --baseline_j2)
@@ -580,9 +578,6 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     cmd+=("--mode" "${plot_mode}" "--out_dir" "${out_dir}")
     if [[ -n "${baseline_j2}" ]]; then
         cmd+=("--baseline_j2" "${baseline_j2}")
-    fi
-    if [[ "${skip_per_state_explicit}" != "true" && "${plot_mode}" == "two_force_d" && "${sync_scope_effective}" == "aggregation" ]]; then
-        skip_per_state="true"
     fi
     if [[ "${skip_per_state}" == "true" ]]; then
         cmd+=("--skip_per_state_sweep")

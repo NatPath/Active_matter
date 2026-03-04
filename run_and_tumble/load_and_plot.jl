@@ -1,4 +1,5 @@
 using ArgParse
+using Dates
 using JLD2
 using LinearAlgebra
 using Plots
@@ -117,10 +118,10 @@ function parse_commandline()
             help = "Mode: single, two_force_d, or run_id (run_id is an alias for two_force_d and expects --run_id)"
             default = "single"
         "--run_id"
-            help = "Fetched run_id under cluster_results/runs/two_force_d/<warmup|production>/<run_id>"
+            help = "Run folder name under runs/two_force_d/(warmup|production|local/warmup|local/production)/<run_id>"
             default = ""
         "--run_result_mode"
-            help = "When using --run_id: warmup, production, or auto"
+            help = "When using --run_id: warmup, production, local_warmup, local_production, or auto"
             default = "auto"
         "--cluster_results_root"
             help = "Root directory containing fetched cluster run folders and fitting outputs"
@@ -143,6 +144,9 @@ function parse_commandline()
         "--skip_per_state_sweep"
             help = "Skip per-state sweep/component plots"
             action = :store_true
+        "--with_per_state_sweep"
+            help = "When using --run_id, also export per-state sweep/component plots (default with run_id is analysis-only)"
+            action = :store_true
         "--baseline_j2"
             help = @sprintf("Baseline override for (<J^2>-baseline) vs d analysis (default: auto %.6g*rho0^2)", TWO_FORCE_J2_BASELINE_RHO_FACTOR)
             arg_type = Float64
@@ -160,7 +164,7 @@ function candidate_two_force_run_bases(cluster_results_root::AbstractString)
     repo_root = abspath(@__DIR__)
     bases = String[]
     seen = Set{String}()
-    for root in (requested_root, repo_root)
+    for root in (repo_root, requested_root)
         base = joinpath(root, "runs", "two_force_d")
         if !(base in seen)
             push!(bases, base)
@@ -176,49 +180,66 @@ function resolve_run_id_dir(run_id::AbstractString, cluster_results_root::Abstra
     bases = candidate_two_force_run_bases(cluster_results_root)
     tried = String[]
 
-    if run_result_mode_str == "warmup"
-        for base in bases
-            dir = joinpath(base, "warmup", run_id_str)
-            push!(tried, dir)
-            if isdir(dir)
-                return dir, "warmup"
-            end
-        end
-        error("run_id not found in warmup mode. Tried: $(join(tried, ", "))")
+    mode_rel_paths = if run_result_mode_str == "warmup"
+        [("warmup", "warmup"), (joinpath("local", "warmup"), "local_warmup")]
     elseif run_result_mode_str == "production"
+        [("production", "production"), (joinpath("local", "production"), "local_production")]
+    elseif run_result_mode_str == "local_warmup"
+        [(joinpath("local", "warmup"), "local_warmup")]
+    elseif run_result_mode_str == "local_production"
+        [(joinpath("local", "production"), "local_production")]
+    elseif run_result_mode_str == "auto"
+        [
+            ("warmup", "warmup"),
+            ("production", "production"),
+            (joinpath("local", "warmup"), "local_warmup"),
+            (joinpath("local", "production"), "local_production"),
+        ]
+    else
+        error("--run_result_mode must be warmup, production, local_warmup, local_production, or auto. Got '$run_result_mode_str'.")
+    end
+
+    if run_result_mode_str != "auto"
         for base in bases
-            dir = joinpath(base, "production", run_id_str)
-            push!(tried, dir)
-            if isdir(dir)
-                return dir, "production"
+            for (rel_path, resolved_mode) in mode_rel_paths
+                dir = joinpath(base, rel_path, run_id_str)
+                push!(tried, dir)
+                if isdir(dir)
+                    return dir, resolved_mode
+                end
             end
         end
-        error("run_id not found in production mode. Tried: $(join(tried, ", "))")
-    elseif run_result_mode_str == "auto"
-        matches = Vector{Tuple{String,String}}()
-        for base in bases
-            warmup_dir = joinpath(base, "warmup", run_id_str)
-            production_dir = joinpath(base, "production", run_id_str)
-            push!(tried, warmup_dir)
-            push!(tried, production_dir)
-            if isdir(warmup_dir)
-                push!(matches, (warmup_dir, "warmup"))
+        error("run_id not found in mode=$run_result_mode_str. Tried: $(join(tried, ", "))")
+    end
+
+    matches = Vector{Tuple{String,String,Int}}()
+    seen_dirs = Set{String}()
+    for (base_i, base) in enumerate(bases)
+        for (rel_path, resolved_mode) in mode_rel_paths
+            dir = joinpath(base, rel_path, run_id_str)
+            push!(tried, dir)
+            if isdir(dir) && !(dir in seen_dirs)
+                push!(matches, (dir, resolved_mode, base_i))
+                push!(seen_dirs, dir)
             end
-            if isdir(production_dir)
-                push!(matches, (production_dir, "production"))
-            end
+        end
+    end
+
+    if length(matches) == 1
+        match = matches[1]
+        return match[1], match[2]
+    elseif isempty(matches)
+        error("run_id not found for mode=auto. Tried: $(join(tried, ", "))")
+    else
+        min_base_i = minimum(m[3] for m in matches)
+        preferred = [m for m in matches if m[3] == min_base_i]
+        if length(preferred) == 1
+            match = preferred[1]
+            return match[1], match[2]
         end
 
-        if length(matches) == 1
-            return matches[1]
-        elseif isempty(matches)
-            error("run_id not found for mode=auto. Tried: $(join(tried, ", "))")
-        else
-            choices = join(["$(m[1]) [$(m[2])]" for m in matches], ", ")
-            error("run_id is ambiguous (found in multiple locations). Use --run_result_mode/--cluster_results_root to disambiguate. Found: $choices")
-        end
-    else
-        error("--run_result_mode must be warmup, production, or auto. Got '$run_result_mode_str'.")
+        choices = join(["$(m[1]) [$(m[2])]" for m in preferred], ", ")
+        error("run_id is ambiguous (found multiple matches in the preferred search root). Use --run_result_mode/--cluster_results_root to disambiguate. Preferred matches: $choices")
     end
 end
 
@@ -541,6 +562,244 @@ function fit_loglog_powerlaw(x::AbstractVector{<:Real}, y::AbstractVector{<:Real
     return (slope=slope, intercept=intercept, r2=r2, x=x_fit)
 end
 
+function decimal_tick_label(x::Float64)
+    if !isfinite(x)
+        return ""
+    end
+    if x == 0.0
+        return "0"
+    end
+
+    ax = abs(x)
+    if ax >= 1.0
+        if ax < 1e7
+            return @sprintf("%.0f", x)
+        else
+            return @sprintf("%.3g", x)
+        end
+    end
+
+    n_decimals = min(8, max(1, ceil(Int, -log10(ax))))
+    s = @sprintf("%.*f", n_decimals, x)
+    s = replace(s, r"0+$" => "")
+    s = replace(s, r"\.$" => "")
+    return s
+end
+
+function log10_power_with_decimal_tick_label(x)
+    xv = Float64(x)
+    if !(isfinite(xv) && xv > 0)
+        return ""
+    end
+    k = round(Int, log10(xv))
+    power_value = 10.0^k
+    if isapprox(xv, power_value; rtol=1e-8, atol=1e-12)
+        return "10^$(k)\n" * decimal_tick_label(power_value)
+    end
+    return decimal_tick_label(xv)
+end
+
+function apply_log10_decimal_x_ticks!(p)
+    plot!(p; xformatter=log10_power_with_decimal_tick_label, bottom_margin=9Plots.mm)
+    return p
+end
+
+function adjusted_r2(r2::Float64, n_points::Int; n_params::Int=2)
+    if !isfinite(r2)
+        return NaN
+    end
+    dof = n_points - n_params
+    if dof <= 0
+        return NaN
+    end
+    return 1 - (1 - r2) * (n_points - 1) / dof
+end
+
+function scan_loglog_baseline(x::AbstractVector{<:Real}, y::AbstractVector{<:Real};
+                              n_grid::Int=360,
+                              min_points::Int=4)
+    x_data = Float64.(x)
+    y_data = Float64.(y)
+    base_mask = isfinite.(x_data) .& isfinite.(y_data) .& (x_data .> 0)
+    if count(base_mask) < min_points
+        return nothing
+    end
+
+    y_finite = y_data[base_mask]
+    y_min = minimum(y_finite)
+    y_max = maximum(y_finite)
+    y_span = max(y_max - y_min, abs(y_max), abs(y_min), 1e-12)
+
+    baseline_lo_raw = y_min - 0.9 * y_span
+    baseline_hi_raw = y_min - max(1e-12, 1e-6 * max(abs(y_min), 1.0))
+    if !(isfinite(baseline_lo_raw) && isfinite(baseline_hi_raw))
+        return nothing
+    end
+
+    # Physical constraint: baseline variance must be non-negative (b >= 0).
+    baseline_lo = max(0.0, baseline_lo_raw)
+    baseline_hi = max(0.0, baseline_hi_raw)
+    n_scan = max(n_grid, 12)
+    baselines = if baseline_hi > baseline_lo + eps(Float64)
+        collect(range(baseline_lo, baseline_hi, length=n_scan))
+    else
+        [baseline_lo]
+    end
+    n_candidates = length(baselines)
+    r2_vals = fill(NaN, n_candidates)
+    adj_r2_vals = fill(NaN, n_candidates)
+    slope_vals = fill(NaN, n_candidates)
+    point_counts = fill(0, n_candidates)
+
+    best_idx = 0
+    best_score = -Inf
+    best_points = 0
+    for (i, baseline) in enumerate(baselines)
+        fit = fit_loglog_powerlaw(x_data, y_data .- baseline)
+        if isnothing(fit)
+            continue
+        end
+        n_pts = length(fit.x)
+        point_counts[i] = n_pts
+        if n_pts < min_points
+            continue
+        end
+        r2 = fit.r2
+        adj = adjusted_r2(r2, n_pts; n_params=2)
+        if !isfinite(adj)
+            adj = r2
+        end
+        if !(isfinite(adj) && isfinite(r2))
+            continue
+        end
+
+        r2_vals[i] = r2
+        adj_r2_vals[i] = adj
+        slope_vals[i] = fit.slope
+
+        better = adj > best_score + 1e-12
+        tie = abs(adj - best_score) <= 1e-12 && n_pts > best_points
+        if better || tie
+            best_idx = i
+            best_score = adj
+            best_points = n_pts
+        end
+    end
+
+    if best_idx == 0
+        return nothing
+    end
+
+    best_baseline = baselines[best_idx]
+    best_fit = fit_loglog_powerlaw(x_data, y_data .- best_baseline)
+    isnothing(best_fit) && return nothing
+
+    return (
+        baselines=baselines,
+        r2_vals=r2_vals,
+        adj_r2_vals=adj_r2_vals,
+        slope_vals=slope_vals,
+        point_counts=point_counts,
+        best_idx=best_idx,
+        best_baseline=best_baseline,
+        best_fit=best_fit,
+        y_shifted_best=(y_data .- best_baseline),
+    )
+end
+
+function save_loglog_baseline_search_plot(file_name::String,
+                                          analysis_dir::String,
+                                          x::AbstractVector{<:Real},
+                                          y::AbstractVector{<:Real};
+                                          quantity_label::AbstractString,
+                                          min_points::Int=4)
+    scan = scan_loglog_baseline(x, y; min_points=min_points)
+    out_path = joinpath(analysis_dir, file_name)
+
+    if isnothing(scan)
+        p_empty = plot(title="$quantity_label baseline scan",
+                       axis=false,
+                       legend=false)
+        annotate!(p_empty, 0.5, 0.5, text("No valid baseline scan (need ≥ $(min_points) positive points)", 10))
+        savefig(p_empty, out_path)
+        println("Saved ", out_path)
+        return nothing
+    end
+
+    x_data = Float64.(x)
+    best_idx = scan.best_idx
+    best_baseline = scan.best_baseline
+    best_fit = scan.best_fit
+    y_best = scan.y_shifted_best
+    best_adj = scan.adj_r2_vals[best_idx]
+    best_n = scan.point_counts[best_idx]
+
+    p_scan = plot(title="$quantity_label baseline search (log-log linearity)",
+                  xlabel="baseline to subtract (b >= 0)",
+                  ylabel="fit quality / slope",
+                  framestyle=:box,
+                  legend=:outerright)
+    mask_adj = isfinite.(scan.adj_r2_vals)
+    if any(mask_adj)
+        plot!(p_scan, scan.baselines[mask_adj], scan.adj_r2_vals[mask_adj],
+              lw=2.2, color=:blue, label="adjusted R²")
+    end
+    mask_r2 = isfinite.(scan.r2_vals)
+    if any(mask_r2)
+        plot!(p_scan, scan.baselines[mask_r2], scan.r2_vals[mask_r2],
+              lw=1.8, color=:gray30, linestyle=:dash, label="R²")
+    end
+    mask_slope = isfinite.(scan.slope_vals)
+    if any(mask_slope)
+        plot!(p_scan, scan.baselines[mask_slope], scan.slope_vals[mask_slope],
+              lw=1.6, color=:darkgreen, linestyle=:dot, label="slope")
+    end
+    scatter!(p_scan, [best_baseline], [best_adj],
+             marker=:diamond, markersize=8, color=:red,
+             label=@sprintf("best baseline=%.6g", best_baseline))
+    annotate!(p_scan, best_baseline, best_adj,
+              text(@sprintf("slope=%.3f, R²=%.4f, adjR²=%.4f, n=%d",
+                            best_fit.slope, best_fit.r2, best_adj, best_n),
+                   8, :left))
+
+    p_best = plot(title=@sprintf("%s - baseline(best) vs d (log-log)", quantity_label),
+                  xlabel="d",
+                  ylabel="$quantity_label - baseline(best)",
+                  xscale=:log10,
+                  yscale=:log10,
+                  framestyle=:box,
+                  legend=:outerright)
+    apply_log10_decimal_x_ticks!(p_best)
+    mask_best = isfinite.(x_data) .& isfinite.(y_best) .& (x_data .> 0) .& (y_best .> 0)
+    if any(mask_best)
+        plot!(p_best, x_data[mask_best], y_best[mask_best],
+              marker=:diamond, lw=2.5, color=:black, label="mean - baseline(best)")
+    end
+
+    x_fit = best_fit.x
+    y_fit = 10 .^ (best_fit.intercept .+ best_fit.slope .* log10.(x_fit))
+    plot!(p_best, x_fit, y_fit,
+          lw=2.0,
+          color=:gray20,
+          linestyle=:dashdot,
+          label=@sprintf("fit slope=%.3f (R²=%.3f)", best_fit.slope, best_fit.r2))
+    anchor_x = exp(mean(log.(x_fit)))
+    anchor_y = 10^(best_fit.intercept + best_fit.slope * log10(anchor_x))
+    add_reference_slopes!(p_best, x_fit, anchor_x, anchor_y)
+
+    p_combined = plot(p_scan, p_best, layout=(1, 2), size=(1600, 620))
+    savefig(p_combined, out_path)
+    println("Saved ", out_path)
+
+    return (
+        baseline=best_baseline,
+        slope=best_fit.slope,
+        r2=best_fit.r2,
+        adj_r2=best_adj,
+        n_points=best_n,
+    )
+end
+
 function add_reference_slopes!(p, x::Vector{Float64}, anchor_x::Float64, anchor_y::Float64)
     if !(isfinite(anchor_x) && isfinite(anchor_y) && anchor_x > 0 && anchor_y > 0)
         return
@@ -626,6 +885,7 @@ function plot_single_origin_varj_reference_slopes(state, param; title_suffix::Ab
              top_margin=8Plots.mm,
              left_margin=4Plots.mm,
              right_margin=4Plots.mm)
+    apply_log10_decimal_x_ticks!(p)
 
     fit = fit_loglog_powerlaw(x, y)
     if !isnothing(fit)
@@ -676,6 +936,7 @@ function plot_single_origin_varj_loglog_fit(state, param; title_suffix::Abstract
              top_margin=8Plots.mm,
              left_margin=4Plots.mm,
              right_margin=4Plots.mm)
+    apply_log10_decimal_x_ticks!(p)
 
     fit = fit_loglog_powerlaw(x, y)
     if !isnothing(fit)
@@ -1053,6 +1314,7 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                  yscale=:log10,
                  framestyle=:box,
                  legend=:outerright)
+    apply_log10_decimal_x_ticks!(p_var)
     for slot in 1:max_slots
         y = y_var_slots[slot]
         mask = isfinite.(y) .& (y .> 0)
@@ -1130,6 +1392,7 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                                 yscale=:log10,
                                 framestyle=:box,
                                 legend=:outerright)
+    apply_log10_decimal_x_ticks!(p_var_shifted_loglog)
     plot!(p_var_shifted_loglog, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=var_baseline_label)
     for slot in 1:max_slots
         y = y_var_slots_shifted[slot]
@@ -1182,6 +1445,7 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                  right_margin=4Plots.mm)
         if loglog
             plot!(p; xscale=:log10, yscale=:log10)
+            apply_log10_decimal_x_ticks!(p)
         end
         if zero_line && !loglog
             hline!(p, [0.0], color=:gray55, linestyle=:dash, label=false)
@@ -1273,6 +1537,47 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                  baseline_annot=j2_min_baseline_label,
                  add_reference_slope_guides=true)
 
+    best_var_scan = save_loglog_baseline_search_plot(
+        "10_bond_center_variance_baseline_search_loglog_fit.png",
+        analysis_dir,
+        x,
+        y_var_mean;
+        quantity_label="C_bond(0)",
+    )
+    best_j2_scan = save_loglog_baseline_search_plot(
+        "11_j2_baseline_search_loglog_fit.png",
+        analysis_dir,
+        x,
+        y_j2_mean;
+        quantity_label="⟨J²⟩",
+    )
+
+    baseline_scan_summary_file = joinpath(analysis_dir, "baseline_search_loglog_summary.csv")
+    open(baseline_scan_summary_file, "w") do io
+        println(io, "quantity,best_baseline,slope,r2,adjusted_r2,n_points")
+        if isnothing(best_var_scan)
+            println(io, "bond_center_variance,NaN,NaN,NaN,NaN,0")
+        else
+            println(io, @sprintf("bond_center_variance,%.10g,%.10g,%.10g,%.10g,%d",
+                                 best_var_scan.baseline,
+                                 best_var_scan.slope,
+                                 best_var_scan.r2,
+                                 best_var_scan.adj_r2,
+                                 best_var_scan.n_points))
+        end
+        if isnothing(best_j2_scan)
+            println(io, "j2,NaN,NaN,NaN,NaN,0")
+        else
+            println(io, @sprintf("j2,%.10g,%.10g,%.10g,%.10g,%d",
+                                 best_j2_scan.baseline,
+                                 best_j2_scan.slope,
+                                 best_j2_scan.r2,
+                                 best_j2_scan.adj_r2,
+                                 best_j2_scan.n_points))
+        end
+    end
+    println("Saved ", baseline_scan_summary_file)
+
     summary_file = joinpath(analysis_dir, "summary_vs_d.csv")
     open(summary_file, "w") do io
         println(io, "d,var_mean,j2_mean,baseline_mean,j2_minus_baseline")
@@ -1288,7 +1593,8 @@ function main()
     recursive = get(args, "recursive", false)
     include_abs_mean = get(args, "include_abs_mean_in_spatial_f_plot", false)
     keep_diag = get(args, "keep_diagonal_in_multiforce_cut", false)
-    skip_per_state = get(args, "skip_per_state_sweep", false)
+    skip_per_state_flag = get(args, "skip_per_state_sweep", false)
+    with_per_state_flag = get(args, "with_per_state_sweep", false)
     corr_model_c = Float64(get(args, "corr_model_c", 0.0))
     mode_raw = String(args["mode"])
     run_id = strip(String(get(args, "run_id", "")))
@@ -1315,6 +1621,17 @@ function main()
     end
     if !isempty(run_id) && mode != "two_force_d"
         error("--run_id is supported only with --mode run_id or --mode two_force_d.")
+    end
+    if skip_per_state_flag && with_per_state_flag
+        error("Use only one of --skip_per_state_sweep or --with_per_state_sweep.")
+    end
+
+    skip_per_state = skip_per_state_flag
+    if !isempty(run_id) && !skip_per_state_flag && !with_per_state_flag
+        skip_per_state = true
+        println("run_id mode: defaulting to analysis-only (no per-state sweeps). Pass --with_per_state_sweep to include per-state plots.")
+    elseif with_per_state_flag
+        skip_per_state = false
     end
 
     if !isempty(run_id)
