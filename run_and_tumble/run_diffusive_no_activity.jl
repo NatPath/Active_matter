@@ -336,8 +336,8 @@ end
         error("Use either forcing_bond_pairs or forcing_distance_d, not both.")
     elseif haskey(params, "forcing_bond_pairs")
         raw_pairs = params["forcing_bond_pairs"]
-        if !(raw_pairs isa AbstractVector) || isempty(raw_pairs)
-            error("forcing_bond_pairs must be a non-empty list of bond pairs.")
+        if !(raw_pairs isa AbstractVector)
+            error("forcing_bond_pairs must be a list of bond pairs.")
         end
         for raw_pair in raw_pairs
             push!(bond_indices_list, parse_forcing_bond_pair(raw_pair, dim_num, L))
@@ -376,6 +376,9 @@ end
     end
 
     n_forces = length(bond_indices_list)
+    if n_forces == 0
+        return Potentials.BondForce[], Float64[]
+    end
     forcing_magnitudes_raw = haskey(params, "forcing_magnitudes") ? params["forcing_magnitudes"] : get(params, "forcing_magnitude", defaults["forcing_magnitude"])
     ffrs_raw = haskey(params, "ffrs") ? params["ffrs"] : get(params, "ffr", defaults["ffr"])
     direction_flags_raw = haskey(params, "forcing_direction_flags") ? params["forcing_direction_flags"] : [true]
@@ -1053,13 +1056,20 @@ function main()
             state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
         end
         
-        show_times = get(params, "show_times", get_default_params()["show_times"])
-        save_times = get(params, "save_times", get_default_params()["save_times"])
+        defaults = get_default_params()
+        show_times = get(params, "show_times", defaults["show_times"])
+        save_times = get(params, "save_times", defaults["save_times"])
+        save_dir = get(params, "save_dir", defaults["save_dir"])
+        progress_file = String(get(params, "progress_file", ""))
+        progress_interval_raw = get(params, "progress_interval", 25)
+        progress_interval = max(Int(round(Float64(progress_interval_raw))), 1)
+        snapshot_request_file = String(get(params, "snapshot_request_file", ""))
+        snapshot_tag_prefix = String(get(params, "snapshot_tag_prefix", "snapshot"))
         if !(@isdefined warmup_sweeps)
-            warmup_sweeps = get_warmup_sweeps(params, get_default_params())
+            warmup_sweeps = get_warmup_sweeps(params, defaults)
         end
         if !(@isdefined cluster_mode)
-            cluster_mode = get_cluster_mode(params, get_default_params())
+            cluster_mode = get_cluster_mode(params, defaults)
         end
         if cluster_mode
             show_times = Int[]
@@ -1080,7 +1090,6 @@ function main()
             end
             println("\nSaving current state...")
             try
-                save_dir = get(params, "save_dir", get_default_params()["save_dir"])
                 SaveUtils.save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state, description=description)
                 println("State saved successfully")
             catch e
@@ -1102,6 +1111,11 @@ function main()
                                                  save_description=description,
                                                  warmup_sweeps=warmup_sweeps,
                                                  show_progress=!cluster_mode,
+                                                 save_dir=save_dir,
+                                                 progress_file=progress_file,
+                                                 progress_interval=progress_interval,
+                                                 snapshot_request_file=snapshot_request_file,
+                                                 snapshot_tag_prefix=snapshot_tag_prefix,
                                                  relaxed_ic=using_initial_state)
         catch e
             if isa(e, InterruptException)
@@ -1112,7 +1126,6 @@ function main()
             end
         end
         
-        save_dir = get(params, "save_dir", get_default_params()["save_dir"])
         filename = save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state, description=description)
         final_state_saved[] = true
         println("Final state saved to: ", filename)

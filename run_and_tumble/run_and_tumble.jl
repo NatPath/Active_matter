@@ -62,6 +62,14 @@ function parse_commandline()
             help = "Integer type for positions/densities (e.g., Int16, Int32, Int64)"
             arg_type = String
             required = false
+        "--estimate_only"
+            help = "Estimate runtime and exit without running the simulation (single-run mode)"
+            action = :store_true
+        "--estimate_sample_size"
+            help = "Number of sample sweeps to use for runtime estimation"
+            arg_type = Int
+            default = 100
+            required = false
     end
     return parse_args(s)
 end
@@ -138,6 +146,7 @@ end
         "γ" => 0.0,
         "ϵ" => 0,
         "n_sweeps" => 10^6,
+        "description" => "",
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
         "potential_type" => "zero",
@@ -266,8 +275,8 @@ end
         error("Use either forcing_bond_pairs or forcing_distance_d, not both.")
     elseif haskey(params, "forcing_bond_pairs")
         raw_pairs = params["forcing_bond_pairs"]
-        if !(raw_pairs isa AbstractVector) || isempty(raw_pairs)
-            error("forcing_bond_pairs must be a non-empty list of bond pairs.")
+        if !(raw_pairs isa AbstractVector)
+            error("forcing_bond_pairs must be a list of bond pairs.")
         end
         for raw_pair in raw_pairs
             push!(bond_indices_list, parse_forcing_bond_pair(raw_pair, dim_num, L))
@@ -306,6 +315,9 @@ end
     end
 
     n_forces = length(bond_indices_list)
+    if n_forces == 0
+        return Potentials.BondForce[], Float64[]
+    end
     forcing_magnitudes_raw = haskey(params, "forcing_magnitudes") ? params["forcing_magnitudes"] : get(params, "forcing_magnitude", defaults["forcing_magnitude"])
     ffrs_raw = haskey(params, "ffrs") ? params["ffrs"] : get(params, "ffr", defaults["ffr"])
     direction_flags_raw = haskey(params, "forcing_direction_flags") ? params["forcing_direction_flags"] : [true]
@@ -454,8 +466,13 @@ end
 function main()
     args = parse_commandline()
     num_runs = get(args, "num_runs", 1)
+    estimate_only = get(args, "estimate_only", false)
+    estimate_sample_size = max(get(args, "estimate_sample_size", 100), 1)
     seeds = rand(1:2^30,num_runs)
     println("Running $num_runs independent simulations in parallel.")
+    if estimate_only && num_runs != 1
+        error("--estimate_only is supported only with --num_runs 1.")
+    end
     using_initial_state = haskey(args, "initial_state") && !isnothing(args["initial_state"])
     initial_state = nothing
     initial_param = nothing
@@ -643,8 +660,23 @@ function main()
             state = FP.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
         end
         
-        show_times = get(params, "show_times", get_default_params()["show_times"])
-        save_times = get(params, "save_times", get_default_params()["save_times"])
+        defaults = get_default_params()
+        description = String(get(params, "description", defaults["description"]))
+        show_times = get(params, "show_times", defaults["show_times"])
+        save_times = get(params, "save_times", defaults["save_times"])
+        save_dir = get(params, "save_dir", defaults["save_dir"])
+        progress_file = String(get(params, "progress_file", ""))
+        progress_interval_raw = get(params, "progress_interval", 25)
+        progress_interval = max(Int(round(Float64(progress_interval_raw))), 1)
+        snapshot_request_file = String(get(params, "snapshot_request_file", ""))
+        snapshot_tag_prefix = String(get(params, "snapshot_tag_prefix", "snapshot"))
+
+        if estimate_only
+            estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
+            estimated_time_hours = estimated_time / 3600
+            println("Estimated run time for this simulation: $estimated_time_hours hours")
+            return
+        end
         
         # Register an exit hook to save state at exit.
         final_state_saved = Ref(false)
@@ -654,7 +686,6 @@ function main()
             end
             println("\nSaving current state...")
             try
-                save_dir = get(params, "save_dir", get_default_params()["save_dir"])
                 SaveUtils.save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
                 println("State saved successfully")
             catch e
@@ -671,7 +702,13 @@ function main()
             res_dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  show_times=show_times,
                                                  save_times=save_times,
+                                                 save_dir=save_dir,
                                                  plot_flag=true,
+                                                 save_description=description,
+                                                 progress_file=progress_file,
+                                                 progress_interval=progress_interval,
+                                                 snapshot_request_file=snapshot_request_file,
+                                                 snapshot_tag_prefix=snapshot_tag_prefix,
                                                  relaxed_ic=using_initial_state)
         catch e
             if isa(e, InterruptException)
@@ -682,7 +719,6 @@ function main()
             end
         end
         
-        save_dir = get(params, "save_dir", get_default_params()["save_dir"])
         filename = save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
         final_state_saved[] = true
         println("Final state saved to: ", filename)

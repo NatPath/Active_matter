@@ -84,7 +84,7 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir; description=nothi
     end
     forcing_magnitude = if hasfield(typeof(state), :forcing)
         if state.forcing isa AbstractVector
-            sum(force -> force.magnitude, state.forcing)
+            isempty(state.forcing) ? 0.0 : sum(force -> force.magnitude, state.forcing)
         else
             state.forcing.magnitude
         end
@@ -141,7 +141,7 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     end
     forcing_magnitude = if hasfield(typeof(state), :forcing)
         if state.forcing isa AbstractVector
-            sum(force -> force.magnitude, state.forcing)
+            isempty(state.forcing) ? 0.0 : sum(force -> force.magnitude, state.forcing)
         else
             state.forcing.magnitude
         end

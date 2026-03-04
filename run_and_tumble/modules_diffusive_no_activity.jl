@@ -1122,16 +1122,53 @@ function calculate_statistics(state)
     corr_mat = state.ρ_matrix_avg - outer_prod_ρ
     return normalized_dist, corr_mat
 end
+
+function write_progress_update(progress_file::AbstractString, sweep::Int, t_init::Int, t_end::Int, run_start_epoch::Float64)
+    isempty(progress_file) && return
+    total = max(t_end - t_init + 1, 1)
+    completed = clamp(sweep - t_init + 1, 0, total)
+    fraction = completed / total
+    elapsed = max(time() - run_start_epoch, 0.0)
+    rate = completed > 0 && elapsed > 0.0 ? (completed / elapsed) : 0.0
+    remaining = total - completed
+    eta = rate > 1e-12 ? (remaining / rate) : -1.0
+    eta = isfinite(eta) ? eta : -1.0
+    payload = "{\n" *
+              "  \"sweep\": $(sweep),\n" *
+              "  \"completed\": $(completed),\n" *
+              "  \"total\": $(total),\n" *
+              "  \"fraction\": $(fraction),\n" *
+              "  \"elapsed_seconds\": $(elapsed),\n" *
+              "  \"eta_seconds\": $(eta),\n" *
+              "  \"updated_at_epoch\": $(time())\n" *
+              "}\n"
+    try
+        mkpath(dirname(progress_file))
+        tmp_file = string(progress_file, ".tmp")
+        open(tmp_file, "w") do io
+            write(io, payload)
+        end
+        mv(tmp_file, progress_file; force=true)
+    catch err
+        println("Progress update write failed: $err")
+    end
+end
+
 function run_simulation!(state, param, n_sweeps, rng; 
                         calc_correlations = false, 
                         show_times = [], 
                         save_times = [],
+                        save_dir = "saved_states",
                         plot_flag = false,
                         plot_label = "",
                         save_description = nothing,
                         benchmark_frequency = 0,
                         warmup_sweeps::Int = 0,
                         show_progress::Bool = true,
+                        progress_file = nothing,
+                        progress_interval::Int = 25,
+                        snapshot_request_file = nothing,
+                        snapshot_tag_prefix = "snapshot",
                         relaxed_ic::Bool=false)
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations; show_progress=show_progress)
@@ -1142,6 +1179,11 @@ function run_simulation!(state, param, n_sweeps, rng;
     println("with t_init = $t_init , t_end = $t_end")
     warmup_sweeps = max(warmup_sweeps, 0)
     plot_label = isnothing(plot_label) ? "" : String(plot_label)
+    progress_interval = max(progress_interval, 1)
+    progress_file_path = isnothing(progress_file) ? "" : strip(String(progress_file))
+    snapshot_request_path = isnothing(snapshot_request_file) ? "" : strip(String(snapshot_request_file))
+    run_start_epoch = time()
+    write_progress_update(progress_file_path, t_init - 1, t_init, t_end, run_start_epoch)
     if warmup_sweeps > 0
         println("Warmup enabled: skipping statistics accumulation for first $warmup_sweeps sweeps of this run.")
     end
@@ -1171,9 +1213,19 @@ function run_simulation!(state, param, n_sweeps, rng;
 
         update_and_compute_correlations!(state, param, ρ_history, sweep, rng; collect_statistics=collect_statistics)
 
+        if !isempty(snapshot_request_path) && isfile(snapshot_request_path)
+            try
+                rm(snapshot_request_path; force=true)
+            catch
+                # Best effort: continue even if cleanup fails.
+            end
+            snapshot_tag = string(snapshot_tag_prefix, "_t", sweep)
+            save_state(state, param, save_dir; tag=snapshot_tag, relaxed_ic=relaxed_ic, description=save_description)
+            println("Snapshot saved at sweep $sweep")
+        end
+
         # Save state at specified times
         if sweep in save_times
-            save_dir = "saved_states"
             save_state(state,param,save_dir; relaxed_ic=relaxed_ic, description=save_description)
             println("State saved at sweep $sweep")
         end
@@ -1185,6 +1237,10 @@ function run_simulation!(state, param, n_sweeps, rng;
         
         if show_progress && !isnothing(prg)
             next!(prg)
+        end
+
+        if sweep_since_start == 1 || sweep_since_start % progress_interval == 0 || sweep == t_end
+            write_progress_update(progress_file_path, sweep, t_init, t_end, run_start_epoch)
         end
     end
 
