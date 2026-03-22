@@ -3,5 +3,7 @@
 *.png
 =======
 *.png
+*.log
 *.jld2
+cluster_results
 >>>>>>> add_multicore_saving

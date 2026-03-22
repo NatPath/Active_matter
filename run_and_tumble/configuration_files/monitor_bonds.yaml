@@ -1,0 +1,26 @@
+dim_num: 1
+L: 100
+ρ₀: 1000
+D: 1.0
+T: 1.0
+γ: 0.0
+n_sweeps: 100000
+warmup_sweeps: 10000
+cluster_mode: false
+description: "single_fluctuating_bond_currents"
+
+potential_type: "zero"
+fluctuation_type: "no-fluctuation"
+potential_magnitude: 0.0
+ic: "random"
+
+# Single fluctuating bond at the origin.
+forcing_bond_pairs:
+  - [50, 51]
+
+forcing_magnitudes: [1.0]
+ffrs: [1.0]
+forcing_direction_flags: [true]
+
+# Count J (current) statistics on all listed bonds.
+bond_pass_count_mode: "all_forcing_bonds"

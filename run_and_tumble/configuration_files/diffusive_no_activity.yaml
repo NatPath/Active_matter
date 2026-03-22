@@ -1,0 +1,22 @@
+dim_num: 1
+L: 256
+ρ₀: 100
+D: 1.0
+T: 1.0
+γ: 0.0
+n_sweeps: 10000
+
+potential_type: "zero"
+fluctuation_type: "no-fluctuation"
+potential_magnitude: 0.0
+ic: "random"
+
+forcing_bond_pairs:
+  - [128, 129]
+forcing_magnitudes: [1.0]
+ffrs: [1.0]
+forcing_direction_flags: [true]
+bond_pass_count_mode: "all_forcing_bonds"
+
+show_times: [1, 10, 100, 1000, 10000]
+save_times: []
