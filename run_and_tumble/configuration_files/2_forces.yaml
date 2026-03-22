@@ -1,9 +1,9 @@
 dim_num: 1
-L: 1000
-ρ₀: 100
+L: 100
+ρ₀: 1000
 
 # New convenience mode (1D only)
-forcing_distance_d: 500    # separation in sites
+forcing_distance_d: 5    # separation in sites
 
 # Force parameters (applied to both if scalar, or per-force if vector)
 ffr: 1.0                    # equivalent to [1.0, 1.0]
