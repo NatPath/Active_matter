@@ -31,7 +31,7 @@ Paths / connection:
   --sync_scope <auto|aggregation|full>    Data sync scope:
                                           auto (default): if run_id looks aggregated (_nr...), fetch aggregated artifacts only
                                           aggregation: fetch aggregated state files + run metadata
-                                          (prefers states/aggregated, with legacy fallback)
+                                          (prefers states/aggregated, with legacy fallback; excludes states/aggregated/archive)
                                           full: fetch full run directory
 
 Post-processing:
@@ -322,6 +322,76 @@ latest_run_id_for_family() {
     fi
 }
 
+prune_local_aggregation_matches() {
+    local run_dir="$1"
+    local file_glob="$2"
+    local pruned_count=0
+    local dir file
+
+    for dir in "${run_dir}/states/aggregated" "${run_dir}/states"; do
+        [[ -d "${dir}" ]] || continue
+        while IFS= read -r -d '' file; do
+            rm -f "${file}"
+            pruned_count=$((pruned_count + 1))
+        done < <(
+            find "${dir}" -maxdepth 1 -type f \
+                -name "${file_glob}" \
+                ! -path '*/aggregated/archive/*' \
+                -print0 2>/dev/null
+        )
+    done
+
+    if (( pruned_count > 0 )); then
+        echo "Pruned ${pruned_count} stale local cached state(s) matching ${file_glob} before sync."
+    fi
+}
+
+select_latest_two_force_d_files() {
+    declare -A best_file=()
+    declare -A best_t=()
+    declare -A best_mtime=()
+    local file base d_val t_val mtime_val current_t current_mtime
+
+    for file in "$@"; do
+        base="$(basename "${file}")"
+        if [[ ! "${base}" =~ two_force_d([0-9]+)_ ]]; then
+            printf "%s\n" "${file}"
+            continue
+        fi
+
+        d_val="${BASH_REMATCH[1]}"
+        if [[ "${base}" =~ _t(-?[0-9]+)_id- ]]; then
+            t_val="${BASH_REMATCH[1]}"
+        else
+            t_val="-9223372036854775808"
+        fi
+        mtime_val="$(stat -c %Y "${file}" 2>/dev/null || echo 0)"
+
+        if [[ -z "${best_file[$d_val]+x}" ]]; then
+            best_file["${d_val}"]="${file}"
+            best_t["${d_val}"]="${t_val}"
+            best_mtime["${d_val}"]="${mtime_val}"
+            continue
+        fi
+
+        current_t="${best_t[$d_val]}"
+        current_mtime="${best_mtime[$d_val]}"
+        if (( t_val > current_t )) || { (( t_val == current_t )) && (( mtime_val >= current_mtime )); }; then
+            best_file["${d_val}"]="${file}"
+            best_t["${d_val}"]="${t_val}"
+            best_mtime["${d_val}"]="${mtime_val}"
+        fi
+    done
+
+    if (( ${#best_file[@]} == 0 )); then
+        return 0
+    fi
+
+    while IFS= read -r d_val; do
+        printf "%s\n" "${best_file[$d_val]}"
+    done < <(printf "%s\n" "${!best_file[@]}" | sort -n)
+}
+
 write_filtered_registry() {
     local family="$1"
     local registry_path="$2"
@@ -507,8 +577,13 @@ if [[ "${sync_scope_effective}" == "aggregation" ]]; then
     echo "  aggregation_state_glob=${aggregation_glob}"
 fi
 
+if [[ "${sync_scope_effective}" == "aggregation" && "${aggregated_saved_only}" == "true" ]]; then
+    prune_local_aggregation_matches "${local_run_dir}" "${aggregation_glob}"
+fi
+
 if [[ "${sync_scope_effective}" == "aggregation" ]]; then
     rsync -av --progress --prune-empty-dirs \
+        --exclude='states/aggregated/archive/***' \
         --include='*/' \
         --include='run_info.txt' \
         --include='manifest.csv' \
@@ -519,7 +594,9 @@ if [[ "${sync_scope_effective}" == "aggregation" ]]; then
         --exclude='*' \
         "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
 else
-    rsync -av --progress "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
+    rsync -av --progress \
+        --exclude='states/aggregated/archive/***' \
+        "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
 fi
 
 if [[ "${plot_after_sync}" == "true" ]]; then
@@ -536,6 +613,15 @@ if [[ "${plot_after_sync}" == "true" ]]; then
         plot_glob="${aggregation_glob}"
     fi
 
+    find_state_files() {
+        local dir="$1"
+        if [[ "${sync_scope_effective}" == "aggregation" ]]; then
+            find "${dir}" -maxdepth 1 -type f -name "${plot_glob}" ! -path '*/aggregated/archive/*' | sort
+        else
+            find "${dir}" -type f -name "${plot_glob}" ! -path '*/aggregated/archive/*' | sort
+        fi
+    }
+
     states_dir_aggregated="${local_run_dir}/states/aggregated"
     states_dir_legacy="${local_run_dir}/states"
     states_dir="${states_dir_legacy}"
@@ -547,11 +633,21 @@ if [[ "${plot_after_sync}" == "true" ]]; then
         exit 0
     fi
 
-    mapfile -t state_files < <(find "${states_dir}" -type f -name "${plot_glob}" | sort)
-    if (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" == "${states_dir_aggregated}" && -d "${states_dir_legacy}" ]]; then
-        mapfile -t state_files < <(find "${states_dir_legacy}" -type f -name "${plot_glob}" | sort)
+    mapfile -t state_files < <(find_state_files "${states_dir}")
+    if (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_legacy}" && -d "${states_dir_legacy}" ]]; then
+        mapfile -t state_files < <(find_state_files "${states_dir_legacy}")
         if (( ${#state_files[@]} > 0 )); then
             states_dir="${states_dir_legacy}"
+        fi
+    fi
+    if [[ "${aggregated_saved_only}" == "true" && "${resolved_family}" == "two_force_d" && ${#state_files[@]} -gt 0 ]]; then
+        original_state_count="${#state_files[@]}"
+        mapfile -t latest_state_files < <(select_latest_two_force_d_files "${state_files[@]}")
+        if (( ${#latest_state_files[@]} > 0 )); then
+            state_files=("${latest_state_files[@]}")
+        fi
+        if (( ${#state_files[@]} < original_state_count )); then
+            echo "Filtered ${original_state_count} matching state(s) down to ${#state_files[@]} latest-per-d state(s) for plotting."
         fi
     fi
     if (( ${#state_files[@]} == 0 )); then

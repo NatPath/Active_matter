@@ -1,0 +1,25 @@
+dim_num: 1
+L: 16
+# For SSEP, ρ₀ is the filling fraction, so it must stay in [0, 1].
+ρ₀: 0.5
+D: 1.0
+T: 1.0
+γ: 0.0
+n_sweeps: 100000000
+warmup_sweeps: 1000
+cluster_mode: false
+
+potential_type: "zero"
+fluctuation_type: "no-fluctuation"
+potential_magnitude: 0.0
+ic: "random"
+
+forcing_magnitudes: [1.0]
+ffrs: [1.0]
+forcing_direction_flags: [true]
+forcing_rate_scheme: "legacy_penalty" # use "symmetric_normalized" for D±f normalized by D+f
+bond_pass_count_mode: "all_forcing_bonds"
+
+plot_final: true
+save_final_plot: true
+save_dir: "saved_states_ssep"

@@ -1,0 +1,32 @@
+dim_num: 2
+L: 64
+# For SSEP, ρ₀ is the filling fraction, so it must stay in [0, 1].
+ρ₀: 0.125
+D: 1.0
+T: 1.0
+γ: 0.0
+n_sweeps: 100000000
+warmup_sweeps: 1000
+cluster_mode: false
+description: "ssep_single_fluctuating_center_bond_x_2d"
+
+potential_type: "zero"
+fluctuation_type: "no-fluctuation"
+potential_magnitude: 0.0
+ic: "random"
+
+# For even L, this resolves to the center x-directed bond:
+# ([L/2, L/2] -> [L/2 + 1, L/2]).
+forcing_type: "center_bond_x"
+forcing_magnitudes: [1.0]
+# The bond fluctuates by flipping its direction at this rate.
+ffrs: [1.0]
+forcing_direction_flags: [true]
+forcing_rate_scheme: "legacy_penalty"
+forcing_rate_scheme: ""
+bond_pass_count_mode: "all_forcing_bonds"
+
+full_corr_tensor: false
+plot_final: true
+save_final_plot: true
+save_dir: "saved_states_ssep/single_center_bond_x_2d"

@@ -15,6 +15,58 @@ using .PlotUtils
 const BOND_PASS_TOTAL_SQ_AVG_KEY = :bond_pass_total_sq_avg
 const BOND_PASS_TRACK_MASK_KEY = :bond_pass_track_mask
 const TWO_FORCE_J2_BASELINE_RHO_FACTOR = 0.0894
+const TWO_FORCE_LOGLOG_TARGET_SLOPE = -2.0
+const ENABLE_BASELINE_SEARCH_FIGURES = get(ENV, "LOAD_AND_PLOT_ENABLE_BASELINE_SEARCH_FIGURES", "1") == "1"
+const TWO_FORCE_BOND_SERIES_COLORS = [:royalblue, :crimson, :seagreen, :darkorange, :mediumpurple, :sienna, :deeppink, :teal]
+const AGG_TWO_FORCE_REPLICA_COUNT_KEY = :agg_two_force_replica_count
+const AGG_TWO_FORCE_VAR_SLOT_MEAN_KEY = :agg_two_force_var_slot_mean
+const AGG_TWO_FORCE_VAR_SLOT_SEM_KEY = :agg_two_force_var_slot_sem
+const AGG_TWO_FORCE_VAR_SLOT_CI95_KEY = :agg_two_force_var_slot_ci95
+const AGG_TWO_FORCE_VAR_SLOT_N_KEY = :agg_two_force_var_slot_n
+const AGG_TWO_FORCE_VAR_SLOT_WEIGHT_KEY = :agg_two_force_var_slot_weight
+const AGG_TWO_FORCE_VAR_SLOT_SUM_KEY = :agg_two_force_var_slot_sum
+const AGG_TWO_FORCE_VAR_SLOT_SUMSQ_KEY = :agg_two_force_var_slot_sumsq
+const AGG_TWO_FORCE_VAR_SLOT_WEIGHTSQ_KEY = :agg_two_force_var_slot_weightsq
+const AGG_TWO_FORCE_VAR_MEAN_KEY = :agg_two_force_var_mean
+const AGG_TWO_FORCE_VAR_MEAN_SEM_KEY = :agg_two_force_var_mean_sem
+const AGG_TWO_FORCE_VAR_MEAN_CI95_KEY = :agg_two_force_var_mean_ci95
+const AGG_TWO_FORCE_VAR_MEAN_N_KEY = :agg_two_force_var_mean_n
+const AGG_TWO_FORCE_VAR_MEAN_WEIGHT_KEY = :agg_two_force_var_mean_weight
+const AGG_TWO_FORCE_VAR_MEAN_SUM_KEY = :agg_two_force_var_mean_sum
+const AGG_TWO_FORCE_VAR_MEAN_SUMSQ_KEY = :agg_two_force_var_mean_sumsq
+const AGG_TWO_FORCE_VAR_MEAN_WEIGHTSQ_KEY = :agg_two_force_var_mean_weightsq
+const AGG_TWO_FORCE_VAR_RAW_SLOT_MEAN_KEY = :agg_two_force_var_raw_slot_mean
+const AGG_TWO_FORCE_VAR_RAW_SLOT_SEM_KEY = :agg_two_force_var_raw_slot_sem
+const AGG_TWO_FORCE_VAR_RAW_SLOT_CI95_KEY = :agg_two_force_var_raw_slot_ci95
+const AGG_TWO_FORCE_VAR_RAW_SLOT_N_KEY = :agg_two_force_var_raw_slot_n
+const AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHT_KEY = :agg_two_force_var_raw_slot_weight
+const AGG_TWO_FORCE_VAR_RAW_SLOT_SUM_KEY = :agg_two_force_var_raw_slot_sum
+const AGG_TWO_FORCE_VAR_RAW_SLOT_SUMSQ_KEY = :agg_two_force_var_raw_slot_sumsq
+const AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHTSQ_KEY = :agg_two_force_var_raw_slot_weightsq
+const AGG_TWO_FORCE_VAR_RAW_MEAN_KEY = :agg_two_force_var_raw_mean
+const AGG_TWO_FORCE_VAR_RAW_MEAN_SEM_KEY = :agg_two_force_var_raw_mean_sem
+const AGG_TWO_FORCE_VAR_RAW_MEAN_CI95_KEY = :agg_two_force_var_raw_mean_ci95
+const AGG_TWO_FORCE_VAR_RAW_MEAN_N_KEY = :agg_two_force_var_raw_mean_n
+const AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHT_KEY = :agg_two_force_var_raw_mean_weight
+const AGG_TWO_FORCE_VAR_RAW_MEAN_SUM_KEY = :agg_two_force_var_raw_mean_sum
+const AGG_TWO_FORCE_VAR_RAW_MEAN_SUMSQ_KEY = :agg_two_force_var_raw_mean_sumsq
+const AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHTSQ_KEY = :agg_two_force_var_raw_mean_weightsq
+const AGG_TWO_FORCE_J2_SLOT_MEAN_KEY = :agg_two_force_j2_slot_mean
+const AGG_TWO_FORCE_J2_SLOT_SEM_KEY = :agg_two_force_j2_slot_sem
+const AGG_TWO_FORCE_J2_SLOT_CI95_KEY = :agg_two_force_j2_slot_ci95
+const AGG_TWO_FORCE_J2_SLOT_N_KEY = :agg_two_force_j2_slot_n
+const AGG_TWO_FORCE_J2_SLOT_WEIGHT_KEY = :agg_two_force_j2_slot_weight
+const AGG_TWO_FORCE_J2_SLOT_SUM_KEY = :agg_two_force_j2_slot_sum
+const AGG_TWO_FORCE_J2_SLOT_SUMSQ_KEY = :agg_two_force_j2_slot_sumsq
+const AGG_TWO_FORCE_J2_SLOT_WEIGHTSQ_KEY = :agg_two_force_j2_slot_weightsq
+const AGG_TWO_FORCE_J2_MEAN_KEY = :agg_two_force_j2_mean
+const AGG_TWO_FORCE_J2_MEAN_SEM_KEY = :agg_two_force_j2_mean_sem
+const AGG_TWO_FORCE_J2_MEAN_CI95_KEY = :agg_two_force_j2_mean_ci95
+const AGG_TWO_FORCE_J2_MEAN_N_KEY = :agg_two_force_j2_mean_n
+const AGG_TWO_FORCE_J2_MEAN_WEIGHT_KEY = :agg_two_force_j2_mean_weight
+const AGG_TWO_FORCE_J2_MEAN_SUM_KEY = :agg_two_force_j2_mean_sum
+const AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY = :agg_two_force_j2_mean_sumsq
+const AGG_TWO_FORCE_J2_MEAN_WEIGHTSQ_KEY = :agg_two_force_j2_mean_weightsq
 
 function wildcard_to_regex(pattern::String)
     special = Set(['.', '^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\'])
@@ -274,8 +326,105 @@ function ensure_state_potential!(state, potential)
     end
 end
 
-has_prop(obj, name::Symbol) = hasproperty(obj, name)
-get_prop(obj, name::Symbol, default=nothing) = hasproperty(obj, name) ? getproperty(obj, name) : default
+function reconstructed_fields_payload(obj)
+    if hasfield(typeof(obj), :fields)
+        fields = getfield(obj, :fields)
+        if fields isa AbstractVector
+            if length(fields) == 1 && fields[1] isa AbstractVector
+                return fields[1]
+            end
+            return fields
+        end
+    end
+    return nothing
+end
+
+function reconstructed_prop_lookup(obj, name::Symbol, default=nothing)
+    names = try
+        propertynames(obj)
+    catch
+        return default
+    end
+    idx = findfirst(==(name), names)
+    idx === nothing && return default
+
+    payload = reconstructed_fields_payload(obj)
+    if payload !== nothing && idx <= length(payload)
+        return payload[idx]
+    end
+    return default
+end
+
+function has_prop(obj, name::Symbol)
+    try
+        hasproperty(obj, name) && return true
+    catch
+    end
+    if hasfield(typeof(obj), name)
+        return true
+    end
+    return reconstructed_prop_lookup(obj, name, nothing) !== nothing
+end
+
+function get_prop(obj, name::Symbol, default=nothing)
+    if hasfield(typeof(obj), name)
+        return getfield(obj, name)
+    end
+    try
+        if hasproperty(obj, name)
+            return getproperty(obj, name)
+        end
+    catch
+    end
+    return reconstructed_prop_lookup(obj, name, default)
+end
+
+function param_ffr_input_for_plot(param)
+    if has_prop(param, :ffr)
+        return get_prop(param, :ffr)
+    elseif has_prop(param, :ffrs)
+        return get_prop(param, :ffrs)
+    elseif has_prop(param, :forcing_fluctuation_rate)
+        ffr = Float64(get_prop(param, :forcing_fluctuation_rate))
+        if has_prop(param, :N)
+            return ffr * Float64(get_prop(param, :N))
+        end
+        return ffr
+    end
+    return 0.0
+end
+
+function canonicalize_loaded_param(param)
+    param isa FPDiffusive.Param && return param
+
+    required = (:γ, :dims, :ρ₀, :D, :potential_type, :fluctuation_type, :potential_magnitude)
+    all(name -> has_prop(param, name), required) || return param
+
+    dims_raw = get_prop(param, :dims)
+    dims_tuple = try
+        Tuple(Int.(collect(dims_raw)))
+    catch
+        return param
+    end
+
+    forcing_rate_scheme = if has_prop(param, :forcing_rate_scheme)
+        String(get_prop(param, :forcing_rate_scheme))
+    else
+        "legacy_penalty"
+    end
+
+    return FPDiffusive.setParam(
+        Float64(get_prop(param, :γ)),
+        dims_tuple,
+        Float64(get_prop(param, :ρ₀)),
+        Float64(get_prop(param, :D)),
+        String(get_prop(param, :potential_type)),
+        String(get_prop(param, :fluctuation_type)),
+        Float64(get_prop(param, :potential_magnitude)),
+        param_ffr_input_for_plot(param);
+        forcing_rate_scheme=forcing_rate_scheme,
+    )
+end
 
 function has_loaded_key(data, key::AbstractString)
     return haskey(data, key) || haskey(data, Symbol(key))
@@ -324,15 +473,20 @@ function load_state_bundle(saved_state::String)
         error("Missing state/param payload (keys: $available_keys)")
     end
 
+    param = canonicalize_loaded_param(param)
     return state, param, potential
 end
 
 function is_common_diffusive_state(state, param)
-    has_prop(state, :ρ_avg) || return false
-    has_prop(state, :ρ_matrix_avg_cuts) || return false
-    has_prop(state, :forcing) || return false
-    has_prop(param, :dims) || return false
-    dims = get_prop(param, :dims)
+    rho_avg = get_prop(state, :ρ_avg, nothing)
+    rho_matrix_avg_cuts = get_prop(state, :ρ_matrix_avg_cuts, nothing)
+    forcing = get_prop(state, :forcing, nothing)
+    dims = get_prop(param, :dims, nothing)
+
+    rho_avg === nothing && return false
+    rho_matrix_avg_cuts === nothing && return false
+    forcing === nothing && return false
+    dims === nothing && return false
     return dims isa Tuple || dims isa AbstractVector
 end
 
@@ -435,6 +589,275 @@ function finite_mean(values::AbstractVector{<:Real})
     return isempty(vals) ? NaN : mean(vals)
 end
 
+function finite_sem(values::AbstractVector{<:Real})
+    vals = [Float64(v) for v in values if isfinite(Float64(v))]
+    n = length(vals)
+    if n < 2
+        return NaN
+    end
+    return std(vals; corrected=true) / sqrt(n)
+end
+
+function mean_sem_ci95(values::AbstractVector{<:Real})
+    vals = [Float64(v) for v in values if isfinite(Float64(v))]
+    n = length(vals)
+    if n == 0
+        return NaN, NaN, NaN, 0
+    end
+    μ = mean(vals)
+    sem = n >= 2 ? std(vals; corrected=true) / sqrt(n) : NaN
+    ci95 = isfinite(sem) ? 1.96 * sem : NaN
+    return μ, sem, ci95, n
+end
+
+function preferred_ci95(values::AbstractVector{<:Real}, ci_candidates::AbstractVector{<:Real})
+    ci_vals = [Float64(v) for v in ci_candidates if isfinite(Float64(v)) && Float64(v) >= 0]
+    if !isempty(ci_vals)
+        return mean(ci_vals)
+    end
+    _, _, ci95, _ = mean_sem_ci95(values)
+    return ci95
+end
+
+function metric_accumulator_from_values(values::AbstractVector{<:Real}; weight::Real=1.0)
+    vals = Float64.(values)
+    n = zeros(Float64, length(vals))
+    w = zeros(Float64, length(vals))
+    wsq = zeros(Float64, length(vals))
+    sums = zeros(Float64, length(vals))
+    sumsq = zeros(Float64, length(vals))
+    finite_weight = isfinite(Float64(weight)) && Float64(weight) > 0 ? Float64(weight) : 1.0
+    for i in eachindex(vals)
+        v = vals[i]
+        if isfinite(v)
+            n[i] = 1.0
+            w[i] = finite_weight
+            wsq[i] = finite_weight^2
+            sums[i] = finite_weight * v
+            sumsq[i] = finite_weight * v^2
+        end
+    end
+    return (n=n, w=w, wsq=wsq, sum=sums, sumsq=sumsq)
+end
+
+function has_metric_accumulator(stats::AbstractDict, sum_key::Symbol, sumsq_key::Symbol, n_key::Symbol)
+    return haskey(stats, sum_key) && haskey(stats, sumsq_key) && haskey(stats, n_key)
+end
+
+function metric_accumulator_from_stats(stats::AbstractDict, sum_key::Symbol, sumsq_key::Symbol, n_key::Symbol;
+                                       weight_key::Union{Nothing,Symbol}=nothing,
+                                       weightsq_key::Union{Nothing,Symbol}=nothing)
+    n_vals = Float64.(stats[n_key])
+    w_vals = if !isnothing(weight_key) && haskey(stats, weight_key)
+        Float64.(stats[weight_key])
+    else
+        copy(n_vals)
+    end
+    wsq_vals = if !isnothing(weightsq_key) && haskey(stats, weightsq_key)
+        Float64.(stats[weightsq_key])
+    else
+        copy(n_vals)
+    end
+    return (
+        n=n_vals,
+        w=w_vals,
+        wsq=wsq_vals,
+        sum=Float64.(stats[sum_key]),
+        sumsq=Float64.(stats[sumsq_key]),
+    )
+end
+
+function combine_metric_accumulators(accumulators::Vector{<:NamedTuple})
+    if isempty(accumulators)
+        return (n=Float64[], w=Float64[], wsq=Float64[], sum=Float64[], sumsq=Float64[])
+    end
+    max_len = maximum(length(acc.n) for acc in accumulators)
+    n = zeros(Float64, max_len)
+    w = zeros(Float64, max_len)
+    wsq = zeros(Float64, max_len)
+    sums = zeros(Float64, max_len)
+    sumsq = zeros(Float64, max_len)
+    for acc in accumulators
+        len = length(acc.n)
+        n[1:len] .+= Float64.(acc.n)
+        if hasproperty(acc, :w)
+            w[1:len] .+= Float64.(acc.w)
+        else
+            w[1:len] .+= Float64.(acc.n)
+        end
+        if hasproperty(acc, :wsq)
+            wsq[1:len] .+= Float64.(acc.wsq)
+        else
+            wsq[1:len] .+= Float64.(acc.n)
+        end
+        sums[1:len] .+= Float64.(acc.sum)
+        sumsq[1:len] .+= Float64.(acc.sumsq)
+    end
+    return (n=n, w=w, wsq=wsq, sum=sums, sumsq=sumsq)
+end
+
+function stats_from_metric_accumulator(accum::NamedTuple)
+    len = length(accum.n)
+    means = fill(NaN, len)
+    sems = fill(NaN, len)
+    ci95s = fill(NaN, len)
+    for i in 1:len
+        count = Float64(accum.n[i])
+        weight = hasproperty(accum, :w) ? Float64(accum.w[i]) : count
+        weight_sq = hasproperty(accum, :wsq) ? Float64(accum.wsq[i]) : count
+        if !(isfinite(weight) && weight > 0)
+            continue
+        end
+        sum_val = Float64(accum.sum[i])
+        sumsq_val = Float64(accum.sumsq[i])
+        means[i] = sum_val / weight
+        if isfinite(count) && count >= 2 && isfinite(weight_sq) && weight_sq > 0
+            centered_ss = max(sumsq_val - (sum_val^2 / weight), 0.0)
+            dof = weight - (weight_sq / weight)
+            n_eff = weight^2 / weight_sq
+            if dof > 0 && n_eff > 0
+                sample_var = centered_ss / dof
+                sems[i] = sqrt(sample_var / n_eff)
+            end
+        elseif isfinite(count) && count >= 2
+            centered_ss = max(sumsq_val - (sum_val^2 / weight), 0.0)
+            sample_var = centered_ss / (count - 1.0)
+            sems[i] = sqrt(sample_var / count)
+        end
+        if isfinite(sems[i])
+            ci95s[i] = 1.96 * sems[i]
+        end
+    end
+    return means, sems, ci95s
+end
+
+function sanitize_yerror(values::AbstractVector{<:Real})
+    return [isfinite(Float64(v)) && Float64(v) > 0 ? Float64(v) : 0.0 for v in values]
+end
+
+function sanitize_yerror_log(yerr::AbstractVector{<:Real}, yvals::AbstractVector{<:Real}; lower_fraction::Float64=0.95)
+    n = min(length(yerr), length(yvals))
+    out = Vector{Float64}(undef, n)
+    for i in 1:n
+        e = Float64(yerr[i])
+        y = Float64(yvals[i])
+        if !(isfinite(e) && e > 0 && isfinite(y) && y > 0)
+            out[i] = 0.0
+            continue
+        end
+        out[i] = min(e, lower_fraction * y)
+    end
+    return out
+end
+
+bond_series_color(slot::Integer) = TWO_FORCE_BOND_SERIES_COLORS[mod1(Int(slot), length(TWO_FORCE_BOND_SERIES_COLORS))]
+
+function savefig_or_placeholder(plot_obj, out_path::String; placeholder_title::AbstractString="Plot unavailable")
+    try
+        savefig(plot_obj, out_path)
+        println("Saved ", out_path)
+        return true
+    catch e
+        msg = sprint(showerror, e)
+        if e isa AssertionError && occursin("total_plotarea_", msg)
+            @warn "savefig layout assertion; attempting placeholder." path=out_path error=msg
+            try
+                Plots.closeall()
+            catch
+            end
+            try
+                Plots.gr()
+            catch
+            end
+            try
+                p_placeholder = plot(title=String(placeholder_title), axis=false, legend=false, size=(1000, 550))
+                annotate!(p_placeholder, 0.5, 0.5, text("Rendering skipped due to GR layout assertion.", 10))
+                savefig(p_placeholder, out_path)
+                println("Saved ", out_path)
+                return true
+            catch e_placeholder
+                msg_placeholder = sprint(showerror, e_placeholder)
+                @warn "Placeholder save failed; skipping file." path=out_path error=msg_placeholder
+                return false
+            end
+        end
+        rethrow(e)
+    end
+end
+
+function remap_vector_by_tracked(meta_all::AbstractVector{<:Real}, tracked::AbstractVector{<:Integer})
+    meta = Float64.(meta_all)
+    n = length(tracked)
+    if n == 0
+        return Float64[]
+    end
+    if length(meta) == n
+        return meta
+    end
+    if !isempty(meta) && maximum(tracked) <= length(meta)
+        return [meta[idx] for idx in tracked]
+    end
+    return [i <= length(meta) ? meta[i] : NaN for i in 1:n]
+end
+
+function remap_accumulator_by_tracked(accum::NamedTuple, tracked::AbstractVector{<:Integer})
+    return (
+        n=remap_vector_by_tracked(accum.n, tracked),
+        w=hasproperty(accum, :w) ? remap_vector_by_tracked(accum.w, tracked) : remap_vector_by_tracked(accum.n, tracked),
+        wsq=hasproperty(accum, :wsq) ? remap_vector_by_tracked(accum.wsq, tracked) : remap_vector_by_tracked(accum.n, tracked),
+        sum=remap_vector_by_tracked(accum.sum, tracked),
+        sumsq=remap_vector_by_tracked(accum.sumsq, tracked),
+    )
+end
+
+function bucket_scalar_summary(bucket, value_field::Symbol, ci95_field::Symbol, accum_field::Symbol, exact_field::Symbol)
+    if all(getproperty(row, exact_field) for row in bucket)
+        combined = combine_metric_accumulators([getproperty(row, accum_field) for row in bucket])
+        means, _, ci95s = stats_from_metric_accumulator(combined)
+        mean_val = isempty(means) ? NaN : means[1]
+        ci95_val = isempty(ci95s) ? NaN : ci95s[1]
+        return mean_val, ci95_val
+    end
+    vals = [Float64(getproperty(row, value_field)) for row in bucket]
+    ci95_candidates = [Float64(getproperty(row, ci95_field)) for row in bucket]
+    return finite_mean(vals), preferred_ci95(vals, ci95_candidates)
+end
+
+function bucket_vector_summary(bucket, value_field::Symbol, ci95_field::Symbol, accum_field::Symbol, exact_field::Symbol, max_slots::Int)
+    if all(getproperty(row, exact_field) for row in bucket)
+        combined = combine_metric_accumulators([getproperty(row, accum_field) for row in bucket])
+        means, _, ci95s = stats_from_metric_accumulator(combined)
+        means_out = fill(NaN, max_slots)
+        ci95_out = fill(NaN, max_slots)
+        copy_len = min(length(means), max_slots)
+        if copy_len > 0
+            means_out[1:copy_len] .= means[1:copy_len]
+            ci95_out[1:copy_len] .= ci95s[1:copy_len]
+        end
+        return means_out, ci95_out
+    end
+
+    means_out = fill(NaN, max_slots)
+    ci95_out = fill(NaN, max_slots)
+    for slot in 1:max_slots
+        vals = Float64[]
+        ci95_candidates = Float64[]
+        for row in bucket
+            row_vals = getproperty(row, value_field)
+            if slot <= length(row_vals)
+                push!(vals, Float64(row_vals[slot]))
+            end
+            row_ci95 = getproperty(row, ci95_field)
+            if slot <= length(row_ci95)
+                push!(ci95_candidates, Float64(row_ci95[slot]))
+            end
+        end
+        means_out[slot] = finite_mean(vals)
+        ci95_out[slot] = preferred_ci95(vals, ci95_candidates)
+    end
+    return means_out, ci95_out
+end
+
 function rho0_from_param(param)
     if has_prop(param, :ρ₀)
         value = get_prop(param, :ρ₀)
@@ -533,7 +956,7 @@ function fit_bond_cut_profile(x::AbstractVector{<:Real}, y::AbstractVector{<:Rea
     return (K1=K1, K2=best_k2, x0=x0, orientation_sign=orientation_sign, A=best_A, C=C_fixed, r2=r2)
 end
 
-function fit_loglog_powerlaw(x::AbstractVector{<:Real}, y::AbstractVector{<:Real})
+function fit_loglog_powerlaw(x::AbstractVector{<:Real}, y::AbstractVector{<:Real}; fixed_slope=nothing)
     x_data = Float64.(x)
     y_data = Float64.(y)
     mask = isfinite.(x_data) .& isfinite.(y_data) .& (x_data .> 0) .& (y_data .> 0)
@@ -546,20 +969,30 @@ function fit_loglog_powerlaw(x::AbstractVector{<:Real}, y::AbstractVector{<:Real
     lx = log10.(x_fit)
     ly = log10.(y_fit)
 
-    x_mean = mean(lx)
     y_mean = mean(ly)
-    denom = sum((lx .- x_mean) .^ 2)
-    if denom <= eps(Float64)
-        return nothing
+    if isnothing(fixed_slope)
+        x_mean = mean(lx)
+        denom = sum((lx .- x_mean) .^ 2)
+        if denom <= eps(Float64)
+            return nothing
+        end
+
+        slope = sum((lx .- x_mean) .* (ly .- y_mean)) / denom
+        intercept = y_mean - slope * x_mean
+    else
+        slope = Float64(fixed_slope)
+        intercept = mean(ly .- slope .* lx)
     end
 
-    slope = sum((lx .- x_mean) .* (ly .- y_mean)) / denom
-    intercept = y_mean - slope * x_mean
     pred = intercept .+ slope .* lx
     ss_tot = sum((ly .- y_mean) .^ 2)
     ss_res = sum((ly .- pred) .^ 2)
     r2 = ss_tot > 0 ? 1 - ss_res / ss_tot : NaN
     return (slope=slope, intercept=intercept, r2=r2, x=x_fit)
+end
+
+function loglog_fit_param_count(fixed_slope)
+    return isnothing(fixed_slope) ? 2 : 1
 end
 
 function decimal_tick_label(x::Float64)
@@ -617,7 +1050,8 @@ end
 
 function scan_loglog_baseline(x::AbstractVector{<:Real}, y::AbstractVector{<:Real};
                               n_grid::Int=360,
-                              min_points::Int=4)
+                              min_points::Int=4,
+                              target_slope=nothing)
     x_data = Float64.(x)
     y_data = Float64.(y)
     base_mask = isfinite.(x_data) .& isfinite.(y_data) .& (x_data .> 0)
@@ -650,12 +1084,13 @@ function scan_loglog_baseline(x::AbstractVector{<:Real}, y::AbstractVector{<:Rea
     adj_r2_vals = fill(NaN, n_candidates)
     slope_vals = fill(NaN, n_candidates)
     point_counts = fill(0, n_candidates)
+    n_fit_params = loglog_fit_param_count(target_slope)
 
     best_idx = 0
     best_score = -Inf
     best_points = 0
     for (i, baseline) in enumerate(baselines)
-        fit = fit_loglog_powerlaw(x_data, y_data .- baseline)
+        fit = fit_loglog_powerlaw(x_data, y_data .- baseline; fixed_slope=target_slope)
         if isnothing(fit)
             continue
         end
@@ -665,7 +1100,7 @@ function scan_loglog_baseline(x::AbstractVector{<:Real}, y::AbstractVector{<:Rea
             continue
         end
         r2 = fit.r2
-        adj = adjusted_r2(r2, n_pts; n_params=2)
+        adj = adjusted_r2(r2, n_pts; n_params=n_fit_params)
         if !isfinite(adj)
             adj = r2
         end
@@ -691,7 +1126,7 @@ function scan_loglog_baseline(x::AbstractVector{<:Real}, y::AbstractVector{<:Rea
     end
 
     best_baseline = baselines[best_idx]
-    best_fit = fit_loglog_powerlaw(x_data, y_data .- best_baseline)
+    best_fit = fit_loglog_powerlaw(x_data, y_data .- best_baseline; fixed_slope=target_slope)
     isnothing(best_fit) && return nothing
 
     return (
@@ -712,17 +1147,27 @@ function save_loglog_baseline_search_plot(file_name::String,
                                           x::AbstractVector{<:Real},
                                           y::AbstractVector{<:Real};
                                           quantity_label::AbstractString,
-                                          min_points::Int=4)
-    scan = scan_loglog_baseline(x, y; min_points=min_points)
+                                          min_points::Int=4,
+                                          target_slope=nothing)
+    scan = scan_loglog_baseline(x, y; min_points=min_points, target_slope=target_slope)
     out_path = joinpath(analysis_dir, file_name)
+    scan_title = isnothing(target_slope) ?
+        "$quantity_label baseline scan" :
+        @sprintf("%s baseline scan (target slope=%.3f)", quantity_label, target_slope)
+    best_fit_title = isnothing(target_slope) ?
+        @sprintf("%s - baseline(best) fit", quantity_label) :
+        @sprintf("%s - baseline(best) fit (slope fixed at %.3f)", quantity_label, target_slope)
 
     if isnothing(scan)
-        p_empty = plot(title="$quantity_label baseline scan",
+        p_empty = plot(title=scan_title,
                        axis=false,
                        legend=false)
         annotate!(p_empty, 0.5, 0.5, text("No valid baseline scan (need ≥ $(min_points) positive points)", 10))
-        savefig(p_empty, out_path)
-        println("Saved ", out_path)
+        savefig_or_placeholder(
+            p_empty,
+            out_path;
+            placeholder_title="Baseline scan unavailable",
+        )
         return nothing
     end
 
@@ -734,46 +1179,55 @@ function save_loglog_baseline_search_plot(file_name::String,
     best_adj = scan.adj_r2_vals[best_idx]
     best_n = scan.point_counts[best_idx]
 
-    p_scan = plot(title="$quantity_label baseline search (log-log linearity)",
-                  xlabel="baseline to subtract (b >= 0)",
-                  ylabel="fit quality / slope",
+    if !ENABLE_BASELINE_SEARCH_FIGURES
+        println("Skipping baseline-search figures (set LOAD_AND_PLOT_ENABLE_BASELINE_SEARCH_FIGURES=1 to enable): ", out_path)
+        return (
+            baseline=best_baseline,
+            slope=best_fit.slope,
+            r2=best_fit.r2,
+            adj_r2=best_adj,
+            n_points=best_n,
+        )
+    end
+
+    p_scan = plot(title=scan_title,
+                  xlabel="baseline to subtract (b ≥ 0)",
+                  ylabel="adjusted R² (higher is better)",
                   framestyle=:box,
-                  legend=:outerright)
+                  legend=:topright,
+                  size=(1200, 700),
+                  titlefontsize=10,
+                  guidefontsize=11,
+                  tickfontsize=9,
+                  legendfontsize=8)
     mask_adj = isfinite.(scan.adj_r2_vals)
     if any(mask_adj)
         plot!(p_scan, scan.baselines[mask_adj], scan.adj_r2_vals[mask_adj],
-              lw=2.2, color=:blue, label="adjusted R²")
+              lw=1.6, color=:blue, marker=:circle, markersize=3.8,
+              markerstrokecolor=:blue, label="adjusted R² samples")
     end
-    mask_r2 = isfinite.(scan.r2_vals)
-    if any(mask_r2)
-        plot!(p_scan, scan.baselines[mask_r2], scan.r2_vals[mask_r2],
-              lw=1.8, color=:gray30, linestyle=:dash, label="R²")
-    end
-    mask_slope = isfinite.(scan.slope_vals)
-    if any(mask_slope)
-        plot!(p_scan, scan.baselines[mask_slope], scan.slope_vals[mask_slope],
-              lw=1.6, color=:darkgreen, linestyle=:dot, label="slope")
-    end
+    vline!(p_scan, [best_baseline], color=:red, alpha=0.35, linestyle=:dash, label=false)
     scatter!(p_scan, [best_baseline], [best_adj],
              marker=:diamond, markersize=8, color=:red,
-             label=@sprintf("best baseline=%.6g", best_baseline))
-    annotate!(p_scan, best_baseline, best_adj,
-              text(@sprintf("slope=%.3f, R²=%.4f, adjR²=%.4f, n=%d",
-                            best_fit.slope, best_fit.r2, best_adj, best_n),
-                   8, :left))
+             label=@sprintf("best b=%.6g (adjR²=%.4f)", best_baseline, best_adj))
 
-    p_best = plot(title=@sprintf("%s - baseline(best) vs d (log-log)", quantity_label),
+    p_best = plot(title=best_fit_title,
                   xlabel="d",
-                  ylabel="$quantity_label - baseline(best)",
+                  ylabel="value - baseline(best)",
                   xscale=:log10,
                   yscale=:log10,
                   framestyle=:box,
-                  legend=:outerright)
+                  legend=:topright,
+                  size=(1200, 700),
+                  titlefontsize=10,
+                  guidefontsize=11,
+                  tickfontsize=9,
+                  legendfontsize=8)
     apply_log10_decimal_x_ticks!(p_best)
     mask_best = isfinite.(x_data) .& isfinite.(y_best) .& (x_data .> 0) .& (y_best .> 0)
     if any(mask_best)
         plot!(p_best, x_data[mask_best], y_best[mask_best],
-              marker=:diamond, lw=2.5, color=:black, label="mean - baseline(best)")
+              marker=:diamond, lw=2.5, color=:black, label="mean - b(best)")
     end
 
     x_fit = best_fit.x
@@ -782,20 +1236,334 @@ function save_loglog_baseline_search_plot(file_name::String,
           lw=2.0,
           color=:gray20,
           linestyle=:dashdot,
-          label=@sprintf("fit slope=%.3f (R²=%.3f)", best_fit.slope, best_fit.r2))
+          label=isnothing(target_slope) ?
+              @sprintf("fit slope=%.3f (R²=%.3f)", best_fit.slope, best_fit.r2) :
+              @sprintf("fit slope=%.3f fixed (R²=%.3f)", best_fit.slope, best_fit.r2))
     anchor_x = exp(mean(log.(x_fit)))
     anchor_y = 10^(best_fit.intercept + best_fit.slope * log10(anchor_x))
     add_reference_slopes!(p_best, x_fit, anchor_x, anchor_y)
-
-    p_combined = plot(p_scan, p_best, layout=(1, 2), size=(1600, 620))
-    savefig(p_combined, out_path)
-    println("Saved ", out_path)
+    base, ext = splitext(out_path)
+    scan_out = base * "_scan" * ext
+    savefig_or_placeholder(
+        p_scan,
+        scan_out;
+        placeholder_title="Baseline scan unavailable",
+    )
+    savefig_or_placeholder(
+        p_best,
+        out_path;
+        placeholder_title="Baseline fit unavailable",
+    )
 
     return (
         baseline=best_baseline,
         slope=best_fit.slope,
         r2=best_fit.r2,
         adj_r2=best_adj,
+        n_points=best_n,
+    )
+end
+
+function ci95_to_log10_sigma(ci95::Real, y::Real)
+    ci95_val = Float64(ci95)
+    y_val = Float64(y)
+    if !(isfinite(ci95_val) && ci95_val > 0 && isfinite(y_val) && y_val > 0)
+        return NaN
+    end
+    sigma_y = ci95_val / 1.96
+    return sigma_y / (log(10.0) * y_val)
+end
+
+function fit_loglog_powerlaw_weighted(x::AbstractVector{<:Real},
+                                      y::AbstractVector{<:Real},
+                                      ci95::AbstractVector{<:Real};
+                                      fixed_slope=nothing)
+    x_data = Float64.(x)
+    y_data = Float64.(y)
+    ci95_data = Float64.(ci95)
+    sigma_log10 = [ci95_to_log10_sigma(ci95_data[i], y_data[i]) for i in eachindex(y_data)]
+    mask = isfinite.(x_data) .& isfinite.(y_data) .& isfinite.(ci95_data) .&
+           isfinite.(sigma_log10) .& (x_data .> 0) .& (y_data .> 0) .&
+           (ci95_data .> 0) .& (sigma_log10 .> 0)
+    if count(mask) < 2
+        return nothing
+    end
+
+    x_fit = x_data[mask]
+    y_fit = y_data[mask]
+    ci95_fit = ci95_data[mask]
+    sigma_log10_fit = sigma_log10[mask]
+    lx = log10.(x_fit)
+    ly = log10.(y_fit)
+    w = 1.0 ./ (sigma_log10_fit .^ 2)
+    if !(all(isfinite.(w)) && all(w .> 0))
+        return nothing
+    end
+
+    slope = NaN
+    intercept = NaN
+    s = sum(w)
+    sy = sum(w .* ly)
+    if !(isfinite(s) && s > 0)
+        return nothing
+    end
+    if isnothing(fixed_slope)
+        sx = sum(w .* lx)
+        sxx = sum(w .* lx .* lx)
+        sxy = sum(w .* lx .* ly)
+        denom = s * sxx - sx^2
+        if !(isfinite(denom) && denom > eps(Float64))
+            return nothing
+        end
+        slope = (s * sxy - sx * sy) / denom
+        intercept = (sy - slope * sx) / s
+    else
+        slope = Float64(fixed_slope)
+        intercept = sum(w .* (ly .- slope .* lx)) / s
+    end
+
+    pred = intercept .+ slope .* lx
+    residual = ly .- pred
+    chi2 = sum(w .* residual .^ 2)
+    y_mean_w = sy / s
+    ss_tot = sum(w .* (ly .- y_mean_w) .^ 2)
+    r2 = ss_tot > 0 ? 1 - chi2 / ss_tot : NaN
+    n_params = loglog_fit_param_count(fixed_slope)
+    dof = length(lx) - n_params
+    reduced_chi2 = dof > 0 ? chi2 / dof : NaN
+    return (
+        slope=slope,
+        intercept=intercept,
+        r2=r2,
+        chi2=chi2,
+        reduced_chi2=reduced_chi2,
+        dof=dof,
+        x=x_fit,
+        y=y_fit,
+        ci95=ci95_fit,
+    )
+end
+
+function scan_loglog_baseline_weighted(x::AbstractVector{<:Real},
+                                       y::AbstractVector{<:Real},
+                                       ci95::AbstractVector{<:Real};
+                                       n_grid::Int=360,
+                                       min_points::Int=4,
+                                       target_slope=nothing)
+    x_data = Float64.(x)
+    y_data = Float64.(y)
+    ci95_data = Float64.(ci95)
+    base_mask = isfinite.(x_data) .& isfinite.(y_data) .& isfinite.(ci95_data) .&
+                (x_data .> 0) .& (ci95_data .> 0)
+    if count(base_mask) < min_points
+        return nothing
+    end
+
+    y_finite = y_data[base_mask]
+    y_min = minimum(y_finite)
+    y_max = maximum(y_finite)
+    y_span = max(y_max - y_min, abs(y_max), abs(y_min), 1e-12)
+
+    baseline_lo_raw = y_min - 0.9 * y_span
+    baseline_hi_raw = y_min - max(1e-12, 1e-6 * max(abs(y_min), 1.0))
+    if !(isfinite(baseline_lo_raw) && isfinite(baseline_hi_raw))
+        return nothing
+    end
+
+    baseline_lo = max(0.0, baseline_lo_raw)
+    baseline_hi = max(0.0, baseline_hi_raw)
+    n_scan = max(n_grid, 12)
+    baselines = if baseline_hi > baseline_lo + eps(Float64)
+        collect(range(baseline_lo, baseline_hi, length=n_scan))
+    else
+        [baseline_lo]
+    end
+
+    n_candidates = length(baselines)
+    r2_vals = fill(NaN, n_candidates)
+    chi2_vals = fill(NaN, n_candidates)
+    reduced_chi2_vals = fill(NaN, n_candidates)
+    slope_vals = fill(NaN, n_candidates)
+    point_counts = fill(0, n_candidates)
+
+    best_idx = 0
+    best_score = Inf
+    best_points = 0
+    for (i, baseline) in enumerate(baselines)
+        fit = fit_loglog_powerlaw_weighted(x_data, y_data .- baseline, ci95_data; fixed_slope=target_slope)
+        if isnothing(fit)
+            continue
+        end
+        n_pts = length(fit.x)
+        point_counts[i] = n_pts
+        if n_pts < min_points
+            continue
+        end
+        if !(isfinite(fit.reduced_chi2) && isfinite(fit.r2))
+            continue
+        end
+
+        r2_vals[i] = fit.r2
+        chi2_vals[i] = fit.chi2
+        reduced_chi2_vals[i] = fit.reduced_chi2
+        slope_vals[i] = fit.slope
+
+        better = fit.reduced_chi2 < best_score - 1e-12
+        tie = abs(fit.reduced_chi2 - best_score) <= 1e-12 && n_pts > best_points
+        if better || tie
+            best_idx = i
+            best_score = fit.reduced_chi2
+            best_points = n_pts
+        end
+    end
+
+    if best_idx == 0
+        return nothing
+    end
+
+    best_baseline = baselines[best_idx]
+    best_fit = fit_loglog_powerlaw_weighted(x_data, y_data .- best_baseline, ci95_data; fixed_slope=target_slope)
+    isnothing(best_fit) && return nothing
+
+    return (
+        baselines=baselines,
+        r2_vals=r2_vals,
+        chi2_vals=chi2_vals,
+        reduced_chi2_vals=reduced_chi2_vals,
+        slope_vals=slope_vals,
+        point_counts=point_counts,
+        best_idx=best_idx,
+        best_baseline=best_baseline,
+        best_fit=best_fit,
+        y_shifted_best=(y_data .- best_baseline),
+        ci95_data=ci95_data,
+    )
+end
+
+function save_loglog_baseline_search_plot_weighted(file_name::String,
+                                                   analysis_dir::String,
+                                                   x::AbstractVector{<:Real},
+                                                   y::AbstractVector{<:Real},
+                                                   y_ci95::AbstractVector{<:Real};
+                                                   quantity_label::AbstractString,
+                                                   min_points::Int=4,
+                                                   target_slope=nothing)
+    scan = scan_loglog_baseline_weighted(x, y, y_ci95; min_points=min_points, target_slope=target_slope)
+    out_path = joinpath(analysis_dir, file_name)
+    scan_title = isnothing(target_slope) ?
+        "$quantity_label baseline scan [CI95-weighted]" :
+        @sprintf("%s baseline scan [CI95-weighted, target slope=%.3f]", quantity_label, target_slope)
+    best_fit_title = isnothing(target_slope) ?
+        @sprintf("%s - baseline(best) fit [CI95-weighted]", quantity_label) :
+        @sprintf("%s - baseline(best) fit [CI95-weighted, slope fixed at %.3f]", quantity_label, target_slope)
+
+    if isnothing(scan)
+        p_empty = plot(title=scan_title,
+                       axis=false,
+                       legend=false)
+        annotate!(p_empty, 0.5, 0.5, text("No valid CI95-weighted baseline scan (need ≥ $(min_points) positive points with finite CI95)", 10))
+        savefig_or_placeholder(
+            p_empty,
+            out_path;
+            placeholder_title="CI95-weighted baseline scan unavailable",
+        )
+        return nothing
+    end
+
+    x_data = Float64.(x)
+    best_idx = scan.best_idx
+    best_baseline = scan.best_baseline
+    best_fit = scan.best_fit
+    y_best = scan.y_shifted_best
+    best_redchi2 = scan.reduced_chi2_vals[best_idx]
+    best_n = scan.point_counts[best_idx]
+    ci95_data = scan.ci95_data
+
+    if !ENABLE_BASELINE_SEARCH_FIGURES
+        println("Skipping CI95-weighted baseline-search figures (set LOAD_AND_PLOT_ENABLE_BASELINE_SEARCH_FIGURES=1 to enable): ", out_path)
+        return (
+            baseline=best_baseline,
+            slope=best_fit.slope,
+            r2=best_fit.r2,
+            reduced_chi2=best_redchi2,
+            n_points=best_n,
+        )
+    end
+
+    p_scan = plot(title=scan_title,
+                  xlabel="baseline to subtract (b ≥ 0)",
+                  ylabel="reduced χ² (lower is better)",
+                  framestyle=:box,
+                  legend=:topright,
+                  size=(1200, 700),
+                  titlefontsize=10,
+                  guidefontsize=11,
+                  tickfontsize=9,
+                  legendfontsize=8)
+    mask_score = isfinite.(scan.reduced_chi2_vals)
+    if any(mask_score)
+        plot!(p_scan, scan.baselines[mask_score], scan.reduced_chi2_vals[mask_score],
+              lw=1.6, color=:darkgreen, marker=:circle, markersize=3.8,
+              markerstrokecolor=:darkgreen, label="reduced χ² samples")
+    end
+    vline!(p_scan, [best_baseline], color=:red, alpha=0.35, linestyle=:dash, label=false)
+    scatter!(p_scan, [best_baseline], [best_redchi2],
+             marker=:diamond, markersize=8, color=:red,
+             label=@sprintf("best b=%.6g (χ²ν=%.4f)", best_baseline, best_redchi2))
+
+    p_best = plot(title=best_fit_title,
+                  xlabel="d",
+                  ylabel="value - baseline(best)",
+                  xscale=:log10,
+                  yscale=:log10,
+                  framestyle=:box,
+                  legend=:topright,
+                  size=(1200, 700),
+                  titlefontsize=10,
+                  guidefontsize=11,
+                  tickfontsize=9,
+                  legendfontsize=8)
+    apply_log10_decimal_x_ticks!(p_best)
+    mask_best = isfinite.(x_data) .& isfinite.(y_best) .& isfinite.(ci95_data) .&
+                (x_data .> 0) .& (y_best .> 0) .& (ci95_data .> 0)
+    if any(mask_best)
+        y_best_sel = y_best[mask_best]
+        plot!(p_best, x_data[mask_best], y_best_sel,
+              yerror=sanitize_yerror_log(ci95_data[mask_best], y_best_sel),
+              marker=:diamond, lw=2.5, color=:black, label="mean - b(best) [CI95]")
+    end
+
+    x_fit = best_fit.x
+    y_fit = 10 .^ (best_fit.intercept .+ best_fit.slope .* log10.(x_fit))
+    plot!(p_best, x_fit, y_fit,
+          lw=2.0,
+          color=:gray20,
+          linestyle=:dashdot,
+          label=isnothing(target_slope) ?
+              @sprintf("weighted fit slope=%.3f (R²=%.3f)", best_fit.slope, best_fit.r2) :
+              @sprintf("weighted fit slope=%.3f fixed (R²=%.3f)", best_fit.slope, best_fit.r2))
+    anchor_x = exp(mean(log.(x_fit)))
+    anchor_y = 10^(best_fit.intercept + best_fit.slope * log10(anchor_x))
+    add_reference_slopes!(p_best, x_fit, anchor_x, anchor_y)
+
+    base, ext = splitext(out_path)
+    scan_out = base * "_scan" * ext
+    savefig_or_placeholder(
+        p_scan,
+        scan_out;
+        placeholder_title="CI95-weighted baseline scan unavailable",
+    )
+    savefig_or_placeholder(
+        p_best,
+        out_path;
+        placeholder_title="CI95-weighted baseline fit unavailable",
+    )
+
+    return (
+        baseline=best_baseline,
+        slope=best_fit.slope,
+        r2=best_fit.r2,
+        reduced_chi2=best_redchi2,
         n_points=best_n,
     )
 end
@@ -854,7 +1622,7 @@ function symmetrized_varj_shifted_profile_1d(state, param; ref_site::Int)
     L = param.dims[1]
     f_avg, f2_avg, samples = PlotUtils.spatial_force_moments_1d(state, L)
     var_f = max.(0.0, f2_avg .- f_avg .^ 2)
-    baseline = PlotUtils.SINGLE_ORIGIN_VARJ_BASELINE_FACTOR * param.ρ₀
+    baseline = PlotUtils.single_origin_varj_baseline(param)
     dist_var, var_sym = PlotUtils.average_by_abs_distance(var_f, ref_site)
     var_sym_shifted = var_sym .- baseline
     mask = (dist_var .> 0) .& isfinite.(var_sym_shifted) .& (var_sym_shifted .> 0)
@@ -1080,6 +1848,7 @@ function save_diffusive_sweep_components(saved_state::String, state, param, out_
             ("02_inst_density", components.inst_density),
             ("03_force_averages", components.force_averages),
             ("04_spatial_j_stats", components.spatial_f_stats),
+            ("04b_spatial_j_stats_linear", components.spatial_f_stats_linear),
             ("05_corr_origin_bond", components.corr_origin_cut),
             ("06_corr_fluctuating_bonds", components.corr_fluctuating_bond_cuts),
             ("07_corr_heat", components.corr_heat),
@@ -1151,6 +1920,626 @@ function save_legacy_sweep_plot(saved_state::String, state, param, out_dir::Stri
     end
 end
 
+function write_two_force_d_analysis_report(rows::AbstractVector,
+                                           analysis_dir::AbstractString;
+                                           baseline_j2::Float64=NaN,
+                                           smooth_diagonal::Bool=true)
+    isempty(rows) && return
+
+    d_values = sort(unique(row.d for row in rows))
+    max_var_slots = maximum(max(length(row.var_vals_smoothed), length(row.var_vals_raw)) for row in rows)
+    max_j2_slots = maximum(length(row.j2_vals) for row in rows)
+    grouped = Dict(d => [row for row in rows if row.d == d] for d in d_values)
+
+    x = Float64.(d_values)
+
+    function build_var_aggregates(use_smoothed::Bool)
+        y_var_mean = fill(NaN, length(d_values))
+        y_var_mean_ci95 = fill(NaN, length(d_values))
+        y_var_slots = [fill(NaN, length(d_values)) for _ in 1:max_var_slots]
+        y_var_slots_ci95 = [fill(NaN, length(d_values)) for _ in 1:max_var_slots]
+
+        for (di, d) in enumerate(d_values)
+            bucket = grouped[d]
+            if use_smoothed
+                y_var_mean[di], y_var_mean_ci95[di] = bucket_scalar_summary(bucket, :var_mean_smoothed, :var_mean_ci95_smoothed, :var_mean_accum_smoothed, :var_smoothed_exact)
+                slot_means, slot_ci95 = bucket_vector_summary(bucket, :var_vals_smoothed, :var_slot_ci95_smoothed, :var_slot_accum_smoothed, :var_smoothed_exact, max_var_slots)
+            else
+                y_var_mean[di], y_var_mean_ci95[di] = bucket_scalar_summary(bucket, :var_mean_raw, :var_mean_ci95_raw, :var_mean_accum_raw, :var_raw_exact)
+                slot_means, slot_ci95 = bucket_vector_summary(bucket, :var_vals_raw, :var_slot_ci95_raw, :var_slot_accum_raw, :var_raw_exact, max_var_slots)
+            end
+            for slot in 1:max_var_slots
+                y_var_slots[slot][di] = slot_means[slot]
+                y_var_slots_ci95[slot][di] = slot_ci95[slot]
+            end
+        end
+
+        var_baseline_candidates = Float64[]
+        append!(var_baseline_candidates, [v for v in y_var_mean if isfinite(v)])
+        for slot in 1:max_var_slots
+            append!(var_baseline_candidates, [v for v in y_var_slots[slot] if isfinite(v)])
+        end
+        var_baseline = isempty(var_baseline_candidates) ? NaN : minimum(var_baseline_candidates)
+        y_var_mean_shifted = [
+            (isfinite(v) && isfinite(var_baseline)) ? (v - var_baseline) : NaN
+            for v in y_var_mean
+        ]
+        y_var_mean_shifted_ci95 = copy(y_var_mean_ci95)
+        y_var_slots_shifted = [
+            [
+                (isfinite(v) && isfinite(var_baseline)) ? (v - var_baseline) : NaN
+                for v in y_var_slots[slot]
+            ]
+            for slot in 1:max_var_slots
+        ]
+        y_var_slots_shifted_ci95 = [copy(y_var_slots_ci95[slot]) for slot in 1:max_var_slots]
+
+        return (
+            y_var_mean=y_var_mean,
+            y_var_mean_ci95=y_var_mean_ci95,
+            y_var_slots=y_var_slots,
+            y_var_slots_ci95=y_var_slots_ci95,
+            var_baseline=var_baseline,
+            y_var_mean_shifted=y_var_mean_shifted,
+            y_var_mean_shifted_ci95=y_var_mean_shifted_ci95,
+            y_var_slots_shifted=y_var_slots_shifted,
+            y_var_slots_shifted_ci95=y_var_slots_shifted_ci95,
+        )
+    end
+
+    var_smoothed = build_var_aggregates(true)
+    var_raw = build_var_aggregates(false)
+    var_primary = smooth_diagonal ? var_smoothed : var_raw
+    var_secondary = smooth_diagonal ? var_raw : var_smoothed
+    primary_mode_label = smooth_diagonal ? "smoothed" : "raw"
+    secondary_mode_label = smooth_diagonal ? "raw" : "smoothed"
+
+    y_var_mean = var_primary.y_var_mean
+
+    y_j2_mean = fill(NaN, length(d_values))
+    y_j2_mean_ci95 = fill(NaN, length(d_values))
+    y_baseline_mean = [finite_mean([row.baseline_j2 for row in grouped[d]]) for d in d_values]
+    y_j2_mean_shifted = fill(NaN, length(d_values))
+    y_j2_mean_shifted_ci95 = fill(NaN, length(d_values))
+    y_j2_slots = [fill(NaN, length(d_values)) for _ in 1:max_j2_slots]
+    y_j2_slots_ci95 = [fill(NaN, length(d_values)) for _ in 1:max_j2_slots]
+    y_j2_slots_shifted = [fill(NaN, length(d_values)) for _ in 1:max_j2_slots]
+    y_j2_slots_shifted_ci95 = [fill(NaN, length(d_values)) for _ in 1:max_j2_slots]
+
+    for (di, d) in enumerate(d_values)
+        bucket = grouped[d]
+        y_j2_mean[di], y_j2_mean_ci95[di] = bucket_scalar_summary(bucket, :j2_mean, :j2_mean_ci95, :j2_mean_accum, :j2_exact)
+        y_j2_mean_shifted[di] = isfinite(y_j2_mean[di]) ? (y_j2_mean[di] - y_baseline_mean[di]) : NaN
+        y_j2_mean_shifted_ci95[di] = y_j2_mean_ci95[di]
+        slot_means, slot_ci95 = bucket_vector_summary(bucket, :j2_vals, :j2_slot_ci95, :j2_slot_accum, :j2_exact, max_j2_slots)
+        for slot in 1:max_j2_slots
+            y_j2_slots[slot][di] = slot_means[slot]
+            y_j2_slots_ci95[slot][di] = slot_ci95[slot]
+            y_j2_slots_shifted[slot][di] = isfinite(slot_means[slot]) ? (slot_means[slot] - y_baseline_mean[di]) : NaN
+            y_j2_slots_shifted_ci95[slot][di] = slot_ci95[slot]
+        end
+    end
+
+    j2_min_baseline_candidates = Float64[]
+    append!(j2_min_baseline_candidates, [v for v in y_j2_mean if isfinite(v)])
+    for slot in 1:max_j2_slots
+        append!(j2_min_baseline_candidates, [v for v in y_j2_slots[slot] if isfinite(v)])
+    end
+    j2_min_baseline = isempty(j2_min_baseline_candidates) ? NaN : minimum(j2_min_baseline_candidates)
+    y_j2_mean_min_shifted = [
+        (isfinite(v) && isfinite(j2_min_baseline)) ? (v - j2_min_baseline) : NaN
+        for v in y_j2_mean
+    ]
+    y_j2_mean_min_shifted_ci95 = copy(y_j2_mean_ci95)
+    y_j2_slots_min_shifted = [
+        [
+            (isfinite(v) && isfinite(j2_min_baseline)) ? (v - j2_min_baseline) : NaN
+            for v in y_j2_slots[slot]
+        ]
+        for slot in 1:max_j2_slots
+    ]
+    y_j2_slots_min_shifted_ci95 = [copy(y_j2_slots_ci95[slot]) for slot in 1:max_j2_slots]
+
+    baseline_label = isfinite(baseline_j2) ? @sprintf("baseline=%.6g", baseline_j2) : @sprintf("baseline=%.6g*rho0^2 (per-state)", TWO_FORCE_J2_BASELINE_RHO_FACTOR)
+    j2_min_baseline_label = @sprintf("baseline(min ⟨J²⟩)=%.6g", j2_min_baseline)
+
+    mkpath(analysis_dir)
+
+    function save_var_plots(variant;
+                            file_suffix::String="",
+                            mode_label::AbstractString="")
+        suffix_token = isempty(strip(file_suffix)) ? "" : "_" * strip(file_suffix)
+        mode_key_raw = lowercase(strip(String(mode_label)))
+        mode_key = if occursin("smooth", mode_key_raw)
+            "smoothed"
+        elseif occursin("raw", mode_key_raw)
+            "raw"
+        else
+            isempty(mode_key_raw) ? "primary" : mode_key_raw
+        end
+        mode_title = " [" * mode_key * "]"
+        baseline_note = isfinite(variant.var_baseline) ? @sprintf("baseline b = %.6g", variant.var_baseline) : "baseline b = NaN"
+
+        function annotate_baseline_linear!(p, x_vals::Vector{Float64}, y_vals::Vector{Float64})
+            mask = isfinite.(x_vals) .& isfinite.(y_vals)
+            any(mask) || return
+            xs = x_vals[mask]
+            ys = y_vals[mask]
+            x0 = minimum(xs)
+            y_min = minimum(ys)
+            y_max = maximum(ys)
+            span = max(abs(y_max - y_min), abs(y_max), 1e-12)
+            y0 = y_max - 0.08 * span
+            annotate!(p, x0, y0, text(baseline_note, 9, :black, :left))
+        end
+
+        function annotate_baseline_loglog!(p, x_vals::Vector{Float64}, y_vals::Vector{Float64})
+            mask = isfinite.(x_vals) .& isfinite.(y_vals) .& (x_vals .> 0) .& (y_vals .> 0)
+            any(mask) || return
+            xs = x_vals[mask]
+            ys = y_vals[mask]
+            x0 = minimum(xs)
+            y0 = maximum(ys) / 1.6
+            if !(isfinite(y0) && y0 > 0)
+                y0 = maximum(ys)
+            end
+            annotate!(p, x0, y0, text(baseline_note, 9, :black, :left))
+        end
+
+        p_var = plot(title="C_bond(0) vs d (log-log)" * mode_title,
+                     xlabel="d",
+                     ylabel="C_bond(0)",
+                     xscale=:log10,
+                     yscale=:log10,
+                     framestyle=:box,
+                     legend=:topright,
+                     size=(1180, 760),
+                     titlefontsize=11,
+                     guidefontsize=13,
+                     tickfontsize=10)
+        apply_log10_decimal_x_ticks!(p_var)
+        for slot in 1:max_var_slots
+            y = variant.y_var_slots[slot]
+            mask = isfinite.(y) .& (y .> 0)
+            if any(mask)
+                y_sel = y[mask]
+                slot_color = bond_series_color(slot)
+                plot!(p_var, x[mask], y[mask],
+                      yerror=sanitize_yerror_log(variant.y_var_slots_ci95[slot][mask], y_sel),
+                      marker=:circle, lw=2, color=slot_color,
+                      markerstrokecolor=slot_color, label="bond $(slot)")
+            end
+        end
+        mask_var_mean = isfinite.(variant.y_var_mean) .& (variant.y_var_mean .> 0)
+        if any(mask_var_mean)
+            y_mean_sel = variant.y_var_mean[mask_var_mean]
+            plot!(p_var, x[mask_var_mean], variant.y_var_mean[mask_var_mean],
+                  yerror=sanitize_yerror_log(variant.y_var_mean_ci95[mask_var_mean], y_mean_sel),
+                  marker=:diamond, lw=2.8, color=:black, label="mean")
+        end
+        fit_var = fit_loglog_powerlaw(x, variant.y_var_mean)
+        if !isnothing(fit_var)
+            x_fit = fit_var.x
+            y_fit = 10 .^ (fit_var.intercept .+ fit_var.slope .* log10.(x_fit))
+            plot!(p_var, x_fit, y_fit, lw=2.2, color=:black, linestyle=:dashdot, alpha=0.9,
+                  label=@sprintf("mean fit slope=%.3f (R²=%.3f)", fit_var.slope, fit_var.r2))
+            anchor_x = exp(mean(log.(x_fit)))
+            anchor_y = 10^(fit_var.intercept + fit_var.slope * log10(anchor_x))
+            add_reference_slopes!(p_var, x_fit, anchor_x, anchor_y)
+        elseif any(mask_var_mean)
+            x_ref = x[mask_var_mean]
+            y_ref = variant.y_var_mean[mask_var_mean]
+            anchor_x = exp(mean(log.(x_ref)))
+            anchor_y = exp(mean(log.(y_ref)))
+            add_reference_slopes!(p_var, x_ref, anchor_x, anchor_y)
+        end
+        out_var_loglog = joinpath(analysis_dir, "00_bond_center_variance_vs_d_loglog" * suffix_token * ".png")
+        savefig_or_placeholder(
+            p_var,
+            out_var_loglog;
+            placeholder_title="C_bond(0) vs d (log-log) unavailable",
+        )
+
+        p_var_linear = plot(title="C_bond(0) vs d" * mode_title,
+                            xlabel="d",
+                            ylabel="C_bond(0)",
+                            framestyle=:box,
+                            legend=:topright,
+                            size=(1180, 760),
+                            titlefontsize=11,
+                            guidefontsize=13,
+                            tickfontsize=10)
+        for slot in 1:max_var_slots
+            y = variant.y_var_slots[slot]
+            mask = isfinite.(y)
+            if any(mask)
+                slot_color = bond_series_color(slot)
+                plot!(p_var_linear, x[mask], y[mask],
+                      yerror=sanitize_yerror(variant.y_var_slots_ci95[slot][mask]),
+                      marker=:circle, lw=2, color=slot_color,
+                      markerstrokecolor=slot_color, label="bond $(slot)")
+            end
+        end
+        mask_var_mean_linear = isfinite.(variant.y_var_mean)
+        if any(mask_var_mean_linear)
+            plot!(p_var_linear, x[mask_var_mean_linear], variant.y_var_mean[mask_var_mean_linear],
+                  yerror=sanitize_yerror(variant.y_var_mean_ci95[mask_var_mean_linear]),
+                  marker=:diamond, lw=2.8, color=:black, label="mean")
+        end
+        out_var_linear = joinpath(analysis_dir, "01_bond_center_variance_vs_d_linear" * suffix_token * ".png")
+        savefig_or_placeholder(
+            p_var_linear,
+            out_var_linear;
+            placeholder_title="C_bond(0) vs d unavailable",
+        )
+
+        p_var_shifted_linear = plot(title="C_bond(0)-b vs d" * mode_title,
+                                    xlabel="d",
+                                    ylabel="C_bond(0) - b",
+                                    framestyle=:box,
+                                    legend=:topright,
+                                    size=(1180, 760),
+                                    titlefontsize=11,
+                                    guidefontsize=13,
+                                    tickfontsize=10)
+        hline!(p_var_shifted_linear, [0.0], color=:gray55, linestyle=:dash, label=false)
+        plot!(p_var_shifted_linear, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=baseline_note)
+        for slot in 1:max_var_slots
+            y = variant.y_var_slots_shifted[slot]
+            mask = isfinite.(y)
+            if any(mask)
+                slot_color = bond_series_color(slot)
+                plot!(p_var_shifted_linear, x[mask], y[mask],
+                      yerror=sanitize_yerror(variant.y_var_slots_shifted_ci95[slot][mask]),
+                      marker=:circle, lw=2, color=slot_color,
+                      markerstrokecolor=slot_color, label="bond $(slot)")
+            end
+        end
+        mask_var_mean_shifted_linear = isfinite.(variant.y_var_mean_shifted)
+        if any(mask_var_mean_shifted_linear)
+            plot!(p_var_shifted_linear, x[mask_var_mean_shifted_linear], variant.y_var_mean_shifted[mask_var_mean_shifted_linear],
+                  yerror=sanitize_yerror(variant.y_var_mean_shifted_ci95[mask_var_mean_shifted_linear]),
+                  marker=:diamond, lw=2.8, color=:black, label="mean")
+        end
+        annotate_baseline_linear!(p_var_shifted_linear, x, variant.y_var_mean_shifted)
+        out_var_shifted_linear = joinpath(analysis_dir, "06_bond_center_variance_minus_min_baseline_vs_d_linear" * suffix_token * ".png")
+        savefig_or_placeholder(
+            p_var_shifted_linear,
+            out_var_shifted_linear;
+            placeholder_title="C_bond(0)-b vs d unavailable",
+        )
+
+        p_var_shifted_loglog = plot(title="C_bond(0)-b vs d (log-log)" * mode_title,
+                                    xlabel="d",
+                                    ylabel="C_bond(0) - b",
+                                    xscale=:log10,
+                                    yscale=:log10,
+                                    framestyle=:box,
+                                    legend=:topright,
+                                    size=(1180, 760),
+                                    titlefontsize=11,
+                                    guidefontsize=13,
+                                    tickfontsize=10)
+        apply_log10_decimal_x_ticks!(p_var_shifted_loglog)
+        plot!(p_var_shifted_loglog, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=baseline_note)
+        for slot in 1:max_var_slots
+            y = variant.y_var_slots_shifted[slot]
+            mask = isfinite.(y) .& (y .> 0)
+            if any(mask)
+                y_sel = y[mask]
+                slot_color = bond_series_color(slot)
+                plot!(p_var_shifted_loglog, x[mask], y[mask],
+                      yerror=sanitize_yerror_log(variant.y_var_slots_shifted_ci95[slot][mask], y_sel),
+                      marker=:circle, lw=2, color=slot_color,
+                      markerstrokecolor=slot_color, label="bond $(slot)")
+            end
+        end
+        mask_var_mean_shifted_loglog = isfinite.(variant.y_var_mean_shifted) .& (variant.y_var_mean_shifted .> 0)
+        if any(mask_var_mean_shifted_loglog)
+            y_mean_sel = variant.y_var_mean_shifted[mask_var_mean_shifted_loglog]
+            plot!(p_var_shifted_loglog, x[mask_var_mean_shifted_loglog], variant.y_var_mean_shifted[mask_var_mean_shifted_loglog],
+                  yerror=sanitize_yerror_log(variant.y_var_mean_shifted_ci95[mask_var_mean_shifted_loglog], y_mean_sel),
+                  marker=:diamond, lw=2.8, color=:black, label="mean")
+        end
+        fit_var_shifted = fit_loglog_powerlaw(x, variant.y_var_mean_shifted)
+        if !isnothing(fit_var_shifted)
+            x_fit = fit_var_shifted.x
+            y_fit = 10 .^ (fit_var_shifted.intercept .+ fit_var_shifted.slope .* log10.(x_fit))
+            plot!(p_var_shifted_loglog, x_fit, y_fit, lw=2.2, color=:black, linestyle=:dashdot, alpha=0.9,
+                  label=@sprintf("mean fit slope=%.3f (R²=%.3f)", fit_var_shifted.slope, fit_var_shifted.r2))
+            anchor_x = exp(mean(log.(x_fit)))
+            anchor_y = 10^(fit_var_shifted.intercept + fit_var_shifted.slope * log10(anchor_x))
+            add_reference_slopes!(p_var_shifted_loglog, x_fit, anchor_x, anchor_y)
+        elseif any(mask_var_mean_shifted_loglog)
+            x_ref = x[mask_var_mean_shifted_loglog]
+            y_ref = variant.y_var_mean_shifted[mask_var_mean_shifted_loglog]
+            anchor_x = exp(mean(log.(x_ref)))
+            anchor_y = exp(mean(log.(y_ref)))
+            add_reference_slopes!(p_var_shifted_loglog, x_ref, anchor_x, anchor_y)
+        end
+        annotate_baseline_loglog!(p_var_shifted_loglog, x, variant.y_var_mean_shifted)
+        out_var_shifted_loglog = joinpath(analysis_dir, "07_bond_center_variance_minus_min_baseline_vs_d_loglog" * suffix_token * ".png")
+        savefig_or_placeholder(
+            p_var_shifted_loglog,
+            out_var_shifted_loglog;
+            placeholder_title="C_bond(0)-b vs d (log-log) unavailable",
+        )
+
+        classic_scan = save_loglog_baseline_search_plot(
+            "10_bond_center_variance_baseline_search_loglog_fit" * suffix_token * ".png",
+            analysis_dir,
+            x,
+            variant.y_var_mean;
+            quantity_label="C_bond(0)" * mode_title,
+            target_slope=TWO_FORCE_LOGLOG_TARGET_SLOPE,
+        )
+        weighted_scan = save_loglog_baseline_search_plot_weighted(
+            "12_bond_center_variance_baseline_search_loglog_fit_weighted_ci95" * suffix_token * ".png",
+            analysis_dir,
+            x,
+            variant.y_var_mean,
+            variant.y_var_mean_ci95;
+            quantity_label="C_bond(0)" * mode_title,
+            target_slope=TWO_FORCE_LOGLOG_TARGET_SLOPE,
+        )
+        return (classic=classic_scan, weighted=weighted_scan)
+    end
+
+    best_var_scans_primary = save_var_plots(var_primary; file_suffix="", mode_label=primary_mode_label)
+    secondary_suffix = smooth_diagonal ? "raw_center" : "smoothed_center"
+    best_var_scans_secondary = save_var_plots(var_secondary; file_suffix=secondary_suffix, mode_label=secondary_mode_label)
+    best_var_scan_smoothed = smooth_diagonal ? best_var_scans_primary.classic : best_var_scans_secondary.classic
+    best_var_scan_raw = smooth_diagonal ? best_var_scans_secondary.classic : best_var_scans_primary.classic
+    best_var_scan_smoothed_weighted = smooth_diagonal ? best_var_scans_primary.weighted : best_var_scans_secondary.weighted
+    best_var_scan_raw_weighted = smooth_diagonal ? best_var_scans_secondary.weighted : best_var_scans_primary.weighted
+
+    function save_j2_plot(file_name::String, title::String, ylabel::String;
+                          shifted::Bool=false,
+                          loglog::Bool=false,
+                          fit_mean_loglog::Bool=false,
+                          y_slots_override=nothing,
+                          y_slots_ci95_override=nothing,
+                          y_mean_override=nothing,
+                          y_mean_ci95_override=nothing,
+                          baseline_annot::AbstractString="",
+                          zero_line::Bool=false,
+                          add_reference_slope_guides::Bool=false)
+        title_text = shifted ? replace(title, ", " => ",\n"; count=1) : title
+        p = plot(title=title_text,
+                 xlabel="d",
+                 ylabel=ylabel,
+                 framestyle=:box,
+                 legend=:outerright,
+                 size=(1080, 620),
+                 top_margin=10Plots.mm,
+                 left_margin=4Plots.mm,
+                 right_margin=4Plots.mm)
+        if loglog
+            plot!(p; xscale=:log10, yscale=:log10)
+            apply_log10_decimal_x_ticks!(p)
+        end
+        if zero_line && !loglog
+            hline!(p, [0.0], color=:gray55, linestyle=:dash, label=false)
+        end
+        if !isempty(strip(baseline_annot))
+            plot!(p, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=baseline_annot)
+        end
+        y_slots = isnothing(y_slots_override) ? (shifted ? y_j2_slots_shifted : y_j2_slots) : y_slots_override
+        y_slots_ci95 = isnothing(y_slots_ci95_override) ? (shifted ? y_j2_slots_shifted_ci95 : y_j2_slots_ci95) : y_slots_ci95_override
+        y_mean = isnothing(y_mean_override) ? (shifted ? y_j2_mean_shifted : y_j2_mean) : y_mean_override
+        y_mean_ci95 = isnothing(y_mean_ci95_override) ? (shifted ? y_j2_mean_shifted_ci95 : y_j2_mean_ci95) : y_mean_ci95_override
+        for slot in 1:max_j2_slots
+            y = y_slots[slot]
+            mask = isfinite.(y)
+            if loglog
+                mask .&= (y .> 0)
+            end
+            if any(mask)
+                y_sel = y[mask]
+                yerr_sel = loglog ?
+                    sanitize_yerror_log(y_slots_ci95[slot][mask], y_sel) :
+                    sanitize_yerror(y_slots_ci95[slot][mask])
+                slot_color = bond_series_color(slot)
+                plot!(p, x[mask], y[mask],
+                      yerror=yerr_sel,
+                      marker=:circle, lw=2, color=slot_color,
+                      markerstrokecolor=slot_color, label="bond $(slot)")
+            end
+        end
+        mask_mean = isfinite.(y_mean)
+        if loglog
+            mask_mean .&= (y_mean .> 0)
+        end
+        if any(mask_mean)
+            y_mean_sel = y_mean[mask_mean]
+            yerr_mean_sel = loglog ?
+                sanitize_yerror_log(y_mean_ci95[mask_mean], y_mean_sel) :
+                sanitize_yerror(y_mean_ci95[mask_mean])
+            plot!(p, x[mask_mean], y_mean[mask_mean],
+                  yerror=yerr_mean_sel,
+                  marker=:diamond, lw=2.8, color=:black, label="mean")
+        end
+        if fit_mean_loglog && loglog
+            fit = fit_loglog_powerlaw(x, y_mean)
+            if !isnothing(fit)
+                x_fit = fit.x
+                y_fit = 10 .^ (fit.intercept .+ fit.slope .* log10.(x_fit))
+                plot!(p, x_fit, y_fit, lw=2.2, color=:gray20, linestyle=:dashdot,
+                      label=@sprintf("mean fit slope=%.3f (R²=%.3f)", fit.slope, fit.r2))
+                if add_reference_slope_guides
+                    anchor_x = exp(mean(log.(x_fit)))
+                    anchor_y = 10^(fit.intercept + fit.slope * log10(anchor_x))
+                    add_reference_slopes!(p, x_fit, anchor_x, anchor_y)
+                end
+            elseif add_reference_slope_guides && any(mask_mean)
+                x_ref = x[mask_mean]
+                y_ref = y_mean[mask_mean]
+                anchor_x = exp(mean(log.(x_ref)))
+                anchor_y = exp(mean(log.(y_ref)))
+                add_reference_slopes!(p, x_ref, anchor_x, anchor_y)
+            end
+        end
+        out_path = joinpath(analysis_dir, file_name)
+        savefig_or_placeholder(
+            p,
+            out_path;
+            placeholder_title=title * " unavailable",
+        )
+    end
+
+    save_j2_plot("02_j2_vs_d_linear.png",
+                 "⟨J²⟩ vs d",
+                 "⟨J²⟩";
+                 shifted=false,
+                 loglog=false)
+    save_j2_plot("03_j2_vs_d_loglog.png",
+                 "⟨J²⟩ vs d (log-log)",
+                 "⟨J²⟩";
+                 shifted=false,
+                 loglog=true)
+    save_j2_plot("04_j2_minus_baseline_vs_d_linear.png",
+                 "⟨J²⟩-baseline vs d, " * baseline_label,
+                 "⟨J²⟩ - baseline";
+                 shifted=true,
+                 loglog=false)
+    save_j2_plot("05_j2_minus_baseline_vs_d_loglog.png",
+                 "⟨J²⟩-baseline vs d (log-log), " * baseline_label,
+                 "⟨J²⟩ - baseline";
+                 shifted=true,
+                 loglog=true,
+                 fit_mean_loglog=true)
+    save_j2_plot("08_j2_minus_min_baseline_vs_d_linear.png",
+                 "⟨J²⟩-baseline(min) vs d, " * j2_min_baseline_label,
+                 "⟨J²⟩ - baseline(min)";
+                 shifted=true,
+                 y_slots_override=y_j2_slots_min_shifted,
+                 y_slots_ci95_override=y_j2_slots_min_shifted_ci95,
+                 y_mean_override=y_j2_mean_min_shifted,
+                 y_mean_ci95_override=y_j2_mean_min_shifted_ci95,
+                 baseline_annot=j2_min_baseline_label,
+                 zero_line=true)
+    save_j2_plot("09_j2_minus_min_baseline_vs_d_loglog.png",
+                 "⟨J²⟩-baseline(min) vs d (log-log), " * j2_min_baseline_label,
+                 "⟨J²⟩ - baseline(min)";
+                 shifted=true,
+                 loglog=true,
+                 fit_mean_loglog=true,
+                 y_slots_override=y_j2_slots_min_shifted,
+                 y_slots_ci95_override=y_j2_slots_min_shifted_ci95,
+                 y_mean_override=y_j2_mean_min_shifted,
+                 y_mean_ci95_override=y_j2_mean_min_shifted_ci95,
+                 baseline_annot=j2_min_baseline_label,
+                 add_reference_slope_guides=true)
+
+    best_j2_scan = save_loglog_baseline_search_plot(
+        "11_j2_baseline_search_loglog_fit.png",
+        analysis_dir,
+        x,
+        y_j2_mean;
+        quantity_label="⟨J²⟩",
+        target_slope=TWO_FORCE_LOGLOG_TARGET_SLOPE,
+    )
+    best_j2_scan_weighted = save_loglog_baseline_search_plot_weighted(
+        "13_j2_baseline_search_loglog_fit_weighted_ci95.png",
+        analysis_dir,
+        x,
+        y_j2_mean,
+        y_j2_mean_ci95;
+        quantity_label="⟨J²⟩",
+        target_slope=TWO_FORCE_LOGLOG_TARGET_SLOPE,
+    )
+
+    baseline_scan_summary_file = joinpath(analysis_dir, "baseline_search_loglog_summary.csv")
+    open(baseline_scan_summary_file, "w") do io
+        println(io, "quantity,best_baseline,slope,r2,adjusted_r2,n_points")
+        if isnothing(best_var_scan_smoothed)
+            println(io, "bond_center_variance_smoothed,NaN,NaN,NaN,NaN,0")
+        else
+            println(io, @sprintf("bond_center_variance_smoothed,%.10g,%.10g,%.10g,%.10g,%d",
+                                 best_var_scan_smoothed.baseline,
+                                 best_var_scan_smoothed.slope,
+                                 best_var_scan_smoothed.r2,
+                                 best_var_scan_smoothed.adj_r2,
+                                 best_var_scan_smoothed.n_points))
+        end
+        if isnothing(best_var_scan_raw)
+            println(io, "bond_center_variance_raw,NaN,NaN,NaN,NaN,0")
+        else
+            println(io, @sprintf("bond_center_variance_raw,%.10g,%.10g,%.10g,%.10g,%d",
+                                 best_var_scan_raw.baseline,
+                                 best_var_scan_raw.slope,
+                                 best_var_scan_raw.r2,
+                                 best_var_scan_raw.adj_r2,
+                                 best_var_scan_raw.n_points))
+        end
+        if isnothing(best_j2_scan)
+            println(io, "j2,NaN,NaN,NaN,NaN,0")
+        else
+            println(io, @sprintf("j2,%.10g,%.10g,%.10g,%.10g,%d",
+                                 best_j2_scan.baseline,
+                                 best_j2_scan.slope,
+                                 best_j2_scan.r2,
+                                 best_j2_scan.adj_r2,
+                                 best_j2_scan.n_points))
+        end
+    end
+    println("Saved ", baseline_scan_summary_file)
+
+    baseline_scan_weighted_summary_file = joinpath(analysis_dir, "baseline_search_loglog_summary_weighted_ci95.csv")
+    open(baseline_scan_weighted_summary_file, "w") do io
+        println(io, "quantity,best_baseline,slope,r2,reduced_chi2,n_points")
+        if isnothing(best_var_scan_smoothed_weighted)
+            println(io, "bond_center_variance_smoothed,NaN,NaN,NaN,NaN,0")
+        else
+            println(io, @sprintf("bond_center_variance_smoothed,%.10g,%.10g,%.10g,%.10g,%d",
+                                 best_var_scan_smoothed_weighted.baseline,
+                                 best_var_scan_smoothed_weighted.slope,
+                                 best_var_scan_smoothed_weighted.r2,
+                                 best_var_scan_smoothed_weighted.reduced_chi2,
+                                 best_var_scan_smoothed_weighted.n_points))
+        end
+        if isnothing(best_var_scan_raw_weighted)
+            println(io, "bond_center_variance_raw,NaN,NaN,NaN,NaN,0")
+        else
+            println(io, @sprintf("bond_center_variance_raw,%.10g,%.10g,%.10g,%.10g,%d",
+                                 best_var_scan_raw_weighted.baseline,
+                                 best_var_scan_raw_weighted.slope,
+                                 best_var_scan_raw_weighted.r2,
+                                 best_var_scan_raw_weighted.reduced_chi2,
+                                 best_var_scan_raw_weighted.n_points))
+        end
+        if isnothing(best_j2_scan_weighted)
+            println(io, "j2,NaN,NaN,NaN,NaN,0")
+        else
+            println(io, @sprintf("j2,%.10g,%.10g,%.10g,%.10g,%d",
+                                 best_j2_scan_weighted.baseline,
+                                 best_j2_scan_weighted.slope,
+                                 best_j2_scan_weighted.r2,
+                                 best_j2_scan_weighted.reduced_chi2,
+                                 best_j2_scan_weighted.n_points))
+        end
+    end
+    println("Saved ", baseline_scan_weighted_summary_file)
+
+    summary_file = joinpath(analysis_dir, "summary_vs_d.csv")
+    open(summary_file, "w") do io
+        println(io, "d,var_mean,j2_mean,baseline_mean,j2_minus_baseline")
+        for (i, d) in enumerate(d_values)
+            println(io, @sprintf("%d,%.10g,%.10g,%.10g,%.10g", d, y_var_mean[i], y_j2_mean[i], y_baseline_mean[i], y_j2_mean_shifted[i]))
+        end
+    end
+    println("Saved ", summary_file)
+
+    summary_var_compare_file = joinpath(analysis_dir, "summary_vs_d_variance_smoothed_vs_raw.csv")
+    open(summary_var_compare_file, "w") do io
+        println(io, "d,var_mean_smoothed,var_mean_raw,var_mean_primary")
+        for (i, d) in enumerate(d_values)
+            println(io, @sprintf("%d,%.10g,%.10g,%.10g", d, var_smoothed.y_var_mean[i], var_raw.y_var_mean[i], y_var_mean[i]))
+        end
+    end
+    println("Saved ", summary_var_compare_file)
+end
+
 function analyze_two_force_d(files::Vector{String}, out_dir::String;
                              baseline_j2::Float64=NaN,
                              smooth_diagonal::Bool=true)
@@ -1190,7 +2579,8 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
             end
 
             corr_mat = connected_corr_mat_1d(state)
-            var_vals = [bond_center_value(corr_mat, bonds[i][1], bonds[i][2]; smooth_diagonal=smooth_diagonal) for i in tracked]
+            var_vals_smoothed = [bond_center_value(corr_mat, bonds[i][1], bonds[i][2]; smooth_diagonal=true) for i in tracked]
+            var_vals_raw = [bond_center_value(corr_mat, bonds[i][1], bonds[i][2]; smooth_diagonal=false) for i in tracked]
 
             stats = bond_pass_stats_dict(state)
             j2_all = haskey(stats, BOND_PASS_TOTAL_SQ_AVG_KEY) ? Float64.(stats[BOND_PASS_TOTAL_SQ_AVG_KEY]) : Float64[]
@@ -1203,21 +2593,130 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 end
             end
 
+            legacy_aggregate = haskey(stats, AGG_TWO_FORCE_REPLICA_COUNT_KEY)
+
+            var_slot_accum_smoothed = has_metric_accumulator(stats, AGG_TWO_FORCE_VAR_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_SLOT_N_KEY) ?
+                remap_accumulator_by_tracked(metric_accumulator_from_stats(stats, AGG_TWO_FORCE_VAR_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_SLOT_N_KEY;
+                                                                           weight_key=AGG_TWO_FORCE_VAR_SLOT_WEIGHT_KEY,
+                                                                           weightsq_key=AGG_TWO_FORCE_VAR_SLOT_WEIGHTSQ_KEY), tracked) :
+                metric_accumulator_from_values(var_vals_smoothed)
+            var_mean_accum_smoothed = has_metric_accumulator(stats, AGG_TWO_FORCE_VAR_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_MEAN_N_KEY) ?
+                metric_accumulator_from_stats(stats, AGG_TWO_FORCE_VAR_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_MEAN_N_KEY;
+                                              weight_key=AGG_TWO_FORCE_VAR_MEAN_WEIGHT_KEY,
+                                              weightsq_key=AGG_TWO_FORCE_VAR_MEAN_WEIGHTSQ_KEY) :
+                metric_accumulator_from_values([finite_mean(var_vals_smoothed)])
+            var_smoothed_exact = (
+                has_metric_accumulator(stats, AGG_TWO_FORCE_VAR_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_SLOT_N_KEY) &&
+                has_metric_accumulator(stats, AGG_TWO_FORCE_VAR_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_MEAN_N_KEY)
+            ) || !legacy_aggregate
+
+            var_slot_accum_raw = has_metric_accumulator(stats, AGG_TWO_FORCE_VAR_RAW_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_N_KEY) ?
+                remap_accumulator_by_tracked(metric_accumulator_from_stats(stats, AGG_TWO_FORCE_VAR_RAW_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_N_KEY;
+                                                                           weight_key=AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHT_KEY,
+                                                                           weightsq_key=AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHTSQ_KEY), tracked) :
+                metric_accumulator_from_values(var_vals_raw)
+            var_mean_accum_raw = has_metric_accumulator(stats, AGG_TWO_FORCE_VAR_RAW_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_N_KEY) ?
+                metric_accumulator_from_stats(stats, AGG_TWO_FORCE_VAR_RAW_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_N_KEY;
+                                              weight_key=AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHT_KEY,
+                                              weightsq_key=AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHTSQ_KEY) :
+                metric_accumulator_from_values([finite_mean(var_vals_raw)])
+            var_raw_exact = (
+                has_metric_accumulator(stats, AGG_TWO_FORCE_VAR_RAW_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_N_KEY) &&
+                has_metric_accumulator(stats, AGG_TWO_FORCE_VAR_RAW_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_N_KEY)
+            ) || !legacy_aggregate
+
+            j2_slot_accum = has_metric_accumulator(stats, AGG_TWO_FORCE_J2_SLOT_SUM_KEY, AGG_TWO_FORCE_J2_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_J2_SLOT_N_KEY) ?
+                remap_accumulator_by_tracked(metric_accumulator_from_stats(stats, AGG_TWO_FORCE_J2_SLOT_SUM_KEY, AGG_TWO_FORCE_J2_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_J2_SLOT_N_KEY;
+                                                                           weight_key=AGG_TWO_FORCE_J2_SLOT_WEIGHT_KEY,
+                                                                           weightsq_key=AGG_TWO_FORCE_J2_SLOT_WEIGHTSQ_KEY), tracked) :
+                metric_accumulator_from_values(j2_vals)
+            j2_mean_accum = has_metric_accumulator(stats, AGG_TWO_FORCE_J2_MEAN_SUM_KEY, AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_J2_MEAN_N_KEY) ?
+                metric_accumulator_from_stats(stats, AGG_TWO_FORCE_J2_MEAN_SUM_KEY, AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_J2_MEAN_N_KEY;
+                                              weight_key=AGG_TWO_FORCE_J2_MEAN_WEIGHT_KEY,
+                                              weightsq_key=AGG_TWO_FORCE_J2_MEAN_WEIGHTSQ_KEY) :
+                metric_accumulator_from_values([finite_mean(j2_vals)])
+            j2_exact = (
+                has_metric_accumulator(stats, AGG_TWO_FORCE_J2_SLOT_SUM_KEY, AGG_TWO_FORCE_J2_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_J2_SLOT_N_KEY) &&
+                has_metric_accumulator(stats, AGG_TWO_FORCE_J2_MEAN_SUM_KEY, AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_J2_MEAN_N_KEY)
+            ) || !legacy_aggregate
+
+            var_vals_smoothed_exact, _, var_slot_ci95_smoothed_exact = stats_from_metric_accumulator(var_slot_accum_smoothed)
+            var_mean_smoothed_exact_vec, _, var_mean_ci95_smoothed_exact_vec = stats_from_metric_accumulator(var_mean_accum_smoothed)
+            var_vals_raw_exact, _, var_slot_ci95_raw_exact = stats_from_metric_accumulator(var_slot_accum_raw)
+            var_mean_raw_exact_vec, _, var_mean_ci95_raw_exact_vec = stats_from_metric_accumulator(var_mean_accum_raw)
+            j2_vals_exact, _, j2_slot_ci95_exact = stats_from_metric_accumulator(j2_slot_accum)
+            j2_mean_exact_vec, _, j2_mean_ci95_exact_vec = stats_from_metric_accumulator(j2_mean_accum)
+
+            var_slot_mean_meta_smoothed = remap_vector_by_tracked(get(stats, AGG_TWO_FORCE_VAR_SLOT_MEAN_KEY, Float64[]), tracked)
+            var_slot_ci95_meta_smoothed = remap_vector_by_tracked(get(stats, AGG_TWO_FORCE_VAR_SLOT_CI95_KEY, Float64[]), tracked)
+            var_mean_meta_smoothed = (haskey(stats, AGG_TWO_FORCE_VAR_MEAN_KEY) && !isempty(stats[AGG_TWO_FORCE_VAR_MEAN_KEY])) ? Float64(stats[AGG_TWO_FORCE_VAR_MEAN_KEY][1]) : NaN
+            var_mean_ci95_meta_smoothed = (haskey(stats, AGG_TWO_FORCE_VAR_MEAN_CI95_KEY) && !isempty(stats[AGG_TWO_FORCE_VAR_MEAN_CI95_KEY])) ? Float64(stats[AGG_TWO_FORCE_VAR_MEAN_CI95_KEY][1]) : NaN
+
+            var_slot_mean_meta_raw = remap_vector_by_tracked(get(stats, AGG_TWO_FORCE_VAR_RAW_SLOT_MEAN_KEY, Float64[]), tracked)
+            var_slot_ci95_meta_raw = remap_vector_by_tracked(get(stats, AGG_TWO_FORCE_VAR_RAW_SLOT_CI95_KEY, Float64[]), tracked)
+            var_mean_meta_raw = (haskey(stats, AGG_TWO_FORCE_VAR_RAW_MEAN_KEY) && !isempty(stats[AGG_TWO_FORCE_VAR_RAW_MEAN_KEY])) ? Float64(stats[AGG_TWO_FORCE_VAR_RAW_MEAN_KEY][1]) : NaN
+            var_mean_ci95_meta_raw = (haskey(stats, AGG_TWO_FORCE_VAR_RAW_MEAN_CI95_KEY) && !isempty(stats[AGG_TWO_FORCE_VAR_RAW_MEAN_CI95_KEY])) ? Float64(stats[AGG_TWO_FORCE_VAR_RAW_MEAN_CI95_KEY][1]) : NaN
+
+            j2_slot_mean_meta = remap_vector_by_tracked(get(stats, AGG_TWO_FORCE_J2_SLOT_MEAN_KEY, Float64[]), tracked)
+            j2_slot_ci95_meta = remap_vector_by_tracked(get(stats, AGG_TWO_FORCE_J2_SLOT_CI95_KEY, Float64[]), tracked)
+            j2_mean_meta = (haskey(stats, AGG_TWO_FORCE_J2_MEAN_KEY) && !isempty(stats[AGG_TWO_FORCE_J2_MEAN_KEY])) ? Float64(stats[AGG_TWO_FORCE_J2_MEAN_KEY][1]) : NaN
+            j2_mean_ci95_meta = (haskey(stats, AGG_TWO_FORCE_J2_MEAN_CI95_KEY) && !isempty(stats[AGG_TWO_FORCE_J2_MEAN_CI95_KEY])) ? Float64(stats[AGG_TWO_FORCE_J2_MEAN_CI95_KEY][1]) : NaN
+
+            row_var_vals_smoothed = var_smoothed_exact ? var_vals_smoothed_exact : (!isempty(var_slot_mean_meta_smoothed) ? var_slot_mean_meta_smoothed : var_vals_smoothed)
+            row_var_mean_smoothed = var_smoothed_exact ? (isempty(var_mean_smoothed_exact_vec) ? NaN : var_mean_smoothed_exact_vec[1]) : (isfinite(var_mean_meta_smoothed) ? var_mean_meta_smoothed : finite_mean(var_vals_smoothed))
+            row_var_slot_ci95_smoothed = var_smoothed_exact ? var_slot_ci95_smoothed_exact : var_slot_ci95_meta_smoothed
+            row_var_mean_ci95_smoothed = var_smoothed_exact ? (isempty(var_mean_ci95_smoothed_exact_vec) ? NaN : var_mean_ci95_smoothed_exact_vec[1]) : var_mean_ci95_meta_smoothed
+
+            row_var_vals_raw = var_raw_exact ? var_vals_raw_exact : (!isempty(var_slot_mean_meta_raw) ? var_slot_mean_meta_raw : var_vals_raw)
+            row_var_mean_raw = var_raw_exact ? (isempty(var_mean_raw_exact_vec) ? NaN : var_mean_raw_exact_vec[1]) : (isfinite(var_mean_meta_raw) ? var_mean_meta_raw : finite_mean(var_vals_raw))
+            row_var_slot_ci95_raw = var_raw_exact ? var_slot_ci95_raw_exact : var_slot_ci95_meta_raw
+            row_var_mean_ci95_raw = var_raw_exact ? (isempty(var_mean_ci95_raw_exact_vec) ? NaN : var_mean_ci95_raw_exact_vec[1]) : var_mean_ci95_meta_raw
+
+            row_j2_vals = j2_exact ? j2_vals_exact : (!isempty(j2_slot_mean_meta) ? j2_slot_mean_meta : j2_vals)
+            row_j2_mean = j2_exact ? (isempty(j2_mean_exact_vec) ? NaN : j2_mean_exact_vec[1]) : (isfinite(j2_mean_meta) ? j2_mean_meta : finite_mean(j2_vals))
+            row_j2_slot_ci95 = j2_exact ? j2_slot_ci95_exact : j2_slot_ci95_meta
+            row_j2_mean_ci95 = j2_exact ? (isempty(j2_mean_ci95_exact_vec) ? NaN : j2_mean_ci95_exact_vec[1]) : j2_mean_ci95_meta
+
             rho0 = Float64(param.ρ₀)
             baseline_row = isfinite(baseline_j2) ? baseline_j2 : (TWO_FORCE_J2_BASELINE_RHO_FACTOR * rho0^2)
-            j2_vals_shifted = [isfinite(v) ? (v - baseline_row) : NaN for v in j2_vals]
+            j2_vals_shifted = [isfinite(v) ? (v - baseline_row) : NaN for v in row_j2_vals]
+            row_var_vals_primary = smooth_diagonal ? row_var_vals_smoothed : row_var_vals_raw
+            row_var_mean_primary = smooth_diagonal ? row_var_mean_smoothed : row_var_mean_raw
+            row_var_slot_ci95_primary = smooth_diagonal ? row_var_slot_ci95_smoothed : row_var_slot_ci95_raw
+            row_var_mean_ci95_primary = smooth_diagonal ? row_var_mean_ci95_smoothed : row_var_mean_ci95_raw
 
             push!(rows, (
                 file=saved_state,
                 d=Int(d),
                 rho0=rho0,
                 baseline_j2=baseline_row,
-                var_vals=var_vals,
-                var_mean=finite_mean(var_vals),
-                j2_vals=j2_vals,
-                j2_mean=finite_mean(j2_vals),
+                var_vals=row_var_vals_primary,
+                var_mean=row_var_mean_primary,
+                var_slot_ci95=row_var_slot_ci95_primary,
+                var_mean_ci95=row_var_mean_ci95_primary,
+                var_vals_smoothed=row_var_vals_smoothed,
+                var_mean_smoothed=row_var_mean_smoothed,
+                var_slot_ci95_smoothed=row_var_slot_ci95_smoothed,
+                var_mean_ci95_smoothed=row_var_mean_ci95_smoothed,
+                var_slot_accum_smoothed=var_slot_accum_smoothed,
+                var_mean_accum_smoothed=var_mean_accum_smoothed,
+                var_smoothed_exact=var_smoothed_exact,
+                var_vals_raw=row_var_vals_raw,
+                var_mean_raw=row_var_mean_raw,
+                var_slot_ci95_raw=row_var_slot_ci95_raw,
+                var_mean_ci95_raw=row_var_mean_ci95_raw,
+                var_slot_accum_raw=var_slot_accum_raw,
+                var_mean_accum_raw=var_mean_accum_raw,
+                var_raw_exact=var_raw_exact,
+                j2_vals=row_j2_vals,
+                j2_mean=row_j2_mean,
+                j2_slot_ci95=row_j2_slot_ci95,
+                j2_mean_ci95=row_j2_mean_ci95,
+                j2_slot_accum=j2_slot_accum,
+                j2_mean_accum=j2_mean_accum,
+                j2_exact=j2_exact,
                 j2_vals_shifted=j2_vals_shifted,
-                j2_mean_shifted=finite_mean(j2_vals_shifted),
+                j2_mean_shifted=isfinite(row_j2_mean) ? (row_j2_mean - baseline_row) : NaN,
             ))
         catch e
             println("Failed in d-analysis for ", saved_state, ": ", e)
@@ -1229,363 +2728,27 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
         return
     end
 
-    d_values = sort(unique(row.d for row in rows))
-    max_slots = maximum(length(row.var_vals) for row in rows)
-    grouped = Dict(d => [row for row in rows if row.d == d] for d in d_values)
-
-    x = Float64.(d_values)
-    y_var_mean = [finite_mean([row.var_mean for row in grouped[d]]) for d in d_values]
-    y_j2_mean = [finite_mean([row.j2_mean for row in grouped[d]]) for d in d_values]
-    y_baseline_mean = [finite_mean([row.baseline_j2 for row in grouped[d]]) for d in d_values]
-    y_j2_mean_shifted = [finite_mean([row.j2_mean_shifted for row in grouped[d]]) for d in d_values]
-
-    y_var_slots = [fill(NaN, length(d_values)) for _ in 1:max_slots]
-    y_j2_slots = [fill(NaN, length(d_values)) for _ in 1:max_slots]
-    y_j2_slots_shifted = [fill(NaN, length(d_values)) for _ in 1:max_slots]
-    for (di, d) in enumerate(d_values)
-        bucket = grouped[d]
-        for slot in 1:max_slots
-            vals_var = Float64[]
-            vals_j2 = Float64[]
-            vals_j2_shifted = Float64[]
-            for row in bucket
-                if slot <= length(row.var_vals)
-                    push!(vals_var, row.var_vals[slot])
-                end
-                if slot <= length(row.j2_vals)
-                    push!(vals_j2, row.j2_vals[slot])
-                end
-                if slot <= length(row.j2_vals_shifted)
-                    push!(vals_j2_shifted, row.j2_vals_shifted[slot])
-                end
-            end
-            y_var_slots[slot][di] = finite_mean(vals_var)
-            y_j2_slots[slot][di] = finite_mean(vals_j2)
-            y_j2_slots_shifted[slot][di] = finite_mean(vals_j2_shifted)
-        end
-    end
-
-    var_baseline_candidates = Float64[]
-    append!(var_baseline_candidates, [v for v in y_var_mean if isfinite(v)])
-    for slot in 1:max_slots
-        append!(var_baseline_candidates, [v for v in y_var_slots[slot] if isfinite(v)])
-    end
-    var_baseline = isempty(var_baseline_candidates) ? NaN : minimum(var_baseline_candidates)
-    y_var_mean_shifted = [
-        (isfinite(v) && isfinite(var_baseline)) ? (v - var_baseline) : NaN
-        for v in y_var_mean
-    ]
-    y_var_slots_shifted = [
-        [
-            (isfinite(v) && isfinite(var_baseline)) ? (v - var_baseline) : NaN
-            for v in y_var_slots[slot]
-        ]
-        for slot in 1:max_slots
-    ]
-    j2_min_baseline_candidates = Float64[]
-    append!(j2_min_baseline_candidates, [v for v in y_j2_mean if isfinite(v)])
-    for slot in 1:max_slots
-        append!(j2_min_baseline_candidates, [v for v in y_j2_slots[slot] if isfinite(v)])
-    end
-    j2_min_baseline = isempty(j2_min_baseline_candidates) ? NaN : minimum(j2_min_baseline_candidates)
-    y_j2_mean_min_shifted = [
-        (isfinite(v) && isfinite(j2_min_baseline)) ? (v - j2_min_baseline) : NaN
-        for v in y_j2_mean
-    ]
-    y_j2_slots_min_shifted = [
-        [
-            (isfinite(v) && isfinite(j2_min_baseline)) ? (v - j2_min_baseline) : NaN
-            for v in y_j2_slots[slot]
-        ]
-        for slot in 1:max_slots
-    ]
-
-    baseline_label = isfinite(baseline_j2) ? @sprintf("baseline=%.6g", baseline_j2) : @sprintf("baseline=%.6g*rho0^2 (per-state)", TWO_FORCE_J2_BASELINE_RHO_FACTOR)
-    var_baseline_label = @sprintf("baseline(min C_bond(0))=%.6g", var_baseline)
-    j2_min_baseline_label = @sprintf("baseline(min ⟨J²⟩)=%.6g", j2_min_baseline)
-
     analysis_dir = joinpath(out_dir, "two_force_d_analysis")
-    mkpath(analysis_dir)
-
-    p_var = plot(title="Bond-center variance vs d",
-                 xlabel="d",
-                 ylabel="C_bond(0)",
-                 xscale=:log10,
-                 yscale=:log10,
-                 framestyle=:box,
-                 legend=:outerright)
-    apply_log10_decimal_x_ticks!(p_var)
-    for slot in 1:max_slots
-        y = y_var_slots[slot]
-        mask = isfinite.(y) .& (y .> 0)
-        if any(mask)
-            plot!(p_var, x[mask], y[mask], marker=:circle, lw=2, label="bond $(slot)")
-        end
-    end
-    mask_var_mean = isfinite.(y_var_mean) .& (y_var_mean .> 0)
-    if any(mask_var_mean)
-        plot!(p_var, x[mask_var_mean], y_var_mean[mask_var_mean], marker=:diamond, lw=2.8, color=:black, label="mean")
-    end
-    fit_var = fit_loglog_powerlaw(x, y_var_mean)
-    if !isnothing(fit_var)
-        x_fit = fit_var.x
-        y_fit = 10 .^ (fit_var.intercept .+ fit_var.slope .* log10.(x_fit))
-        plot!(p_var, x_fit, y_fit, lw=2.2, color=:black, linestyle=:dashdot, alpha=0.9,
-              label=@sprintf("mean fit slope=%.3f (R²=%.3f)", fit_var.slope, fit_var.r2))
-        anchor_x = exp(mean(log.(x_fit)))
-        anchor_y = 10^(fit_var.intercept + fit_var.slope * log10(anchor_x))
-        add_reference_slopes!(p_var, x_fit, anchor_x, anchor_y)
-    elseif any(mask_var_mean)
-        x_ref = x[mask_var_mean]
-        y_ref = y_var_mean[mask_var_mean]
-        anchor_x = exp(mean(log.(x_ref)))
-        anchor_y = exp(mean(log.(y_ref)))
-        add_reference_slopes!(p_var, x_ref, anchor_x, anchor_y)
-    end
-    savefig(p_var, joinpath(analysis_dir, "00_bond_center_variance_vs_d_loglog.png"))
-    println("Saved ", joinpath(analysis_dir, "00_bond_center_variance_vs_d_loglog.png"))
-
-    p_var_linear = plot(title="Bond-center variance vs d",
-                        xlabel="d",
-                        ylabel="C_bond(0)",
-                        framestyle=:box,
-                        legend=:outerright)
-    for slot in 1:max_slots
-        y = y_var_slots[slot]
-        mask = isfinite.(y)
-        if any(mask)
-            plot!(p_var_linear, x[mask], y[mask], marker=:circle, lw=2, label="bond $(slot)")
-        end
-    end
-    mask_var_mean_linear = isfinite.(y_var_mean)
-    if any(mask_var_mean_linear)
-        plot!(p_var_linear, x[mask_var_mean_linear], y_var_mean[mask_var_mean_linear], marker=:diamond, lw=2.8, color=:black, label="mean")
-    end
-    savefig(p_var_linear, joinpath(analysis_dir, "01_bond_center_variance_vs_d_linear.png"))
-    println("Saved ", joinpath(analysis_dir, "01_bond_center_variance_vs_d_linear.png"))
-
-    p_var_shifted_linear = plot(title="Bond-center variance - baseline vs d, " * var_baseline_label,
-                                xlabel="d",
-                                ylabel="C_bond(0) - baseline",
-                                framestyle=:box,
-                                legend=:outerright)
-    hline!(p_var_shifted_linear, [0.0], color=:gray55, linestyle=:dash, label=false)
-    plot!(p_var_shifted_linear, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=var_baseline_label)
-    for slot in 1:max_slots
-        y = y_var_slots_shifted[slot]
-        mask = isfinite.(y)
-        if any(mask)
-            plot!(p_var_shifted_linear, x[mask], y[mask], marker=:circle, lw=2, label="bond $(slot)")
-        end
-    end
-    mask_var_mean_shifted_linear = isfinite.(y_var_mean_shifted)
-    if any(mask_var_mean_shifted_linear)
-        plot!(p_var_shifted_linear, x[mask_var_mean_shifted_linear], y_var_mean_shifted[mask_var_mean_shifted_linear], marker=:diamond, lw=2.8, color=:black, label="mean")
-    end
-    savefig(p_var_shifted_linear, joinpath(analysis_dir, "06_bond_center_variance_minus_min_baseline_vs_d_linear.png"))
-    println("Saved ", joinpath(analysis_dir, "06_bond_center_variance_minus_min_baseline_vs_d_linear.png"))
-
-    p_var_shifted_loglog = plot(title="Bond-center variance - baseline vs d (log-log), " * var_baseline_label,
-                                xlabel="d",
-                                ylabel="C_bond(0) - baseline",
-                                xscale=:log10,
-                                yscale=:log10,
-                                framestyle=:box,
-                                legend=:outerright)
-    apply_log10_decimal_x_ticks!(p_var_shifted_loglog)
-    plot!(p_var_shifted_loglog, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=var_baseline_label)
-    for slot in 1:max_slots
-        y = y_var_slots_shifted[slot]
-        mask = isfinite.(y) .& (y .> 0)
-        if any(mask)
-            plot!(p_var_shifted_loglog, x[mask], y[mask], marker=:circle, lw=2, label="bond $(slot)")
-        end
-    end
-    mask_var_mean_shifted_loglog = isfinite.(y_var_mean_shifted) .& (y_var_mean_shifted .> 0)
-    if any(mask_var_mean_shifted_loglog)
-        plot!(p_var_shifted_loglog, x[mask_var_mean_shifted_loglog], y_var_mean_shifted[mask_var_mean_shifted_loglog], marker=:diamond, lw=2.8, color=:black, label="mean")
-    end
-    fit_var_shifted = fit_loglog_powerlaw(x, y_var_mean_shifted)
-    if !isnothing(fit_var_shifted)
-        x_fit = fit_var_shifted.x
-        y_fit = 10 .^ (fit_var_shifted.intercept .+ fit_var_shifted.slope .* log10.(x_fit))
-        plot!(p_var_shifted_loglog, x_fit, y_fit, lw=2.2, color=:black, linestyle=:dashdot, alpha=0.9,
-              label=@sprintf("mean fit slope=%.3f (R²=%.3f)", fit_var_shifted.slope, fit_var_shifted.r2))
-        anchor_x = exp(mean(log.(x_fit)))
-        anchor_y = 10^(fit_var_shifted.intercept + fit_var_shifted.slope * log10(anchor_x))
-        add_reference_slopes!(p_var_shifted_loglog, x_fit, anchor_x, anchor_y)
-    elseif any(mask_var_mean_shifted_loglog)
-        x_ref = x[mask_var_mean_shifted_loglog]
-        y_ref = y_var_mean_shifted[mask_var_mean_shifted_loglog]
-        anchor_x = exp(mean(log.(x_ref)))
-        anchor_y = exp(mean(log.(y_ref)))
-        add_reference_slopes!(p_var_shifted_loglog, x_ref, anchor_x, anchor_y)
-    end
-    savefig(p_var_shifted_loglog, joinpath(analysis_dir, "07_bond_center_variance_minus_min_baseline_vs_d_loglog.png"))
-    println("Saved ", joinpath(analysis_dir, "07_bond_center_variance_minus_min_baseline_vs_d_loglog.png"))
-
-    function save_j2_plot(file_name::String, title::String, ylabel::String;
-                          shifted::Bool=false,
-                          loglog::Bool=false,
-                          fit_mean_loglog::Bool=false,
-                          y_slots_override=nothing,
-                          y_mean_override=nothing,
-                          baseline_annot::AbstractString="",
-                          zero_line::Bool=false,
-                          add_reference_slope_guides::Bool=false)
-        title_text = shifted ? replace(title, ", " => ",\n"; count=1) : title
-        p = plot(title=title_text,
-                 xlabel="d",
-                 ylabel=ylabel,
-                 framestyle=:box,
-                 legend=:outerright,
-                 size=(1080, 620),
-                 top_margin=10Plots.mm,
-                 left_margin=4Plots.mm,
-                 right_margin=4Plots.mm)
-        if loglog
-            plot!(p; xscale=:log10, yscale=:log10)
-            apply_log10_decimal_x_ticks!(p)
-        end
-        if zero_line && !loglog
-            hline!(p, [0.0], color=:gray55, linestyle=:dash, label=false)
-        end
-        if !isempty(strip(baseline_annot))
-            plot!(p, [NaN], [NaN], lw=0, marker=:none, color=:transparent, label=baseline_annot)
-        end
-        y_slots = isnothing(y_slots_override) ? (shifted ? y_j2_slots_shifted : y_j2_slots) : y_slots_override
-        y_mean = isnothing(y_mean_override) ? (shifted ? y_j2_mean_shifted : y_j2_mean) : y_mean_override
-        for slot in 1:max_slots
-            y = y_slots[slot]
-            mask = isfinite.(y)
-            if loglog
-                mask .&= (y .> 0)
-            end
-            if any(mask)
-                plot!(p, x[mask], y[mask], marker=:circle, lw=2, label="bond $(slot)")
-            end
-        end
-        mask_mean = isfinite.(y_mean)
-        if loglog
-            mask_mean .&= (y_mean .> 0)
-        end
-        if any(mask_mean)
-            plot!(p, x[mask_mean], y_mean[mask_mean], marker=:diamond, lw=2.8, color=:black, label="mean")
-        end
-        if fit_mean_loglog && loglog
-            fit = fit_loglog_powerlaw(x, y_mean)
-            if !isnothing(fit)
-                x_fit = fit.x
-                y_fit = 10 .^ (fit.intercept .+ fit.slope .* log10.(x_fit))
-                plot!(p, x_fit, y_fit, lw=2.2, color=:gray20, linestyle=:dashdot,
-                      label=@sprintf("mean fit slope=%.3f (R²=%.3f)", fit.slope, fit.r2))
-                if add_reference_slope_guides
-                    anchor_x = exp(mean(log.(x_fit)))
-                    anchor_y = 10^(fit.intercept + fit.slope * log10(anchor_x))
-                    add_reference_slopes!(p, x_fit, anchor_x, anchor_y)
-                end
-            elseif add_reference_slope_guides && any(mask_mean)
-                x_ref = x[mask_mean]
-                y_ref = y_mean[mask_mean]
-                anchor_x = exp(mean(log.(x_ref)))
-                anchor_y = exp(mean(log.(y_ref)))
-                add_reference_slopes!(p, x_ref, anchor_x, anchor_y)
-            end
-        end
-        out_path = joinpath(analysis_dir, file_name)
-        savefig(p, out_path)
-        println("Saved ", out_path)
-    end
-
-    save_j2_plot("02_j2_vs_d_linear.png",
-                 "⟨J²⟩ vs d",
-                 "⟨J²⟩";
-                 shifted=false,
-                 loglog=false)
-    save_j2_plot("03_j2_vs_d_loglog.png",
-                 "⟨J²⟩ vs d (log-log)",
-                 "⟨J²⟩";
-                 shifted=false,
-                 loglog=true)
-    save_j2_plot("04_j2_minus_baseline_vs_d_linear.png",
-                 "⟨J²⟩-baseline vs d, " * baseline_label,
-                 "⟨J²⟩ - baseline";
-                 shifted=true,
-                 loglog=false)
-    save_j2_plot("05_j2_minus_baseline_vs_d_loglog.png",
-                 "⟨J²⟩-baseline vs d (log-log), " * baseline_label,
-                 "⟨J²⟩ - baseline";
-                 shifted=true,
-                 loglog=true,
-                 fit_mean_loglog=true)
-    save_j2_plot("08_j2_minus_min_baseline_vs_d_linear.png",
-                 "⟨J²⟩-baseline(min) vs d, " * j2_min_baseline_label,
-                 "⟨J²⟩ - baseline(min)";
-                 shifted=true,
-                 y_slots_override=y_j2_slots_min_shifted,
-                 y_mean_override=y_j2_mean_min_shifted,
-                 baseline_annot=j2_min_baseline_label,
-                 zero_line=true)
-    save_j2_plot("09_j2_minus_min_baseline_vs_d_loglog.png",
-                 "⟨J²⟩-baseline(min) vs d (log-log), " * j2_min_baseline_label,
-                 "⟨J²⟩ - baseline(min)";
-                 shifted=true,
-                 loglog=true,
-                 fit_mean_loglog=true,
-                 y_slots_override=y_j2_slots_min_shifted,
-                 y_mean_override=y_j2_mean_min_shifted,
-                 baseline_annot=j2_min_baseline_label,
-                 add_reference_slope_guides=true)
-
-    best_var_scan = save_loglog_baseline_search_plot(
-        "10_bond_center_variance_baseline_search_loglog_fit.png",
-        analysis_dir,
-        x,
-        y_var_mean;
-        quantity_label="C_bond(0)",
-    )
-    best_j2_scan = save_loglog_baseline_search_plot(
-        "11_j2_baseline_search_loglog_fit.png",
-        analysis_dir,
-        x,
-        y_j2_mean;
-        quantity_label="⟨J²⟩",
+    write_two_force_d_analysis_report(
+        rows,
+        analysis_dir;
+        baseline_j2=baseline_j2,
+        smooth_diagonal=smooth_diagonal,
     )
 
-    baseline_scan_summary_file = joinpath(analysis_dir, "baseline_search_loglog_summary.csv")
-    open(baseline_scan_summary_file, "w") do io
-        println(io, "quantity,best_baseline,slope,r2,adjusted_r2,n_points")
-        if isnothing(best_var_scan)
-            println(io, "bond_center_variance,NaN,NaN,NaN,NaN,0")
-        else
-            println(io, @sprintf("bond_center_variance,%.10g,%.10g,%.10g,%.10g,%d",
-                                 best_var_scan.baseline,
-                                 best_var_scan.slope,
-                                 best_var_scan.r2,
-                                 best_var_scan.adj_r2,
-                                 best_var_scan.n_points))
-        end
-        if isnothing(best_j2_scan)
-            println(io, "j2,NaN,NaN,NaN,NaN,0")
-        else
-            println(io, @sprintf("j2,%.10g,%.10g,%.10g,%.10g,%d",
-                                 best_j2_scan.baseline,
-                                 best_j2_scan.slope,
-                                 best_j2_scan.r2,
-                                 best_j2_scan.adj_r2,
-                                 best_j2_scan.n_points))
-        end
+    rows_d_ge_8 = [row for row in rows if row.d >= 8]
+    if isempty(rows_d_ge_8)
+        println("Skipping d>=8-only two-force d-analysis: no rows with d >= 8.")
+        return
     end
-    println("Saved ", baseline_scan_summary_file)
 
-    summary_file = joinpath(analysis_dir, "summary_vs_d.csv")
-    open(summary_file, "w") do io
-        println(io, "d,var_mean,j2_mean,baseline_mean,j2_minus_baseline")
-        for (i, d) in enumerate(d_values)
-            println(io, @sprintf("%d,%.10g,%.10g,%.10g,%.10g", d, y_var_mean[i], y_j2_mean[i], y_baseline_mean[i], y_j2_mean_shifted[i]))
-        end
-    end
-    println("Saved ", summary_file)
+    analysis_dir_d_ge_8 = joinpath(analysis_dir, "d_ge_8")
+    write_two_force_d_analysis_report(
+        rows_d_ge_8,
+        analysis_dir_d_ge_8;
+        baseline_j2=baseline_j2,
+        smooth_diagonal=smooth_diagonal,
+    )
 end
 
 function main()

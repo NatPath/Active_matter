@@ -9,12 +9,13 @@ Usage:
       --config <path> \
       --state_dir <path> \
       --pattern <glob> [--pattern <glob> ...] \
+      [--state_arg_name <initial_state|continue>] \
       [--num_runs <int>] \
       [--save_tag <tag>]
 
 Behavior:
   - resolves the latest state file under --state_dir using patterns in order
-  - runs the configured simulation with --initial_state <resolved_file>
+  - runs the configured simulation with --<state_arg_name> <resolved_file>
   - forwards optional --num_runs / --save_tag to run_diffusive_no_activity.jl wrapper
 EOF
 }
@@ -22,6 +23,7 @@ EOF
 runner_script=""
 config_path=""
 state_dir=""
+state_arg_name="initial_state"
 num_runs=""
 save_tag=""
 patterns=()
@@ -38,6 +40,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --state_dir)
             state_dir="${2:-}"
+            shift 2
+            ;;
+        --state_arg_name)
+            state_arg_name="${2:-}"
             shift 2
             ;;
         --pattern)
@@ -82,6 +88,14 @@ if [[ ! -d "${state_dir}" ]]; then
     echo "State directory not found: ${state_dir}"
     exit 1
 fi
+case "${state_arg_name}" in
+    initial_state|continue)
+        ;;
+    *)
+        echo "--state_arg_name must be 'initial_state' or 'continue'. Got '${state_arg_name}'."
+        exit 1
+        ;;
+esac
 if [[ -n "${num_runs}" ]]; then
     if ! [[ "${num_runs}" =~ ^[0-9]+$ ]] || (( num_runs <= 0 )); then
         echo "--num_runs must be a positive integer. Got '${num_runs}'."
@@ -103,9 +117,9 @@ if [[ -z "${latest_state}" ]]; then
     exit 1
 fi
 
-echo "Resolved initial state: ${latest_state}"
+echo "Resolved state: ${latest_state}"
 
-runner_args=("${config_path}" "--initial_state" "${latest_state}")
+runner_args=("${config_path}" "--${state_arg_name}" "${latest_state}")
 if [[ -n "${num_runs}" && "${num_runs}" != "1" ]]; then
     runner_args+=("--num_runs" "${num_runs}")
 fi

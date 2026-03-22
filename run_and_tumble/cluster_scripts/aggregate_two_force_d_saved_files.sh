@@ -15,11 +15,22 @@ Options:
   --num_files <int>                 Files per d to aggregate; 0 means all (default: num_replicas from run_info)
   --state_dir <path>                Override state directory
   --config_dir <path>               Override config directory
+  --extra_raw_dir <path>            Also include raw states from this top-level directory
+                                    when building the aggregation input list
   --aggregated_subdir <name>        Save aggregated outputs under <state_dir>/<name>
                                     (default: save directly under state_dir)
-  --d_min <int>                     Override d_min
-  --d_max <int>                     Override d_max
-  --d_step <int>                    Override d_step
+  --exclude_aggregated_inputs       Do not use existing aggregated states as discovery inputs
+  --incremental_from_existing_aggregate
+                                    If a current aggregate exists for d, use it as the base input
+                                    and add only raw files from --extra_raw_dir paths; otherwise
+                                    fall back to top-level raw states plus --extra_raw_dir paths
+  --archive_existing_aggregates     Before re-aggregating, move prior non-partial aggregates
+                                    for that d into <aggregated_subdir>/<archive_subdir>/<stamp>/d_<d>
+  --archive_subdir <name>           Archive subdirectory under aggregated_subdir (default: archive)
+  --archive_stamp <token>           Optional archive stamp token (default: current timestamp)
+  --d_min <int>                     Override d_min (requires --d_max and --d_step)
+  --d_max <int>                     Override d_max (requires --d_min and --d_step)
+  --d_step <int>                    Override d_step (requires --d_min and --d_max)
   --force                           Re-aggregate even if output already exists
   --dry_run                         Print actions only
   --keep_going                      Continue on per-d errors
@@ -27,9 +38,13 @@ Options:
 
 Behavior:
   - Resolves run_info for run_id (and chain->production for warmup_production).
+  - By default, uses the exact d list from run_info (d_values / d_spacing); a linear seq is used only
+    when --d_min/--d_max/--d_step are explicitly provided together.
   - For each d, selects saved files by filename pattern:
       production: two_force_d<d>_prod_*.jld2
       warmup:     two_force_d<d>_warmup_*.jld2
+  - By default, raw discovery uses only top-level files under --state_dir and top-level files under
+    --aggregated_subdir. --extra_raw_dir adds more top-level raw search roots.
   - Aggregates selected files via:
       run_diffusive_no_activity_from_config.sh <config> --aggregate_state_list <list> --save_tag <tag>
 EOF
@@ -50,6 +65,14 @@ if [[ ! -f "${RUNNER_SCRIPT}" ]]; then
     echo "Missing helper script: ${RUNNER_SCRIPT}"
     exit 1
 fi
+
+SPACING_UTILS="${SCRIPT_DIR}/two_force_d_spacing_utils.sh"
+if [[ ! -f "${SPACING_UTILS}" ]]; then
+    echo "Could not find spacing utils script: ${SPACING_UTILS}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${SPACING_UTILS}"
 
 read_run_info_value() {
     local run_info_path="$1"
@@ -91,6 +114,54 @@ find_run_info_by_run_id() {
     return 1
 }
 
+infer_spacing_from_run_id() {
+    local run_id_val="$1"
+    if [[ "${run_id_val}" == *"-lm"* || "${run_id_val}" == *"_lm"* ]]; then
+        echo "log_midpoints"
+    else
+        echo "linear"
+    fi
+}
+
+resolve_d_values_from_run_info() {
+    local run_info_path="$1"
+    local run_id_val="$2"
+    local -n out_ref="$3"
+    local d_values_csv d_spacing_local d_min_local d_max_local d_step_local
+
+    out_ref=()
+    d_values_csv="$(read_run_info_value "${run_info_path}" "d_values")"
+    if [[ -n "${d_values_csv}" ]]; then
+        if ! two_force_d_csv_to_array "${d_values_csv}" out_ref; then
+            echo "Invalid d_values='${d_values_csv}' in ${run_info_path}" >&2
+            return 1
+        fi
+        if (( ${#out_ref[@]} > 0 )); then
+            return 0
+        fi
+    fi
+
+    d_spacing_local="$(read_run_info_value "${run_info_path}" "d_spacing")"
+    if [[ -z "${d_spacing_local}" ]]; then
+        d_spacing_local="$(infer_spacing_from_run_id "${run_id_val}")"
+    fi
+    d_spacing_local="$(two_force_d_normalize_spacing_mode "${d_spacing_local}")" || {
+        echo "Invalid d_spacing='${d_spacing_local}' in ${run_info_path}" >&2
+        return 1
+    }
+
+    d_min_local="$(read_run_info_value "${run_info_path}" "d_min")"
+    d_max_local="$(read_run_info_value "${run_info_path}" "d_max")"
+    d_step_local="$(read_run_info_value "${run_info_path}" "d_step")"
+    if ! [[ "${d_min_local}" =~ ^[0-9]+$ && "${d_max_local}" =~ ^[0-9]+$ && "${d_step_local}" =~ ^[0-9]+$ ]]; then
+        echo "Invalid d-range in ${run_info_path}: d_min='${d_min_local}' d_max='${d_max_local}' d_step='${d_step_local}'" >&2
+        return 1
+    fi
+
+    mapfile -t out_ref < <(two_force_d_generate_d_values "${d_spacing_local}" "${d_min_local}" "${d_max_local}" "${d_step_local}")
+    return 0
+}
+
 make_short_tag_base() {
     local raw="$1"
     local cleaned hash
@@ -119,7 +190,24 @@ latest_state_for_id_tag() {
             best_mtime="${mtime}"
             best_path="${candidate}"
         fi
-    done < <(find "${root_dir}" -type f -name "*_id-${id_tag}.jld2" -print0 2>/dev/null)
+    done < <(find "${root_dir}" -type f -name "*_id-${id_tag}.jld2" ! -path '*/archive/*' ! -size 0 -print0 2>/dev/null)
+    printf "%s" "${best_path}"
+}
+
+latest_state_for_id_tag_top_level() {
+    local dir="$1"
+    local id_tag="$2"
+    local best_path=""
+    local best_mtime=0
+    local candidate mtime
+    [[ -d "${dir}" ]] || { printf ""; return 0; }
+    while IFS= read -r -d '' candidate; do
+        mtime="$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)"
+        if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= best_mtime )); then
+            best_mtime="${mtime}"
+            best_path="${candidate}"
+        fi
+    done < <(find "${dir}" -maxdepth 1 -type f -name "*_id-${id_tag}.jld2" ! -size 0 -print0 2>/dev/null)
     printf "%s" "${best_path}"
 }
 
@@ -139,12 +227,95 @@ move_state_to_aggregated_subdir() {
     printf "%s" "${target_file}"
 }
 
+move_file_to_archive_dir() {
+    local source_file="$1"
+    local archive_dir="$2"
+    local base_name target_path stem idx
+
+    mkdir -p "${archive_dir}"
+    base_name="$(basename "${source_file}")"
+    target_path="${archive_dir}/${base_name}"
+    if [[ -e "${target_path}" ]]; then
+        stem="${base_name%.jld2}"
+        idx=1
+        while [[ -e "${archive_dir}/${stem}__arch${idx}.jld2" ]]; do
+            idx=$((idx + 1))
+        done
+        target_path="${archive_dir}/${stem}__arch${idx}.jld2"
+    fi
+    mv -f "${source_file}" "${target_path}"
+    printf "%s" "${target_path}"
+}
+
+stage_existing_aggregate_files_for_d() {
+    local d_val="$1"
+    local suffix_val="$2"
+    local stage_map_file="$3"
+    local preserve_path="${4:-}"
+    local candidate archived_path
+
+    [[ "${archive_existing_aggregates}" == "true" ]] || return 0
+    : > "${stage_map_file}"
+
+    while IFS= read -r candidate; do
+        [[ -z "${candidate}" ]] && continue
+        if [[ -n "${preserve_path}" && "${candidate}" == "${preserve_path}" ]]; then
+            continue
+        fi
+        if [[ "${dry_run}" == "true" ]]; then
+            echo "d=${d_val}: would stage existing aggregate ${candidate} -> ${effective_archive_root}/d_${d_val}/"
+            continue
+        fi
+        archived_path="$(move_file_to_archive_dir "${candidate}" "${effective_archive_root}/d_${d_val}")"
+        printf "%s\t%s\n" "${candidate}" "${archived_path}" >> "${stage_map_file}"
+        echo "d=${d_val}: staged existing aggregate -> ${archived_path}"
+    done < <({
+        find "${effective_state_dir}" -maxdepth 1 -type f \
+            -name "two_force_d${d_val}_${suffix_val}_*.jld2" \
+            -name "*_id-aggregated_*" \
+            ! -name "*_id-aggregated_partial_*" \
+            -print 2>/dev/null
+        if [[ "${effective_aggregated_state_dir}" != "${effective_state_dir}" && -d "${effective_aggregated_state_dir}" ]]; then
+            find "${effective_aggregated_state_dir}" -maxdepth 1 -type f \
+                -name "two_force_d${d_val}_${suffix_val}_*.jld2" \
+                -name "*_id-aggregated_*" \
+                ! -name "*_id-aggregated_partial_*" \
+                -print 2>/dev/null
+        fi
+    } | awk '!seen[$0]++' | sort)
+}
+
+restore_staged_aggregate_files() {
+    local d_val="$1"
+    local stage_map_file="$2"
+    local original_path archived_path
+
+    [[ -f "${stage_map_file}" ]] || return 0
+    [[ -s "${stage_map_file}" ]] || return 0
+
+    while IFS=$'\t' read -r original_path archived_path; do
+        [[ -z "${original_path}" || -z "${archived_path}" ]] && continue
+        if [[ ! -e "${archived_path}" ]]; then
+            continue
+        fi
+        mkdir -p "$(dirname "${original_path}")"
+        mv -f "${archived_path}" "${original_path}"
+        echo "d=${d_val}: restored staged aggregate -> ${original_path}"
+    done < "${stage_map_file}"
+}
+
 run_id=""
 mode="auto"
 num_files=""
 state_dir=""
 config_dir=""
+extra_raw_dirs=()
 aggregated_subdir=""
+exclude_aggregated_inputs="false"
+incremental_from_existing_aggregate="false"
+archive_existing_aggregates="false"
+archive_subdir="archive"
+archive_stamp=""
 d_min=""
 d_max=""
 d_step=""
@@ -174,8 +345,32 @@ while [[ $# -gt 0 ]]; do
             config_dir="${2:-}"
             shift 2
             ;;
+        --extra_raw_dir)
+            extra_raw_dirs+=("${2:-}")
+            shift 2
+            ;;
         --aggregated_subdir)
             aggregated_subdir="${2:-}"
+            shift 2
+            ;;
+        --exclude_aggregated_inputs)
+            exclude_aggregated_inputs="true"
+            shift
+            ;;
+        --incremental_from_existing_aggregate)
+            incremental_from_existing_aggregate="true"
+            shift
+            ;;
+        --archive_existing_aggregates)
+            archive_existing_aggregates="true"
+            shift
+            ;;
+        --archive_subdir)
+            archive_subdir="${2:-}"
+            shift 2
+            ;;
+        --archive_stamp)
+            archive_stamp="${2:-}"
             shift 2
             ;;
         --d_min)
@@ -233,6 +428,24 @@ if [[ -n "${aggregated_subdir}" ]] && ! [[ "${aggregated_subdir}" =~ ^[A-Za-z0-9
     echo "--aggregated_subdir must match [A-Za-z0-9._-]+ when provided. Got '${aggregated_subdir}'."
     exit 1
 fi
+for extra_dir in "${extra_raw_dirs[@]}"; do
+    if [[ -z "${extra_dir}" || ! -d "${extra_dir}" ]]; then
+        echo "--extra_raw_dir is invalid: ${extra_dir}"
+        exit 1
+    fi
+done
+if [[ "${archive_existing_aggregates}" == "true" && -z "${aggregated_subdir}" ]]; then
+    echo "--archive_existing_aggregates requires --aggregated_subdir."
+    exit 1
+fi
+if [[ -n "${archive_subdir}" ]] && ! [[ "${archive_subdir}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "--archive_subdir must match [A-Za-z0-9._-]+ when provided. Got '${archive_subdir}'."
+    exit 1
+fi
+if [[ -n "${archive_stamp}" ]] && ! [[ "${archive_stamp}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "--archive_stamp must match [A-Za-z0-9._-]+ when provided. Got '${archive_stamp}'."
+    exit 1
+fi
 
 run_info_path="$(find_run_info_by_run_id "${run_id}" "${mode}" || true)"
 if [[ -z "${run_info_path}" || ! -f "${run_info_path}" ]]; then
@@ -281,6 +494,19 @@ if [[ -n "${aggregated_subdir}" ]]; then
     fi
 fi
 
+effective_archive_root=""
+if [[ "${archive_existing_aggregates}" == "true" ]]; then
+    if [[ -n "${archive_stamp}" ]]; then
+        effective_archive_stamp="${archive_stamp}"
+    else
+        effective_archive_stamp="$(date +%Y%m%d-%H%M%S)"
+    fi
+    effective_archive_root="${effective_aggregated_state_dir}/${archive_subdir}/${effective_archive_stamp}"
+    if [[ "${dry_run}" != "true" ]]; then
+        mkdir -p "${effective_archive_root}"
+    fi
+fi
+
 effective_config_dir="${config_dir:-$(read_run_info_value "${target_run_info}" "config_dir")}"
 [[ -z "${effective_config_dir}" && -n "${run_root}" ]] && effective_config_dir="${run_root}/configs"
 if [[ -z "${effective_config_dir}" || ! -d "${effective_config_dir}" ]]; then
@@ -301,13 +527,29 @@ fi
 effective_d_min="${d_min:-$(read_run_info_value "${target_run_info}" "d_min")}"
 effective_d_max="${d_max:-$(read_run_info_value "${target_run_info}" "d_max")}"
 effective_d_step="${d_step:-$(read_run_info_value "${target_run_info}" "d_step")}"
-if ! [[ "${effective_d_min}" =~ ^[0-9]+$ && "${effective_d_max}" =~ ^[0-9]+$ && "${effective_d_step}" =~ ^[0-9]+$ ]]; then
-    echo "d-range is invalid: d_min='${effective_d_min}', d_max='${effective_d_max}', d_step='${effective_d_step}'"
-    exit 1
-fi
-if (( effective_d_step <= 0 || effective_d_max < effective_d_min )); then
-    echo "Invalid d-range values: ${effective_d_min}:${effective_d_step}:${effective_d_max}"
-    exit 1
+declare -a D_VALUES=()
+if [[ -n "${d_min}" || -n "${d_max}" || -n "${d_step}" ]]; then
+    if [[ -z "${d_min}" || -z "${d_max}" || -z "${d_step}" ]]; then
+        echo "--d_min, --d_max, and --d_step must be provided together."
+        exit 1
+    fi
+    if ! [[ "${effective_d_min}" =~ ^[0-9]+$ && "${effective_d_max}" =~ ^[0-9]+$ && "${effective_d_step}" =~ ^[0-9]+$ ]]; then
+        echo "d-range is invalid: d_min='${effective_d_min}', d_max='${effective_d_max}', d_step='${effective_d_step}'"
+        exit 1
+    fi
+    if (( effective_d_step <= 0 || effective_d_max < effective_d_min )); then
+        echo "Invalid d-range values: ${effective_d_min}:${effective_d_step}:${effective_d_max}"
+        exit 1
+    fi
+    mapfile -t D_VALUES < <(seq "${effective_d_min}" "${effective_d_step}" "${effective_d_max}")
+else
+    if ! resolve_d_values_from_run_info "${target_run_info}" "${target_run_id}" D_VALUES; then
+        exit 1
+    fi
+    if (( ${#D_VALUES[@]} == 0 )); then
+        echo "Resolved d-value list is empty for ${target_run_info}."
+        exit 1
+    fi
 fi
 
 suffix="prod"
@@ -334,18 +576,28 @@ echo "  run_info=${target_run_info}"
 echo "  state_dir=${effective_state_dir}"
 echo "  aggregated_output_dir=${effective_aggregated_state_dir}"
 echo "  config_dir=${effective_config_dir}"
+if (( ${#extra_raw_dirs[@]} > 0 )); then
+    echo "  extra_raw_dirs=$(IFS=:; echo "${extra_raw_dirs[*]}")"
+fi
+echo "  exclude_aggregated_inputs=${exclude_aggregated_inputs}"
+echo "  incremental_from_existing_aggregate=${incremental_from_existing_aggregate}"
 echo "  num_files_per_d=${effective_num_files} (0=all)"
-echo "  d_range=${effective_d_min}:${effective_d_step}:${effective_d_max}"
+echo "  d_values=$(IFS=,; echo "${D_VALUES[*]}")"
 echo "  force_reaggregate=${force_reaggregate}"
 echo "  dry_run=${dry_run}"
 echo "  keep_going=${keep_going}"
-echo "  save_tag_template=aggregated_saved_L${L_val}_rho${rho_tag}_rid${run_hash}_d<d>"
+echo "  archive_existing_aggregates=${archive_existing_aggregates}"
+if [[ "${archive_existing_aggregates}" == "true" ]]; then
+    echo "  archive_root=${effective_archive_root}"
+fi
+echo "  save_tag_template=aggregated_saved_r${run_hash}_d<d>"
+echo "  legacy_save_tag_template=aggregated_saved_L${L_val}_rho${rho_tag}_rid${run_hash}_d<d>"
 
 ok_count=0
 skip_count=0
 fail_count=0
 
-for d in $(seq "${effective_d_min}" "${effective_d_step}" "${effective_d_max}"); do
+for d in "${D_VALUES[@]}"; do
     runtime_config="${effective_config_dir}/d_${d}.yaml"
     if [[ ! -f "${runtime_config}" ]]; then
         fallback_cfg="${REPO_ROOT}/configuration_files/two_force_d_sweep/${target_mode}/d_${d}.yaml"
@@ -359,8 +611,23 @@ for d in $(seq "${effective_d_min}" "${effective_d_step}" "${effective_d_max}");
         fi
     fi
 
-    save_tag="aggregated_saved_L${L_val}_rho${rho_tag}_rid${run_hash}_d${d}"
-    existing_agg="$(latest_state_for_id_tag "${effective_state_dir}" "${save_tag}")"
+    save_tag="aggregated_saved_r${run_hash}_d${d}"
+    legacy_save_tag="aggregated_saved_L${L_val}_rho${rho_tag}_rid${run_hash}_d${d}"
+    existing_agg=""
+    if [[ "${effective_aggregated_state_dir}" != "${effective_state_dir}" ]]; then
+        existing_agg="$(latest_state_for_id_tag_top_level "${effective_aggregated_state_dir}" "${save_tag}")"
+    fi
+    if [[ -z "${existing_agg}" ]]; then
+        existing_agg="$(latest_state_for_id_tag_top_level "${effective_state_dir}" "${save_tag}")"
+    fi
+    if [[ -z "${existing_agg}" ]]; then
+        if [[ "${effective_aggregated_state_dir}" != "${effective_state_dir}" ]]; then
+            existing_agg="$(latest_state_for_id_tag_top_level "${effective_aggregated_state_dir}" "${legacy_save_tag}")"
+        fi
+        if [[ -z "${existing_agg}" ]]; then
+            existing_agg="$(latest_state_for_id_tag_top_level "${effective_state_dir}" "${legacy_save_tag}")"
+        fi
+    fi
     if [[ -n "${existing_agg}" && "${force_reaggregate}" != "true" ]]; then
         if [[ -n "${aggregated_subdir}" && "${existing_agg}" != "${effective_aggregated_state_dir}/"* ]]; then
             if [[ "${dry_run}" == "true" ]]; then
@@ -374,13 +641,62 @@ for d in $(seq "${effective_d_min}" "${effective_d_step}" "${effective_d_max}");
         continue
     fi
 
-    mapfile -t candidates < <(
-        find "${effective_state_dir}" -type f \
+    mapfile -t root_candidates < <(
+        find "${effective_state_dir}" -maxdepth 1 -type f \
             -name "two_force_d${d}_${suffix}_*.jld2" \
             ! -name "*_id-aggregated_*" \
+            ! -size 0 \
             -printf '%T@ %p\n' 2>/dev/null \
-            | sort -nr \
-            | awk '{ $1=""; sub(/^ /,""); print }'
+            | sort -nr | awk '{ $1=""; sub(/^ /,""); print }'
+    )
+    extra_raw_candidates=()
+    if (( ${#extra_raw_dirs[@]} > 0 )); then
+        while IFS= read -r candidate_path; do
+            [[ -n "${candidate_path}" ]] && extra_raw_candidates+=("${candidate_path}")
+        done < <(
+            for extra_dir in "${extra_raw_dirs[@]}"; do
+                find "${extra_dir}" -maxdepth 1 -type f \
+                    -name "two_force_d${d}_${suffix}_*.jld2" \
+                    ! -name "*_id-aggregated_*" \
+                    ! -size 0 \
+                    -printf '%T@ %p\n' 2>/dev/null
+            done | sort -nr | awk '{ $1=""; sub(/^ /,""); print }'
+        )
+    fi
+    aggregated_input_candidates=()
+    if [[ "${exclude_aggregated_inputs}" != "true" && "${incremental_from_existing_aggregate}" != "true" ]]; then
+        while IFS= read -r candidate_path; do
+            [[ -n "${candidate_path}" ]] && aggregated_input_candidates+=("${candidate_path}")
+        done < <(
+            if [[ "${effective_aggregated_state_dir}" != "${effective_state_dir}" && -d "${effective_aggregated_state_dir}" ]]; then
+                find "${effective_aggregated_state_dir}" -maxdepth 1 -type f \
+                    -name "two_force_d${d}_${suffix}_*.jld2" \
+                    -name "*_id-aggregated_*" \
+                    ! -name "*_id-aggregated_partial_*" \
+                    ! -size 0 \
+                    -printf '%T@ %p\n' 2>/dev/null \
+                    | sort -nr | awk '{ $1=""; sub(/^ /,""); print }'
+            fi
+        )
+    fi
+    mapfile -t candidates < <(
+        if [[ "${incremental_from_existing_aggregate}" == "true" && -n "${existing_agg}" ]]; then
+            {
+                printf '%s\n' "${existing_agg}"
+                printf '%s\n' "${extra_raw_candidates[@]}"
+            }
+        else
+            {
+                printf '%s\n' "${root_candidates[@]}"
+                printf '%s\n' "${extra_raw_candidates[@]}"
+                printf '%s\n' "${aggregated_input_candidates[@]}"
+            }
+        fi | awk 'NF && !seen[$0]++' \
+          | while IFS= read -r candidate_path; do
+                printf '%s %s\n' "$(stat -c %Y "${candidate_path}" 2>/dev/null || echo 0)" "${candidate_path}"
+            done \
+          | sort -nr \
+          | awk '{ $1=""; sub(/^ /,""); print }'
     )
 
     if (( ${#candidates[@]} == 0 )); then
@@ -402,42 +718,69 @@ for d in $(seq "${effective_d_min}" "${effective_d_step}" "${effective_d_max}");
     fi
 
     state_list_file="$(mktemp)"
-    trap 'rm -f "${state_list_file}"' EXIT
+    stage_map_file="$(mktemp)"
+    trap 'rm -f "${state_list_file}" "${stage_map_file}"' EXIT
     printf "%s\n" "${candidates[@]:0:${selected_count}}" > "${state_list_file}"
 
-    echo "d=${d}: aggregating ${selected_count} saved files -> save_tag=${save_tag}"
+    base_aggregate_count=0
+    if [[ "${incremental_from_existing_aggregate}" == "true" && -n "${existing_agg}" ]]; then
+        base_aggregate_count=1
+    fi
+    echo "d=${d}: aggregating ${selected_count} input state(s) (root=${#root_candidates[@]}, extra=${#extra_raw_candidates[@]}, aggregated=${#aggregated_input_candidates[@]}, base_aggregate=${base_aggregate_count}) -> save_tag=${save_tag} (legacy=${legacy_save_tag})"
     if [[ "${dry_run}" == "true" ]]; then
         head -n 3 "${state_list_file}" | sed 's/^/  sample: /'
         rm -f "${state_list_file}"
+        rm -f "${stage_map_file}"
         continue
     fi
 
     if bash "${RUNNER_SCRIPT}" "${runtime_config}" --aggregate_state_list "${state_list_file}" --save_tag "${save_tag}"; then
-        saved="$(latest_state_for_id_tag "${effective_state_dir}" "${save_tag}")"
+        saved="$(latest_state_for_id_tag_top_level "${effective_state_dir}" "${save_tag}")"
+        if [[ -z "${saved}" ]]; then
+            saved="$(latest_state_for_id_tag_top_level "${effective_state_dir}" "${legacy_save_tag}")"
+        fi
         if [[ -n "${saved}" ]]; then
+            stage_existing_aggregate_files_for_d "${d}" "${suffix}" "${stage_map_file}" "${saved}"
             if [[ -n "${aggregated_subdir}" ]]; then
-                saved="$(move_state_to_aggregated_subdir "${saved}")"
+                if ! saved="$(move_state_to_aggregated_subdir "${saved}")"; then
+                    restore_staged_aggregate_files "${d}" "${stage_map_file}"
+                    echo "d=${d}: failed to move freshly aggregated state into ${effective_aggregated_state_dir}"
+                    fail_count=$((fail_count + 1))
+                    if [[ "${keep_going}" != "true" ]]; then
+                        rm -f "${state_list_file}"
+                        rm -f "${stage_map_file}"
+                        exit 1
+                    fi
+                    rm -f "${state_list_file}"
+                    rm -f "${stage_map_file}"
+                    continue
+                fi
             fi
             echo "d=${d}: aggregated -> ${saved}"
             ok_count=$((ok_count + 1))
         else
             echo "d=${d}: aggregation command succeeded but no output found for save_tag=${save_tag}"
+            restore_staged_aggregate_files "${d}" "${stage_map_file}"
             fail_count=$((fail_count + 1))
             if [[ "${keep_going}" != "true" ]]; then
                 rm -f "${state_list_file}"
+                rm -f "${stage_map_file}"
                 exit 1
             fi
         fi
     else
         echo "d=${d}: aggregation failed."
+        restore_staged_aggregate_files "${d}" "${stage_map_file}"
         fail_count=$((fail_count + 1))
         if [[ "${keep_going}" != "true" ]]; then
             rm -f "${state_list_file}"
+            rm -f "${stage_map_file}"
             exit 1
         fi
     fi
 
     rm -f "${state_list_file}"
+    rm -f "${stage_map_file}"
 done
 
 echo "Aggregation summary:"

@@ -50,10 +50,25 @@ module FPDiffusive
         fluctuation_type::String
         potential_magnitude::Float64
         ffr::Union{Float64,Vector{Float64}} # forcing fluctuation rate(s)
+        forcing_rate_scheme::String
+    end
+
+    const LEGACY_FORCING_RATE_SCHEME = "legacy_penalty"
+    const SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME = "symmetric_normalized"
+
+    function normalize_forcing_rate_scheme(raw_scheme)
+        scheme = lowercase(strip(String(raw_scheme)))
+        if scheme in ("legacy_penalty", "legacy", "current")
+            return LEGACY_FORCING_RATE_SCHEME
+        elseif scheme in ("symmetric_normalized", "symmetric", "normalized_symmetric")
+            return SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME
+        end
+        throw(ArgumentError("Unsupported forcing_rate_scheme: $raw_scheme. Use \"legacy_penalty\" (or \"current\") or \"symmetric_normalized\"."))
     end
 
     #constructor
-    function setParam(γ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,ffr=0.0)
+    function setParam(γ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,ffr=0.0;
+                      forcing_rate_scheme=LEGACY_FORCING_RATE_SCHEME)
         ffrs = if ffr isa AbstractVector
             Float64.(collect(ffr))
         else
@@ -66,8 +81,16 @@ module FPDiffusive
         println(" params set with N = $N, γ = $γ ")
 
         ffr_value = length(ffrs) == 1 ? ffrs[1] : ffrs
-        param = Param(γ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude, ffr_value)
+        scheme = normalize_forcing_rate_scheme(forcing_rate_scheme)
+        param = Param(γ, dims, ρ₀, N, D, potential_type, fluctuation_type, potential_magnitude, ffr_value, scheme)
         return param
+    end
+
+    @inline function forcing_rate_scheme(param)
+        if hasfield(typeof(param), :forcing_rate_scheme)
+            return normalize_forcing_rate_scheme(getfield(param, :forcing_rate_scheme))
+        end
+        return LEGACY_FORCING_RATE_SCHEME
     end
 
     mutable struct Particle{D}
@@ -553,36 +576,79 @@ module FPDiffusive
         return left_x, right_x, down_y, up_y
     end
 
-    function active_bond_forcing_1d(forcings::Vector{BondForce}, from_idx::Int, to_idx::Int)
+    @inline endpoint_tuple(indices::AbstractVector{<:Integer}) = Tuple(Int(i) for i in indices)
+
+    function max_forcing_magnitude_per_bond(forcings::Vector{BondForce})
+        isempty(forcings) && return 0.0
+        bond_totals = Dict{Any,Float64}()
+        for force in forcings
+            endpoint_1 = endpoint_tuple(force.bond_indices[1])
+            endpoint_2 = endpoint_tuple(force.bond_indices[2])
+            bond_key = endpoint_1 <= endpoint_2 ? (endpoint_1, endpoint_2) : (endpoint_2, endpoint_1)
+            bond_totals[bond_key] = get(bond_totals, bond_key, 0.0) + abs(force.magnitude)
+        end
+        return maximum(values(bond_totals))
+    end
+
+    @inline function hop_rate_normalization(D::Real, max_bond_forcing::Real, scheme::AbstractString)
+        if scheme == LEGACY_FORCING_RATE_SCHEME
+            return 1.0
+        elseif scheme == SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME
+            return max(Float64(D) + Float64(max_bond_forcing), eps(Float64))
+        end
+        throw(ArgumentError("Unsupported forcing_rate_scheme: $scheme"))
+    end
+
+    @inline function bond_rate_prefactor(D::Real, directed_bond_forcing::Real, rate_normalization::Real, scheme::AbstractString)
+        base_rate = if scheme == LEGACY_FORCING_RATE_SCHEME
+            Float64(D) - max(Float64(directed_bond_forcing), 0.0)
+        elseif scheme == SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME
+            Float64(D) + Float64(directed_bond_forcing)
+        else
+            throw(ArgumentError("Unsupported forcing_rate_scheme: $scheme"))
+        end
+        return base_rate / rate_normalization
+    end
+
+    function directed_bond_forcing_1d(forcings::Vector{BondForce}, from_idx::Int, to_idx::Int)
         total_forcing = 0.0
         for force in forcings
-            from_bond = force.bond_indices[1][1]
-            to_bond = force.bond_indices[2][1]
-            if (from_idx == from_bond && to_idx == to_bond && force.direction_flag) ||
-               (from_idx == to_bond && to_idx == from_bond && !force.direction_flag)
+            endpoint_1 = force.bond_indices[1][1]
+            endpoint_2 = force.bond_indices[2][1]
+            active_from = force.direction_flag ? endpoint_1 : endpoint_2
+            active_to = force.direction_flag ? endpoint_2 : endpoint_1
+            if from_idx == active_from && to_idx == active_to
                 total_forcing += force.magnitude
+            elseif from_idx == active_to && to_idx == active_from
+                total_forcing -= force.magnitude
             end
         end
         return total_forcing
     end
 
-    function active_bond_forcing_2d(forcings::Vector{BondForce}, from_pos::NTuple{2,Int}, to_pos::NTuple{2,Int})
+    function directed_bond_forcing_2d(forcings::Vector{BondForce}, from_pos::NTuple{2,Int}, to_pos::NTuple{2,Int})
         total_forcing = 0.0
         for force in forcings
-            from_bond = (force.bond_indices[1][1], force.bond_indices[1][2])
-            to_bond = (force.bond_indices[2][1], force.bond_indices[2][2])
-            if (from_pos == from_bond && to_pos == to_bond && force.direction_flag) ||
-               (from_pos == to_bond && to_pos == from_bond && !force.direction_flag)
+            endpoint_1 = (force.bond_indices[1][1], force.bond_indices[1][2])
+            endpoint_2 = (force.bond_indices[2][1], force.bond_indices[2][2])
+            active_from = force.direction_flag ? endpoint_1 : endpoint_2
+            active_to = force.direction_flag ? endpoint_2 : endpoint_1
+            if from_pos == active_from && to_pos == active_to
                 total_forcing += force.magnitude
+            elseif from_pos == active_to && to_pos == active_from
+                total_forcing -= force.magnitude
             end
         end
         return total_forcing
     end
 
-    function calculate_jump_probability(D,ΔV,T,exp_table::ExpLookupTable; bond_forcing=0.0)
+    function calculate_jump_probability(D,ΔV,T,exp_table::ExpLookupTable;
+                                        directed_bond_forcing=0.0,
+                                        rate_normalization=1.0,
+                                        forcing_rate_scheme=LEGACY_FORCING_RATE_SCHEME)
         exp_arg = -ΔV / T
         exp_val = lookup_exp(exp_table, exp_arg)
-        p = (D-bond_forcing)*min(1,exp_val)
+        p = bond_rate_prefactor(D, directed_bond_forcing, rate_normalization, forcing_rate_scheme) * min(1,exp_val)
         return p
     end
     mutable struct BenchmarkResults
@@ -651,6 +717,8 @@ module FPDiffusive
             ffrs = param_ffrs(param)
             forcings = get_state_forcings!(state)
             n_forces = length(forcings)
+            scheme = forcing_rate_scheme(param)
+            rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
             L = param.dims[1]
             left_neighbors, right_neighbors = precompute_periodic_neighbors_1d(L)
             ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
@@ -695,11 +763,14 @@ module FPDiffusive
                         t2 = time_ns()
                     end
 
-                    bond_forcing = active_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
+                    directed_bond_forcing = directed_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
                     if static_zero_potential
-                        p_candidate = param.D - bond_forcing
+                        p_candidate = bond_rate_prefactor(param.D, directed_bond_forcing, rate_normalization, scheme)
                     else
-                        p_candidate = calculate_jump_probability(param.D, V[candidate_spot_index]-V[spot_index], T, state.exp_table; bond_forcing=bond_forcing)
+                        p_candidate = calculate_jump_probability(param.D, V[candidate_spot_index]-V[spot_index], T, state.exp_table;
+                                                                 directed_bond_forcing=directed_bond_forcing,
+                                                                 rate_normalization=rate_normalization,
+                                                                 forcing_rate_scheme=scheme)
                     end
 
                     if benchmark
@@ -716,6 +787,7 @@ module FPDiffusive
                     t3 = time_ns()
                 end
                 
+                p_candidate = clamp(p_candidate, 0.0, 1.0)
                 p_stay = 1-p_candidate
                 choice = tower_sampling(p_candidate, p_stay, rng)
                 
@@ -803,6 +875,8 @@ module FPDiffusive
             ffrs = param_ffrs(param)
             forcings = get_state_forcings!(state)
             n_forces = length(forcings)
+            scheme = forcing_rate_scheme(param)
+            rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
             Lx, Ly = param.dims
             left_x, right_x, down_y, up_y = precompute_periodic_neighbors_2d(Lx, Ly)
             ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
@@ -853,11 +927,14 @@ module FPDiffusive
                         t2 = time_ns()
                     end
 
-                    bond_forcing = active_bond_forcing_2d(forcings, spot_index, cand)
+                    directed_bond_forcing = directed_bond_forcing_2d(forcings, spot_index, cand)
                     if static_zero_potential
-                        p_cand = param.D - bond_forcing
+                        p_cand = bond_rate_prefactor(param.D, directed_bond_forcing, rate_normalization, scheme)
                     else
-                        p_cand = calculate_jump_probability(param.D, V[cand...]-V[i,j], T, state.exp_table; bond_forcing=bond_forcing)
+                        p_cand = calculate_jump_probability(param.D, V[cand...]-V[i,j], T, state.exp_table;
+                                                            directed_bond_forcing=directed_bond_forcing,
+                                                            rate_normalization=rate_normalization,
+                                                            forcing_rate_scheme=scheme)
                     end
 
                     if benchmark
@@ -872,6 +949,7 @@ module FPDiffusive
                     t3 = time_ns()
                 end
                 
+                p_cand = clamp(p_cand, 0.0, 1.0)
                 p_stay = 1 - p_cand
                 choice = tower_sampling(p_cand, p_stay, rng)
                 

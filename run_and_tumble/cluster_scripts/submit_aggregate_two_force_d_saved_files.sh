@@ -15,6 +15,9 @@ Aggregation options (forwarded to aggregate_two_force_d_saved_files.sh):
   --state_dir <path>               override state_dir
   --config_dir <path>              override config_dir
   --aggregated_subdir <name>       save aggregated outputs under <state_dir>/<name> (default: aggregated)
+  --archive_existing_aggregates    archive existing non-partial aggregates before replacing them
+  --archive_subdir <name>          archive subdirectory under aggregated_subdir (default: archive)
+  --archive_stamp <token>          archive stamp token (default: current timestamp in aggregation script)
   --d_min <int>                    override d_min
   --d_max <int>                    override d_max
   --d_step <int>                   override d_step
@@ -59,6 +62,9 @@ num_files=""
 state_dir=""
 config_dir=""
 aggregated_subdir="aggregated"
+archive_existing_aggregates="false"
+archive_subdir="archive"
+archive_stamp=""
 d_min=""
 d_max=""
 d_step=""
@@ -96,6 +102,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --aggregated_subdir)
             aggregated_subdir="${2:-}"
+            shift 2
+            ;;
+        --archive_existing_aggregates)
+            archive_existing_aggregates="true"
+            shift
+            ;;
+        --archive_subdir)
+            archive_subdir="${2:-}"
+            shift 2
+            ;;
+        --archive_stamp)
+            archive_stamp="${2:-}"
             shift 2
             ;;
         --d_min)
@@ -181,6 +199,18 @@ if [[ -z "${aggregated_subdir}" ]] || ! [[ "${aggregated_subdir}" =~ ^[A-Za-z0-9
     echo "--aggregated_subdir must match [A-Za-z0-9._-]+. Got '${aggregated_subdir}'."
     exit 1
 fi
+if [[ "${archive_existing_aggregates}" == "true" && -z "${aggregated_subdir}" ]]; then
+    echo "--archive_existing_aggregates requires a non-empty --aggregated_subdir."
+    exit 1
+fi
+if [[ -n "${archive_subdir}" ]] && ! [[ "${archive_subdir}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "--archive_subdir must match [A-Za-z0-9._-]+ when provided. Got '${archive_subdir}'."
+    exit 1
+fi
+if [[ -n "${archive_stamp}" ]] && ! [[ "${archive_stamp}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "--archive_stamp must match [A-Za-z0-9._-]+ when provided. Got '${archive_stamp}'."
+    exit 1
+fi
 if [[ -n "${num_files}" ]] && ! [[ "${num_files}" =~ ^[0-9]+$ ]]; then
     echo "--num_files must be a non-negative integer. Got '${num_files}'."
     exit 1
@@ -213,6 +243,15 @@ meta_file="${job_root}/job_info.txt"
 
 agg_args=("--run_id" "${run_id}" "--mode" "${mode}")
 agg_args+=("--aggregated_subdir" "${aggregated_subdir}")
+if [[ "${archive_existing_aggregates}" == "true" ]]; then
+    agg_args+=("--archive_existing_aggregates")
+fi
+if [[ -n "${archive_subdir}" ]]; then
+    agg_args+=("--archive_subdir" "${archive_subdir}")
+fi
+if [[ -n "${archive_stamp}" ]]; then
+    agg_args+=("--archive_stamp" "${archive_stamp}")
+fi
 if [[ -n "${num_files}" ]]; then
     agg_args+=("--num_files" "${num_files}")
 fi
@@ -285,6 +324,9 @@ EOF
     echo "state_dir=${state_dir:-}"
     echo "config_dir=${config_dir:-}"
     echo "aggregated_subdir=${aggregated_subdir}"
+    echo "archive_existing_aggregates=${archive_existing_aggregates}"
+    echo "archive_subdir=${archive_subdir}"
+    echo "archive_stamp=${archive_stamp:-}"
     echo "d_min=${d_min:-}"
     echo "d_max=${d_max:-}"
     echo "d_step=${d_step:-}"
@@ -304,6 +346,11 @@ echo "  request_cpus=${request_cpus}"
 echo "  request_memory=${request_memory}"
 echo "  JULIA_NUM_PROCS_AGGREGATE=${julia_num_procs_aggregate}"
 echo "  aggregated_subdir=${aggregated_subdir}"
+echo "  archive_existing_aggregates=${archive_existing_aggregates}"
+echo "  archive_subdir=${archive_subdir}"
+if [[ -n "${archive_stamp}" ]]; then
+    echo "  archive_stamp=${archive_stamp}"
+fi
 
 if [[ "${no_submit}" == "true" ]]; then
     echo "NO_SUBMIT=true; generated submit file but did not submit."

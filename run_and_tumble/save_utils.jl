@@ -5,32 +5,55 @@ using Dates
 using Sockets
 export save_aggregation, save_state
 
+const MAX_FILENAME_COMPONENT_BYTES = 240
+
+function has_named_property(obj, name::Symbol)
+    hasfield(typeof(obj), name) && return true
+    try
+        hasproperty(obj, name) && return true
+    catch
+    end
+    try
+        return name in propertynames(obj)
+    catch
+        return false
+    end
+end
+
+function get_named_property(obj, name::Symbol)
+    if hasfield(typeof(obj), name)
+        return getfield(obj, name)
+    end
+    return getproperty(obj, name)
+end
+
 function forcing_list(state)
-    if !hasfield(typeof(state), :forcing)
+    if !has_named_property(state, :forcing)
         return Any[]
     end
-    if state.forcing isa AbstractVector
-        return state.forcing
+    forcing = get_named_property(state, :forcing)
+    if forcing isa AbstractVector
+        return forcing
     end
-    return [state.forcing]
+    return [forcing]
 end
 
 function param_activity(param)
-    if hasfield(typeof(param), :ϵ)
-        return Float64(getfield(param, :ϵ))
+    if has_named_property(param, :ϵ)
+        return Float64(get_named_property(param, :ϵ))
     end
     return 0.0
 end
 
 function param_alpha(param)
-    if hasfield(typeof(param), :α)
-        return Float64(getfield(param, :α))
+    if has_named_property(param, :α)
+        return Float64(get_named_property(param, :α))
     end
     return 0.0
 end
 
 function two_force_distance_suffix(state, param)
-    if !hasfield(typeof(param), :dims) || length(param.dims) != 1
+    if !has_named_property(param, :dims) || length(get_named_property(param, :dims)) != 1
         return ""
     end
     forcings = forcing_list(state)
@@ -44,12 +67,35 @@ function two_force_distance_suffix(state, param)
         return ""
     end
 
-    L = param.dims[1]
+    dims = get_named_property(param, :dims)
+    L = dims[1]
     s1 = mod1(force1.bond_indices[1][1], L)
     s2 = mod1(force2.bond_indices[1][1], L)
     d_forward = mod(s2 - s1, L)
     d_short = min(d_forward, mod(s1 - s2, L))
     return @sprintf("_fdist-%d_fdistmin-%d", d_forward, d_short)
+end
+
+function forcing_fluctuation_rate_value(param)
+    if has_named_property(param, :forcing_fluctuation_rate)
+        return Float64(get_named_property(param, :forcing_fluctuation_rate)) * Float64(get_named_property(param, :N))
+    elseif has_named_property(param, :ffrs)
+        ffrs = get_named_property(param, :ffrs)
+        return isempty(ffrs) ? 0.0 : Float64(ffrs[1])
+    elseif has_named_property(param, :ffr)
+        ffr = get_named_property(param, :ffr)
+        if ffr isa AbstractVector
+            return isempty(ffr) ? 0.0 : Float64(ffr[1])
+        end
+        return Float64(ffr)
+    end
+    error("Parameter object must have one of forcing_fluctuation_rate, ffrs, or ffr")
+end
+
+function forcing_magnitude_value(state)
+    forcings = forcing_list(state)
+    isempty(forcings) && return 0.0
+    return sum(force -> force.magnitude, forcings)
 end
 
 function sanitize_filename_token(value::AbstractString)
@@ -71,26 +117,72 @@ function description_prefix(description)
     return token * "_"
 end
 
+function truncate_token(token::AbstractString, max_chars::Int)
+    max_chars <= 0 && return ""
+    s = String(token)
+    return length(s) <= max_chars ? s : first(s, max_chars)
+end
+
+function filename_component_too_long(path::AbstractString)
+    return ncodeunits(basename(path)) > MAX_FILENAME_COMPONENT_BYTES
+end
+
+function choose_safe_state_filename(
+    save_dir::AbstractString;
+    description_tag::AbstractString,
+    dim::Int,
+    potential_type::AbstractString,
+    potential_magnitude::Real,
+    fluctuation_type::AbstractString,
+    activity::Real,
+    L::Int,
+    rho0::Real,
+    alpha::Real,
+    gamma::Real,
+    D::Real,
+    forcing_magnitude::Real,
+    ffr::Real,
+    force_distance_suffix::AbstractString,
+    ic_tag::AbstractString,
+    t_val::Integer,
+    run_id::AbstractString,
+)
+    candidates = String[]
+
+    push!(candidates, @sprintf("%s/%s%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_ic-%s_t-%d_id-%s.jld2",
+        save_dir, description_tag, dim, potential_type, potential_magnitude, fluctuation_type, activity,
+        L, rho0, alpha, gamma, D, forcing_magnitude, ffr, force_distance_suffix, ic_tag, t_val, run_id))
+
+    desc_short = truncate_token(description_tag, 20)
+    ic_short = truncate_token(ic_tag, 24)
+    push!(candidates, @sprintf("%s/%s%dD_L%d_rho%.1e_a%.2f_g%.3f_D%.1f_f%.1f_ffr%.4f%s_ic-%s_t%d_id-%s.jld2",
+        save_dir, desc_short, dim, L, rho0, alpha, gamma, D, forcing_magnitude, ffr, force_distance_suffix, ic_short, t_val, run_id))
+
+    desc_tiny = truncate_token(description_tag, 12)
+    push!(candidates, @sprintf("%s/%s%dD_L%d_rho%.1e_t%d_ic-%s_id-%s.jld2",
+        save_dir, desc_tiny, dim, L, rho0, t_val, ic_short, run_id))
+
+    push!(candidates, @sprintf("%s/%dD_L%d_t%d_id-%s.jld2",
+        save_dir, dim, L, t_val, run_id))
+
+    for (idx, candidate) in enumerate(candidates)
+        if !filename_component_too_long(candidate)
+            if idx > 1
+                println("WARNING: save_state filename was too long; using compact fallback format #", idx)
+            end
+            return candidate
+        end
+    end
+
+    error("Could not build a filename within filesystem limits. Try a shorter save tag (current id='$run_id').")
+end
+
 function save_aggregation(agg_res,param,total_sweeps,save_dir; description=nothing)
     mkpath(save_dir)
     state = agg_res
     γ = param.γ
-    ffr = if hasfield(typeof(param), :ffr)
-        param.ffr isa AbstractVector ? (isempty(param.ffr) ? 0.0 : Float64(param.ffr[1])) : Float64(param.ffr)
-    elseif hasfield(typeof(param), :ffrs)
-        isempty(param.ffrs) ? 0.0 : Float64(param.ffrs[1])
-    else
-        0.0
-    end
-    forcing_magnitude = if hasfield(typeof(state), :forcing)
-        if state.forcing isa AbstractVector
-            isempty(state.forcing) ? 0.0 : sum(force -> force.magnitude, state.forcing)
-        else
-            state.forcing.magnitude
-        end
-    else
-        0.0
-    end
+    ffr = forcing_fluctuation_rate_value(param)
+    forcing_magnitude = forcing_magnitude_value(state)
     activity = param_activity(param)
     alpha = param_alpha(param)
     force_distance_suffix = two_force_distance_suffix(state, param)
@@ -121,33 +213,9 @@ end
 # Original save_state function.
 function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic::Bool=false, description=nothing)
     mkpath(save_dir)
-    # Check if param has forcing_fluctuation_rate or ffr field
-    if hasfield(typeof(param), :forcing_fluctuation_rate)
-        γ = param.γ 
-        ffr = param.forcing_fluctuation_rate * param.N
-    elseif hasfield(typeof(param), :ffrs)
-        γ = param.γ
-        ffr = isempty(param.ffrs) ? 0.0 : param.ffrs[1]
-    elseif hasfield(typeof(param), :ffr)
-
-        γ = param.γ
-        if param.ffr isa AbstractVector
-            ffr = isempty(param.ffr) ? 0.0 : Float64(param.ffr[1])
-        else
-            ffr = Float64(param.ffr)
-        end
-    else
-        error("Parameter object must have either forcing_fluctuation_rate or ffr field")
-    end
-    forcing_magnitude = if hasfield(typeof(state), :forcing)
-        if state.forcing isa AbstractVector
-            isempty(state.forcing) ? 0.0 : sum(force -> force.magnitude, state.forcing)
-        else
-            state.forcing.magnitude
-        end
-    else
-        0.0
-    end
+    γ = param.γ
+    ffr = forcing_fluctuation_rate_value(param)
+    forcing_magnitude = forcing_magnitude_value(state)
     activity = param_activity(param)
     alpha = param_alpha(param)
     force_distance_suffix = two_force_distance_suffix(state, param)
@@ -161,25 +229,26 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     if relaxed_ic
         ic_tag = string(ic_tag, "-relaxed_ic")
     end
-    filename = @sprintf("%s/%s%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_ic-%s_t-%d_id-%s.jld2",
-        save_dir,
-        description_tag,
-        dim,
-        param.potential_type,
-        param.potential_magnitude,
-        param.fluctuation_type,
-        activity,
-        param.dims[1],
-        param.ρ₀,
-        alpha,
-        γ,
-        param.D,
-        forcing_magnitude,
-        ffr,
-        force_distance_suffix,
-        ic_tag,
-        state.t,
-        run_id)
+    filename = choose_safe_state_filename(
+        save_dir;
+        description_tag=description_tag,
+        dim=dim,
+        potential_type=param.potential_type,
+        potential_magnitude=param.potential_magnitude,
+        fluctuation_type=param.fluctuation_type,
+        activity=activity,
+        L=param.dims[1],
+        rho0=param.ρ₀,
+        alpha=alpha,
+        gamma=γ,
+        D=param.D,
+        forcing_magnitude=forcing_magnitude,
+        ffr=ffr,
+        force_distance_suffix=force_distance_suffix,
+        ic_tag=ic_tag,
+        t_val=state.t,
+        run_id=run_id,
+    )
     potential = state.potential 
     @save filename state param potential
     println("Saved a state to $filename")

@@ -10,7 +10,7 @@ T: 1.0
 
 # Simulation parameters
 ic: "flat"
-n_sweeps: 1
+n_sweeps: 1000
 
 # Potential parameters
 potential_type: "xy_slides"

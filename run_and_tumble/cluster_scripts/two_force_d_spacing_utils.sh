@@ -95,13 +95,13 @@ two_force_d_generate_d_values() {
 
 two_force_d_csv_to_array() {
     local csv="$1"
-    local -n out_ref="$2"
-    out_ref=()
+    local -n result_ref="$2"
+    result_ref=()
     [[ -z "${csv}" ]] && return 0
     local item
-    IFS=',' read -r -a out_ref <<< "${csv}"
+    IFS=',' read -r -a result_ref <<< "${csv}"
     local -a filtered=()
-    for item in "${out_ref[@]}"; do
+    for item in "${result_ref[@]}"; do
         if ! [[ "${item}" =~ ^[0-9]+$ ]]; then
             return 1
         fi
@@ -109,6 +109,6 @@ two_force_d_csv_to_array() {
             filtered+=("${item}")
         fi
     done
-    out_ref=("${filtered[@]}")
+    result_ref=("${filtered[@]}")
     return 0
 }

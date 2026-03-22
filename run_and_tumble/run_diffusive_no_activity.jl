@@ -4,6 +4,11 @@
 using Distributed
 using Printf
 using Dates
+if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
+    # Under WSLg, Qt/GR can pick Wayland and then fail EGL initialization.
+    # Force the stable XWayland path before Plots/GR initialize.
+    ENV["QT_QPA_PLATFORM"] = "xcb"
+end
 using Plots
 using Random
 using FFTW
@@ -25,9 +30,63 @@ using .FPDiffusive
 using .PlotUtils
 using .SaveUtils
 
+const AGG_TWO_FORCE_REPLICA_COUNT_KEY = :agg_two_force_replica_count
+const AGG_TWO_FORCE_VAR_SLOT_MEAN_KEY = :agg_two_force_var_slot_mean
+const AGG_TWO_FORCE_VAR_SLOT_SEM_KEY = :agg_two_force_var_slot_sem
+const AGG_TWO_FORCE_VAR_SLOT_CI95_KEY = :agg_two_force_var_slot_ci95
+const AGG_TWO_FORCE_VAR_SLOT_N_KEY = :agg_two_force_var_slot_n
+const AGG_TWO_FORCE_VAR_SLOT_WEIGHT_KEY = :agg_two_force_var_slot_weight
+const AGG_TWO_FORCE_VAR_SLOT_SUM_KEY = :agg_two_force_var_slot_sum
+const AGG_TWO_FORCE_VAR_SLOT_SUMSQ_KEY = :agg_two_force_var_slot_sumsq
+const AGG_TWO_FORCE_VAR_SLOT_WEIGHTSQ_KEY = :agg_two_force_var_slot_weightsq
+const AGG_TWO_FORCE_VAR_MEAN_KEY = :agg_two_force_var_mean
+const AGG_TWO_FORCE_VAR_MEAN_SEM_KEY = :agg_two_force_var_mean_sem
+const AGG_TWO_FORCE_VAR_MEAN_CI95_KEY = :agg_two_force_var_mean_ci95
+const AGG_TWO_FORCE_VAR_MEAN_N_KEY = :agg_two_force_var_mean_n
+const AGG_TWO_FORCE_VAR_MEAN_WEIGHT_KEY = :agg_two_force_var_mean_weight
+const AGG_TWO_FORCE_VAR_MEAN_SUM_KEY = :agg_two_force_var_mean_sum
+const AGG_TWO_FORCE_VAR_MEAN_SUMSQ_KEY = :agg_two_force_var_mean_sumsq
+const AGG_TWO_FORCE_VAR_MEAN_WEIGHTSQ_KEY = :agg_two_force_var_mean_weightsq
+const AGG_TWO_FORCE_VAR_RAW_SLOT_MEAN_KEY = :agg_two_force_var_raw_slot_mean
+const AGG_TWO_FORCE_VAR_RAW_SLOT_SEM_KEY = :agg_two_force_var_raw_slot_sem
+const AGG_TWO_FORCE_VAR_RAW_SLOT_CI95_KEY = :agg_two_force_var_raw_slot_ci95
+const AGG_TWO_FORCE_VAR_RAW_SLOT_N_KEY = :agg_two_force_var_raw_slot_n
+const AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHT_KEY = :agg_two_force_var_raw_slot_weight
+const AGG_TWO_FORCE_VAR_RAW_SLOT_SUM_KEY = :agg_two_force_var_raw_slot_sum
+const AGG_TWO_FORCE_VAR_RAW_SLOT_SUMSQ_KEY = :agg_two_force_var_raw_slot_sumsq
+const AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHTSQ_KEY = :agg_two_force_var_raw_slot_weightsq
+const AGG_TWO_FORCE_VAR_RAW_MEAN_KEY = :agg_two_force_var_raw_mean
+const AGG_TWO_FORCE_VAR_RAW_MEAN_SEM_KEY = :agg_two_force_var_raw_mean_sem
+const AGG_TWO_FORCE_VAR_RAW_MEAN_CI95_KEY = :agg_two_force_var_raw_mean_ci95
+const AGG_TWO_FORCE_VAR_RAW_MEAN_N_KEY = :agg_two_force_var_raw_mean_n
+const AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHT_KEY = :agg_two_force_var_raw_mean_weight
+const AGG_TWO_FORCE_VAR_RAW_MEAN_SUM_KEY = :agg_two_force_var_raw_mean_sum
+const AGG_TWO_FORCE_VAR_RAW_MEAN_SUMSQ_KEY = :agg_two_force_var_raw_mean_sumsq
+const AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHTSQ_KEY = :agg_two_force_var_raw_mean_weightsq
+const AGG_TWO_FORCE_J2_SLOT_MEAN_KEY = :agg_two_force_j2_slot_mean
+const AGG_TWO_FORCE_J2_SLOT_SEM_KEY = :agg_two_force_j2_slot_sem
+const AGG_TWO_FORCE_J2_SLOT_CI95_KEY = :agg_two_force_j2_slot_ci95
+const AGG_TWO_FORCE_J2_SLOT_N_KEY = :agg_two_force_j2_slot_n
+const AGG_TWO_FORCE_J2_SLOT_WEIGHT_KEY = :agg_two_force_j2_slot_weight
+const AGG_TWO_FORCE_J2_SLOT_SUM_KEY = :agg_two_force_j2_slot_sum
+const AGG_TWO_FORCE_J2_SLOT_SUMSQ_KEY = :agg_two_force_j2_slot_sumsq
+const AGG_TWO_FORCE_J2_SLOT_WEIGHTSQ_KEY = :agg_two_force_j2_slot_weightsq
+const AGG_TWO_FORCE_J2_MEAN_KEY = :agg_two_force_j2_mean
+const AGG_TWO_FORCE_J2_MEAN_SEM_KEY = :agg_two_force_j2_mean_sem
+const AGG_TWO_FORCE_J2_MEAN_CI95_KEY = :agg_two_force_j2_mean_ci95
+const AGG_TWO_FORCE_J2_MEAN_N_KEY = :agg_two_force_j2_mean_n
+const AGG_TWO_FORCE_J2_MEAN_WEIGHT_KEY = :agg_two_force_j2_mean_weight
+const AGG_TWO_FORCE_J2_MEAN_SUM_KEY = :agg_two_force_j2_mean_sum
+const AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY = :agg_two_force_j2_mean_sumsq
+const AGG_TWO_FORCE_J2_MEAN_WEIGHTSQ_KEY = :agg_two_force_j2_mean_weightsq
+
 # Ensure all worker processes load the same files and modules.
 @everywhere begin
-    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
+    using Printf, Dates, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
+    if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
+        ENV["QT_QPA_PLATFORM"] = "xcb"
+    end
+    using Plots
     include("potentials.jl")
     include("modules_diffusive_no_activity.jl")
     using .FPDiffusive
@@ -81,6 +140,13 @@ function parse_commandline()
             required = false
     end
     return parse_args(s)
+end
+
+function explicit_save_tag_from_args(args)
+    if haskey(args, "save_tag") && !isnothing(args["save_tag"])
+        return String(args["save_tag"])
+    end
+    return nothing
 end
 
 @everywhere const INT_TYPE_MAP = Dict(
@@ -187,6 +253,7 @@ end
         "forcing_magnitude" => 1.0,
         "forcing_magnitudes" => [1.0],
         "forcing_direction_flags" => [true],
+        "forcing_rate_scheme" => "legacy_penalty",
         "bond_pass_count_mode" => "nonzero_magnitude",
         "ic" => "random",
         "int_type" => "Int32",
@@ -258,6 +325,26 @@ end
     error("$key_name must be boolean-like (Bool/0-1/string).")
 end
 
+@everywhere function param_ffr_input(param)
+    if hasfield(typeof(param), :ffr)
+        return getfield(param, :ffr)
+    elseif hasfield(typeof(param), :ffrs)
+        return getfield(param, :ffrs)
+    end
+    return 0.0
+end
+
+@everywhere function maybe_override_forcing_rate_scheme(param, args, params)
+    has_explicit_config = haskey(args, "config") && !isnothing(args["config"]) && haskey(params, "forcing_rate_scheme")
+    if !has_explicit_config
+        return param
+    end
+    return FPDiffusive.setParam(param.γ, param.dims, param.ρ₀, param.D,
+                                param.potential_type, param.fluctuation_type, param.potential_magnitude,
+                                param_ffr_input(param);
+                                forcing_rate_scheme=String(params["forcing_rate_scheme"]))
+end
+
 @everywhere function get_warmup_sweeps(params, defaults)
     warmup_raw = get(params, "warmup_sweeps", defaults["warmup_sweeps"])
     if !(warmup_raw isa Number)
@@ -265,6 +352,24 @@ end
     end
     warmup_sweeps = Int(round(Float64(warmup_raw)))
     return max(warmup_sweeps, 0)
+end
+
+@everywhere function to_int_vector(value, key_name::String)
+    if value isa Number
+        return [Int(round(Float64(value)))]
+    elseif value isa AbstractVector
+        return [Int(round(Float64(v))) for v in value]
+    end
+    error("$key_name must be numeric or a list of numerics.")
+end
+
+@everywhere function get_show_times(params, defaults, warmup_sweeps::Int; has_explicit_show_times::Bool=false)
+    raw_show_times = if has_explicit_show_times
+        params["show_times"]
+    else
+        to_int_vector(defaults["show_times"], "show_times") .+ warmup_sweeps
+    end
+    return sort(unique(to_int_vector(raw_show_times, "show_times")))
 end
 
 @everywhere function get_cluster_mode(params, defaults)
@@ -329,11 +434,74 @@ end
     return (b1, b2)
 end
 
+@everywhere function infer_requested_force_count(params, defaults)
+    candidate_lengths = Int[]
+
+    if haskey(params, "forcing_magnitudes")
+        push!(candidate_lengths, length(to_float_vector(params["forcing_magnitudes"], "forcing_magnitudes")))
+    elseif haskey(params, "forcing_magnitude")
+        push!(candidate_lengths, 1)
+    end
+
+    if haskey(params, "ffrs")
+        push!(candidate_lengths, length(to_float_vector(params["ffrs"], "ffrs")))
+    elseif haskey(params, "ffr")
+        push!(candidate_lengths, 1)
+    end
+
+    if haskey(params, "forcing_direction_flags")
+        push!(candidate_lengths, length(to_bool_vector(params["forcing_direction_flags"], "forcing_direction_flags")))
+    end
+
+    return isempty(candidate_lengths) ? 1 : maximum(candidate_lengths)
+end
+
+@everywhere function inferred_bond_indices_list(params, defaults, dim_num::Int, L::Int)
+    requested_force_count = infer_requested_force_count(params, defaults)
+    forcing_type = String(get(params, "forcing_type", defaults["forcing_type"]))
+
+    if requested_force_count == 1
+        return [forcing_bond_indices_from_type(forcing_type, dim_num, L)]
+    end
+
+    has_distance = haskey(params, "distance_between_forces") || haskey(params, "forcing_distance_d")
+    if requested_force_count == 2 && has_distance
+        dim_num == 1 || error("distance_between_forces is currently supported only for dim_num=1.")
+        if haskey(params, "distance_between_forces") && haskey(params, "forcing_distance_d")
+            error("Use either distance_between_forces or forcing_distance_d, not both.")
+        end
+
+        d_raw = haskey(params, "distance_between_forces") ? params["distance_between_forces"] : params["forcing_distance_d"]
+        d_raw isa Number || error("distance_between_forces must be numeric.")
+        d = mod(Int(round(Float64(d_raw))), L)
+
+        left_site = if haskey(params, "forcing_base_site")
+            base_site_raw = params["forcing_base_site"]
+            base_site_raw isa Number || error("forcing_base_site must be numeric.")
+            mod1(Int(round(Float64(base_site_raw))), L)
+        else
+            # Center the midpoint of the two bond midpoints on the middle bond of the system.
+            # Here d is the gap between the right site of the left bond and the left site of the right bond.
+            mod1((L ÷ 2) - fld(d + 1, 2), L)
+        end
+        right_site = mod1(left_site + d + 1, L)
+
+        return [
+            ([left_site], [mod1(left_site + 1, L)]),
+            ([right_site], [mod1(right_site + 1, L)]),
+        ]
+    end
+
+    error("Unable to infer forcing bond locations. Provide forcing_bond_pairs, explicit forcing_types, or for two 1D forces set distance_between_forces.")
+end
+
 @everywhere function build_forcings_and_ffrs(params, defaults, dim_num::Int, L::Int)
     bond_indices_list = Tuple{Vector{Int}, Vector{Int}}[]
 
-    if haskey(params, "forcing_bond_pairs") && haskey(params, "forcing_distance_d")
-        error("Use either forcing_bond_pairs or forcing_distance_d, not both.")
+    has_distance = haskey(params, "distance_between_forces") || haskey(params, "forcing_distance_d")
+
+    if haskey(params, "forcing_bond_pairs") && has_distance
+        error("Use either forcing_bond_pairs or distance_between_forces, not both.")
     elseif haskey(params, "forcing_bond_pairs")
         raw_pairs = params["forcing_bond_pairs"]
         if !(raw_pairs isa AbstractVector)
@@ -342,37 +510,16 @@ end
         for raw_pair in raw_pairs
             push!(bond_indices_list, parse_forcing_bond_pair(raw_pair, dim_num, L))
         end
-    elseif haskey(params, "forcing_distance_d")
-        if dim_num != 1
-            error("forcing_distance_d is currently supported only for dim_num=1.")
-        end
-        d_raw = params["forcing_distance_d"]
-        if !(d_raw isa Number)
-            error("forcing_distance_d must be numeric.")
-        end
-        d = mod(Int(round(Float64(d_raw))), L)
-
-        base_site = if haskey(params, "forcing_base_site")
-            base_site_raw = params["forcing_base_site"]
-            if !(base_site_raw isa Number)
-                error("forcing_base_site must be numeric.")
-            end
-            mod1(Int(round(Float64(base_site_raw))), L)
-        else
-            # Default: center the midpoint between the two forces on the origin bond.
-            # For odd d this can only be approximate due to lattice discretization.
-            mod1((L ÷ 2) - fld(d, 2), L)
-        end
-        second_site = mod1(base_site + d, L)
-
-        push!(bond_indices_list, ([base_site], [mod1(base_site + 1, L)]))
-        push!(bond_indices_list, ([second_site], [mod1(second_site + 1, L)]))
-    else
+    elseif has_distance
+        append!(bond_indices_list, inferred_bond_indices_list(params, defaults, dim_num, L))
+    elseif haskey(params, "forcing_types") || haskey(params, "forcing_type")
         forcing_types_raw = haskey(params, "forcing_types") ? params["forcing_types"] : get(params, "forcing_type", defaults["forcing_type"])
         forcing_types = to_string_vector(forcing_types_raw, "forcing_types")
         for forcing_type in forcing_types
             push!(bond_indices_list, forcing_bond_indices_from_type(forcing_type, dim_num, L))
         end
+    else
+        append!(bond_indices_list, inferred_bond_indices_list(params, defaults, dim_num, L))
     end
 
     n_forces = length(bond_indices_list)
@@ -400,6 +547,24 @@ end
     return dropdims(mean(stacked, dims=stack_dim), dims=stack_dim)
 end
 
+@everywhere function raw_sweep_weight(state)
+    if hasfield(typeof(state), :t)
+        return max(Float64(getfield(state, :t)), 1.0)
+    end
+    if hasfield(typeof(state), :bond_pass_stats)
+        stats = getfield(state, :bond_pass_stats)
+        if haskey(stats, :bond_pass_sample_count) && !isempty(stats[:bond_pass_sample_count])
+            return max(Float64(stats[:bond_pass_sample_count][1]), 1.0)
+        end
+    elseif hasfield(typeof(state), :ρ_matrix_avg_cuts)
+        raw_cuts = getfield(state, :ρ_matrix_avg_cuts)
+        if haskey(raw_cuts, :bond_pass_sample_count) && !isempty(raw_cuts[:bond_pass_sample_count])
+            return max(Float64(raw_cuts[:bond_pass_sample_count][1]), 1.0)
+        end
+    end
+    return 1.0
+end
+
 @everywhere function bond_pass_stats_with_weights(state)
     stats_dict = Dict{Symbol,Vector{Float64}}()
     if hasfield(typeof(state), :bond_pass_stats)
@@ -418,18 +583,8 @@ end
         end
     end
 
-    bond_w = 1.0
-    spatial_w = 1.0
-    if haskey(stats_dict, :bond_pass_sample_count) && !isempty(stats_dict[:bond_pass_sample_count])
-        bond_w = max(stats_dict[:bond_pass_sample_count][1], 1.0)
-    elseif hasfield(typeof(state), :t)
-        bond_w = max(Float64(state.t), 1.0)
-    end
-    if haskey(stats_dict, :bond_pass_spatial_sample_count) && !isempty(stats_dict[:bond_pass_spatial_sample_count])
-        spatial_w = max(stats_dict[:bond_pass_spatial_sample_count][1], 1.0)
-    else
-        spatial_w = bond_w
-    end
+    bond_w = raw_sweep_weight(state)
+    spatial_w = raw_sweep_weight(state)
     return stats_dict, bond_w, spatial_w
 end
 
@@ -461,9 +616,11 @@ end
             continue
         end
         if key == :bond_pass_sample_count
-            averaged[key] = [sum(bond_weights)]
+            sample_total = sum(!isempty(vec) ? Float64(vec[1]) : 0.0 for vec in vectors)
+            averaged[key] = [sample_total > 0 ? sample_total : sum(bond_weights)]
         elseif key == :bond_pass_spatial_sample_count
-            averaged[key] = [sum(spatial_weights)]
+            sample_total = sum(!isempty(vec) ? Float64(vec[1]) : 0.0 for vec in vectors)
+            averaged[key] = [sample_total > 0 ? sample_total : sum(spatial_weights)]
         elseif key == :bond_pass_track_mask
             averaged[key] = Float64.(vectors[1])
         else
@@ -501,6 +658,440 @@ end
         push!(spatial_weights, spatial_w)
     end
     return average_bond_pass_stats_from_prepared(stats_list, bond_weights, spatial_weights)
+end
+
+function finite_mean_nonan(values::AbstractVector{<:Real})
+    vals = [Float64(v) for v in values if isfinite(Float64(v))]
+    return isempty(vals) ? NaN : mean(vals)
+end
+
+function finite_sem_nonan(values::AbstractVector{<:Real})
+    vals = [Float64(v) for v in values if isfinite(Float64(v))]
+    n = length(vals)
+    if n < 2
+        return NaN
+    end
+    return std(vals; corrected=true) / sqrt(n)
+end
+
+function mean_sem_ci95(values::AbstractVector{<:Real})
+    vals = [Float64(v) for v in values if isfinite(Float64(v))]
+    n = length(vals)
+    if n == 0
+        return NaN, NaN, NaN, 0
+    end
+    μ = mean(vals)
+    sem = n >= 2 ? std(vals; corrected=true) / sqrt(n) : NaN
+    ci95 = isfinite(sem) ? 1.96 * sem : NaN
+    return μ, sem, ci95, n
+end
+
+function metric_accumulator_from_values(values::AbstractVector{<:Real}; weight::Real=1.0)
+    vals = Float64.(values)
+    n = zeros(Float64, length(vals))
+    w = zeros(Float64, length(vals))
+    wsq = zeros(Float64, length(vals))
+    sums = zeros(Float64, length(vals))
+    sumsq = zeros(Float64, length(vals))
+    finite_weight = isfinite(Float64(weight)) && Float64(weight) > 0 ? Float64(weight) : 1.0
+    for i in eachindex(vals)
+        v = vals[i]
+        if isfinite(v)
+            n[i] = 1.0
+            w[i] = finite_weight
+            wsq[i] = finite_weight^2
+            sums[i] = finite_weight * v
+            sumsq[i] = finite_weight * v^2
+        end
+    end
+    return (n=n, w=w, wsq=wsq, sum=sums, sumsq=sumsq)
+end
+
+function combine_metric_accumulators(accumulators::Vector{<:NamedTuple})
+    if isempty(accumulators)
+        return (n=Float64[], w=Float64[], wsq=Float64[], sum=Float64[], sumsq=Float64[])
+    end
+    max_len = maximum(length(acc.n) for acc in accumulators)
+    n = zeros(Float64, max_len)
+    w = zeros(Float64, max_len)
+    wsq = zeros(Float64, max_len)
+    sums = zeros(Float64, max_len)
+    sumsq = zeros(Float64, max_len)
+    for acc in accumulators
+        len = length(acc.n)
+        n[1:len] .+= Float64.(acc.n)
+        if hasproperty(acc, :w)
+            w[1:len] .+= Float64.(acc.w)
+        else
+            w[1:len] .+= Float64.(acc.n)
+        end
+        if hasproperty(acc, :wsq)
+            wsq[1:len] .+= Float64.(acc.wsq)
+        else
+            wsq[1:len] .+= Float64.(acc.n)
+        end
+        sums[1:len] .+= Float64.(acc.sum)
+        sumsq[1:len] .+= Float64.(acc.sumsq)
+    end
+    return (n=n, w=w, wsq=wsq, sum=sums, sumsq=sumsq)
+end
+
+function stats_from_metric_accumulator(accum::NamedTuple)
+    len = length(accum.n)
+    means = fill(NaN, len)
+    sems = fill(NaN, len)
+    ci95s = fill(NaN, len)
+    for i in 1:len
+        count = Float64(accum.n[i])
+        weight = hasproperty(accum, :w) ? Float64(accum.w[i]) : count
+        weight_sq = hasproperty(accum, :wsq) ? Float64(accum.wsq[i]) : count
+        if !(isfinite(weight) && weight > 0)
+            continue
+        end
+        sum_val = Float64(accum.sum[i])
+        sumsq_val = Float64(accum.sumsq[i])
+        means[i] = sum_val / weight
+        if isfinite(count) && count >= 2 && isfinite(weight_sq) && weight_sq > 0
+            centered_ss = max(sumsq_val - (sum_val^2 / weight), 0.0)
+            dof = weight - (weight_sq / weight)
+            n_eff = weight^2 / weight_sq
+            if dof > 0 && n_eff > 0
+                sample_var = centered_ss / dof
+                sems[i] = sqrt(sample_var / n_eff)
+            end
+        elseif isfinite(count) && count >= 2
+            centered_ss = max(sumsq_val - (sum_val^2 / weight), 0.0)
+            sample_var = centered_ss / (count - 1.0)
+            sems[i] = sqrt(sample_var / count)
+        end
+        if isfinite(sems[i])
+            ci95s[i] = 1.96 * sems[i]
+        end
+    end
+    return means, sems, ci95s
+end
+
+function emit_metric_accumulator_summary!(
+    metadata::Dict{Symbol,Vector{Float64}},
+    accum::NamedTuple;
+    mean_key::Symbol,
+    sem_key::Symbol,
+    ci95_key::Symbol,
+    n_key::Symbol,
+    weight_key::Union{Nothing,Symbol}=nothing,
+    sum_key::Symbol,
+    sumsq_key::Symbol,
+    weightsq_key::Union{Nothing,Symbol}=nothing,
+)
+    means, sems, ci95s = stats_from_metric_accumulator(accum)
+    metadata[mean_key] = means
+    metadata[sem_key] = sems
+    metadata[ci95_key] = ci95s
+    metadata[n_key] = Float64.(accum.n)
+    if !isnothing(weight_key)
+        metadata[weight_key] = hasproperty(accum, :w) ? Float64.(accum.w) : Float64.(accum.n)
+    end
+    metadata[sum_key] = Float64.(accum.sum)
+    metadata[sumsq_key] = Float64.(accum.sumsq)
+    if !isnothing(weightsq_key)
+        metadata[weightsq_key] = hasproperty(accum, :wsq) ? Float64.(accum.wsq) : Float64.(accum.n)
+    end
+end
+
+function forcing_bonds_1d_from_state(state, L::Int)
+    if !hasfield(typeof(state), :forcing)
+        return Tuple{Int,Int}[], Float64[]
+    end
+    forcing_raw = getfield(state, :forcing)
+    forcings = forcing_raw isa AbstractVector ? forcing_raw : [forcing_raw]
+    bonds = Tuple{Int,Int}[]
+    magnitudes = Float64[]
+    for force in forcings
+        if !hasproperty(force, :bond_indices) || !hasproperty(force, :magnitude)
+            continue
+        end
+        bond_indices = getproperty(force, :bond_indices)
+        if length(bond_indices) < 2
+            continue
+        end
+        if length(bond_indices[1]) == 1 && length(bond_indices[2]) == 1
+            b1 = mod1(Int(round(Float64(bond_indices[1][1]))), L)
+            b2 = mod1(Int(round(Float64(bond_indices[2][1]))), L)
+            push!(bonds, (b1, b2))
+            push!(magnitudes, Float64(getproperty(force, :magnitude)))
+        end
+    end
+    return bonds, magnitudes
+end
+
+function tracked_force_indices_from_stats(stats_dict::Dict{Symbol,Vector{Float64}}, magnitudes::Vector{Float64})
+    n_forces = length(magnitudes)
+    if haskey(stats_dict, :bond_pass_track_mask)
+        mask = stats_dict[:bond_pass_track_mask]
+        if length(mask) == n_forces
+            tracked = [i for i in 1:n_forces if mask[i] > 0.5]
+            if !isempty(tracked)
+                return tracked
+            end
+        end
+    end
+    tracked = [i for i in 1:n_forces if abs(magnitudes[i]) > 0]
+    return isempty(tracked) ? collect(1:n_forces) : tracked
+end
+
+function bond_centered_cut_1d_from_corr(corr_mat::AbstractMatrix{<:Real}, b1::Int, b2::Int; smooth_diagonal::Bool=true)
+    L = size(corr_mat, 2)
+    cut = 0.5 .* (Float64.(corr_mat[b1, :]) .+ Float64.(corr_mat[b2, :]))
+    if smooth_diagonal
+        b1_left = mod1(b1 - 1, L)
+        b1_right = mod1(b1 + 1, L)
+        b2_left = mod1(b2 - 1, L)
+        b2_right = mod1(b2 + 1, L)
+        cut[b1] = 0.5 * (cut[b1_left] + cut[b1_right])
+        cut[b2] = 0.5 * (cut[b2_left] + cut[b2_right])
+    end
+    return cut
+end
+
+function bond_center_value_from_corr(corr_mat::AbstractMatrix{<:Real}, b1::Int, b2::Int; smooth_diagonal::Bool=true)
+    cut = bond_centered_cut_1d_from_corr(corr_mat, b1, b2; smooth_diagonal=smooth_diagonal)
+    return 0.5 * (cut[b1] + cut[b2])
+end
+
+function extract_two_force_replica_metrics(state)
+    if !hasfield(typeof(state), :ρ_avg) || !hasfield(typeof(state), :ρ_matrix_avg_cuts)
+        return nothing
+    end
+    rho_avg = Float64.(getfield(state, :ρ_avg))
+    ndims(rho_avg) == 1 || return nothing
+    L = length(rho_avg)
+
+    corr_cuts = getfield(state, :ρ_matrix_avg_cuts)
+    if !(corr_cuts isa AbstractDict) || !haskey(corr_cuts, :full)
+        return nothing
+    end
+    full_corr = corr_cuts[:full]
+    if ndims(full_corr) != 2 || size(full_corr, 1) != L || size(full_corr, 2) != L
+        return nothing
+    end
+
+    bonds, magnitudes = forcing_bonds_1d_from_state(state, L)
+    if length(bonds) < 2
+        return nothing
+    end
+
+    stats_dict, _, _ = bond_pass_stats_with_weights(state)
+    tracked = tracked_force_indices_from_stats(stats_dict, magnitudes)
+    if isempty(tracked)
+        tracked = collect(1:length(bonds))
+    end
+
+    corr_mat = Float64.(full_corr) .- (rho_avg * transpose(rho_avg))
+    var_vals_smoothed = Float64[]
+    var_vals_raw = Float64[]
+    for idx in tracked
+        if idx <= length(bonds)
+            b1, b2 = bonds[idx]
+            push!(var_vals_smoothed, bond_center_value_from_corr(corr_mat, b1, b2; smooth_diagonal=true))
+            push!(var_vals_raw, bond_center_value_from_corr(corr_mat, b1, b2; smooth_diagonal=false))
+        else
+            push!(var_vals_smoothed, NaN)
+            push!(var_vals_raw, NaN)
+        end
+    end
+
+    j2_all = haskey(stats_dict, :bond_pass_total_sq_avg) ? Float64.(stats_dict[:bond_pass_total_sq_avg]) : Float64[]
+    j2_vals = [idx <= length(j2_all) ? j2_all[idx] : NaN for idx in tracked]
+    return (
+        var_vals_smoothed=var_vals_smoothed,
+        var_vals_raw=var_vals_raw,
+        j2_vals=j2_vals,
+    )
+end
+
+function has_metric_accumulator_stats(stats::AbstractDict, sum_key::Symbol, sumsq_key::Symbol, n_key::Symbol)
+    return haskey(stats, sum_key) && haskey(stats, sumsq_key) && haskey(stats, n_key)
+end
+
+function metric_accumulator_from_stats_dict(stats::AbstractDict, sum_key::Symbol, sumsq_key::Symbol, n_key::Symbol;
+                                            weight_key::Union{Nothing,Symbol}=nothing,
+                                            weightsq_key::Union{Nothing,Symbol}=nothing)
+    n_vals = Float64.(stats[n_key])
+    w_vals = if !isnothing(weight_key) && haskey(stats, weight_key)
+        Float64.(stats[weight_key])
+    else
+        copy(n_vals)
+    end
+    wsq_vals = if !isnothing(weightsq_key) && haskey(stats, weightsq_key)
+        Float64.(stats[weightsq_key])
+    else
+        copy(n_vals)
+    end
+    return (
+        n=n_vals,
+        w=w_vals,
+        wsq=wsq_vals,
+        sum=Float64.(stats[sum_key]),
+        sumsq=Float64.(stats[sumsq_key]),
+    )
+end
+
+function two_force_replica_ci_metadata_from_accumulators(accum_bundles::Vector{<:NamedTuple})
+    if isempty(accum_bundles)
+        return Dict{Symbol,Vector{Float64}}()
+    end
+
+    metadata = Dict{Symbol,Vector{Float64}}()
+    metadata[AGG_TWO_FORCE_REPLICA_COUNT_KEY] = [sum(Float64(bundle.replica_count) for bundle in accum_bundles)]
+
+    emit_metric_accumulator_summary!(
+        metadata,
+        combine_metric_accumulators([bundle.var_slot_accum_smoothed for bundle in accum_bundles]);
+        mean_key=AGG_TWO_FORCE_VAR_SLOT_MEAN_KEY,
+        sem_key=AGG_TWO_FORCE_VAR_SLOT_SEM_KEY,
+        ci95_key=AGG_TWO_FORCE_VAR_SLOT_CI95_KEY,
+        n_key=AGG_TWO_FORCE_VAR_SLOT_N_KEY,
+        weight_key=AGG_TWO_FORCE_VAR_SLOT_WEIGHT_KEY,
+        sum_key=AGG_TWO_FORCE_VAR_SLOT_SUM_KEY,
+        sumsq_key=AGG_TWO_FORCE_VAR_SLOT_SUMSQ_KEY,
+        weightsq_key=AGG_TWO_FORCE_VAR_SLOT_WEIGHTSQ_KEY,
+    )
+    emit_metric_accumulator_summary!(
+        metadata,
+        combine_metric_accumulators([bundle.var_mean_accum_smoothed for bundle in accum_bundles]);
+        mean_key=AGG_TWO_FORCE_VAR_MEAN_KEY,
+        sem_key=AGG_TWO_FORCE_VAR_MEAN_SEM_KEY,
+        ci95_key=AGG_TWO_FORCE_VAR_MEAN_CI95_KEY,
+        n_key=AGG_TWO_FORCE_VAR_MEAN_N_KEY,
+        weight_key=AGG_TWO_FORCE_VAR_MEAN_WEIGHT_KEY,
+        sum_key=AGG_TWO_FORCE_VAR_MEAN_SUM_KEY,
+        sumsq_key=AGG_TWO_FORCE_VAR_MEAN_SUMSQ_KEY,
+        weightsq_key=AGG_TWO_FORCE_VAR_MEAN_WEIGHTSQ_KEY,
+    )
+    emit_metric_accumulator_summary!(
+        metadata,
+        combine_metric_accumulators([bundle.var_slot_accum_raw for bundle in accum_bundles]);
+        mean_key=AGG_TWO_FORCE_VAR_RAW_SLOT_MEAN_KEY,
+        sem_key=AGG_TWO_FORCE_VAR_RAW_SLOT_SEM_KEY,
+        ci95_key=AGG_TWO_FORCE_VAR_RAW_SLOT_CI95_KEY,
+        n_key=AGG_TWO_FORCE_VAR_RAW_SLOT_N_KEY,
+        weight_key=AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHT_KEY,
+        sum_key=AGG_TWO_FORCE_VAR_RAW_SLOT_SUM_KEY,
+        sumsq_key=AGG_TWO_FORCE_VAR_RAW_SLOT_SUMSQ_KEY,
+        weightsq_key=AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHTSQ_KEY,
+    )
+    emit_metric_accumulator_summary!(
+        metadata,
+        combine_metric_accumulators([bundle.var_mean_accum_raw for bundle in accum_bundles]);
+        mean_key=AGG_TWO_FORCE_VAR_RAW_MEAN_KEY,
+        sem_key=AGG_TWO_FORCE_VAR_RAW_MEAN_SEM_KEY,
+        ci95_key=AGG_TWO_FORCE_VAR_RAW_MEAN_CI95_KEY,
+        n_key=AGG_TWO_FORCE_VAR_RAW_MEAN_N_KEY,
+        weight_key=AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHT_KEY,
+        sum_key=AGG_TWO_FORCE_VAR_RAW_MEAN_SUM_KEY,
+        sumsq_key=AGG_TWO_FORCE_VAR_RAW_MEAN_SUMSQ_KEY,
+        weightsq_key=AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHTSQ_KEY,
+    )
+    emit_metric_accumulator_summary!(
+        metadata,
+        combine_metric_accumulators([bundle.j2_slot_accum for bundle in accum_bundles]);
+        mean_key=AGG_TWO_FORCE_J2_SLOT_MEAN_KEY,
+        sem_key=AGG_TWO_FORCE_J2_SLOT_SEM_KEY,
+        ci95_key=AGG_TWO_FORCE_J2_SLOT_CI95_KEY,
+        n_key=AGG_TWO_FORCE_J2_SLOT_N_KEY,
+        weight_key=AGG_TWO_FORCE_J2_SLOT_WEIGHT_KEY,
+        sum_key=AGG_TWO_FORCE_J2_SLOT_SUM_KEY,
+        sumsq_key=AGG_TWO_FORCE_J2_SLOT_SUMSQ_KEY,
+        weightsq_key=AGG_TWO_FORCE_J2_SLOT_WEIGHTSQ_KEY,
+    )
+    emit_metric_accumulator_summary!(
+        metadata,
+        combine_metric_accumulators([bundle.j2_mean_accum for bundle in accum_bundles]);
+        mean_key=AGG_TWO_FORCE_J2_MEAN_KEY,
+        sem_key=AGG_TWO_FORCE_J2_MEAN_SEM_KEY,
+        ci95_key=AGG_TWO_FORCE_J2_MEAN_CI95_KEY,
+        n_key=AGG_TWO_FORCE_J2_MEAN_N_KEY,
+        weight_key=AGG_TWO_FORCE_J2_MEAN_WEIGHT_KEY,
+        sum_key=AGG_TWO_FORCE_J2_MEAN_SUM_KEY,
+        sumsq_key=AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY,
+        weightsq_key=AGG_TWO_FORCE_J2_MEAN_WEIGHTSQ_KEY,
+    )
+    return metadata
+end
+
+function two_force_metric_accumulator_bundle(state)
+    metrics = extract_two_force_replica_metrics(state)
+    isnothing(metrics) && return nothing
+
+    stats_dict, _, _ = bond_pass_stats_with_weights(state)
+    state_weight = raw_sweep_weight(state)
+    replica_count = if haskey(stats_dict, AGG_TWO_FORCE_REPLICA_COUNT_KEY) && !isempty(stats_dict[AGG_TWO_FORCE_REPLICA_COUNT_KEY])
+        max(Float64(stats_dict[AGG_TWO_FORCE_REPLICA_COUNT_KEY][1]), 1.0)
+    else
+        1.0
+    end
+
+    var_slot_accum_smoothed = has_metric_accumulator_stats(stats_dict, AGG_TWO_FORCE_VAR_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_SLOT_N_KEY) ?
+        metric_accumulator_from_stats_dict(stats_dict, AGG_TWO_FORCE_VAR_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_SLOT_N_KEY;
+                                           weight_key=AGG_TWO_FORCE_VAR_SLOT_WEIGHT_KEY,
+                                           weightsq_key=AGG_TWO_FORCE_VAR_SLOT_WEIGHTSQ_KEY) :
+        metric_accumulator_from_values(metrics.var_vals_smoothed; weight=state_weight)
+    var_mean_accum_smoothed = has_metric_accumulator_stats(stats_dict, AGG_TWO_FORCE_VAR_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_MEAN_N_KEY) ?
+        metric_accumulator_from_stats_dict(stats_dict, AGG_TWO_FORCE_VAR_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_MEAN_N_KEY;
+                                           weight_key=AGG_TWO_FORCE_VAR_MEAN_WEIGHT_KEY,
+                                           weightsq_key=AGG_TWO_FORCE_VAR_MEAN_WEIGHTSQ_KEY) :
+        metric_accumulator_from_values([finite_mean_nonan(metrics.var_vals_smoothed)]; weight=state_weight)
+    var_slot_accum_raw = has_metric_accumulator_stats(stats_dict, AGG_TWO_FORCE_VAR_RAW_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_N_KEY) ?
+        metric_accumulator_from_stats_dict(stats_dict, AGG_TWO_FORCE_VAR_RAW_SLOT_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_SLOT_N_KEY;
+                                           weight_key=AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHT_KEY,
+                                           weightsq_key=AGG_TWO_FORCE_VAR_RAW_SLOT_WEIGHTSQ_KEY) :
+        metric_accumulator_from_values(metrics.var_vals_raw; weight=state_weight)
+    var_mean_accum_raw = has_metric_accumulator_stats(stats_dict, AGG_TWO_FORCE_VAR_RAW_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_N_KEY) ?
+        metric_accumulator_from_stats_dict(stats_dict, AGG_TWO_FORCE_VAR_RAW_MEAN_SUM_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_VAR_RAW_MEAN_N_KEY;
+                                           weight_key=AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHT_KEY,
+                                           weightsq_key=AGG_TWO_FORCE_VAR_RAW_MEAN_WEIGHTSQ_KEY) :
+        metric_accumulator_from_values([finite_mean_nonan(metrics.var_vals_raw)]; weight=state_weight)
+    j2_slot_accum = has_metric_accumulator_stats(stats_dict, AGG_TWO_FORCE_J2_SLOT_SUM_KEY, AGG_TWO_FORCE_J2_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_J2_SLOT_N_KEY) ?
+        metric_accumulator_from_stats_dict(stats_dict, AGG_TWO_FORCE_J2_SLOT_SUM_KEY, AGG_TWO_FORCE_J2_SLOT_SUMSQ_KEY, AGG_TWO_FORCE_J2_SLOT_N_KEY;
+                                           weight_key=AGG_TWO_FORCE_J2_SLOT_WEIGHT_KEY,
+                                           weightsq_key=AGG_TWO_FORCE_J2_SLOT_WEIGHTSQ_KEY) :
+        metric_accumulator_from_values(metrics.j2_vals; weight=state_weight)
+    j2_mean_accum = has_metric_accumulator_stats(stats_dict, AGG_TWO_FORCE_J2_MEAN_SUM_KEY, AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_J2_MEAN_N_KEY) ?
+        metric_accumulator_from_stats_dict(stats_dict, AGG_TWO_FORCE_J2_MEAN_SUM_KEY, AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY, AGG_TWO_FORCE_J2_MEAN_N_KEY;
+                                           weight_key=AGG_TWO_FORCE_J2_MEAN_WEIGHT_KEY,
+                                           weightsq_key=AGG_TWO_FORCE_J2_MEAN_WEIGHTSQ_KEY) :
+        metric_accumulator_from_values([finite_mean_nonan(metrics.j2_vals)]; weight=state_weight)
+
+    return (
+        replica_count=replica_count,
+        var_slot_accum_smoothed=var_slot_accum_smoothed,
+        var_mean_accum_smoothed=var_mean_accum_smoothed,
+        var_slot_accum_raw=var_slot_accum_raw,
+        var_mean_accum_raw=var_mean_accum_raw,
+        j2_slot_accum=j2_slot_accum,
+        j2_mean_accum=j2_mean_accum,
+    )
+end
+
+function two_force_replica_ci_metadata(metric_rows::Vector{<:NamedTuple})
+    if isempty(metric_rows)
+        return Dict{Symbol,Vector{Float64}}()
+    end
+
+    row_weight(row) = hasproperty(row, :weight) ? max(Float64(getproperty(row, :weight)), 1.0) : 1.0
+    accum_bundles = [
+        (
+            replica_count=1.0,
+            var_slot_accum_smoothed=metric_accumulator_from_values(row.var_vals_smoothed; weight=row_weight(row)),
+            var_mean_accum_smoothed=metric_accumulator_from_values([finite_mean_nonan(row.var_vals_smoothed)]; weight=row_weight(row)),
+            var_slot_accum_raw=metric_accumulator_from_values(row.var_vals_raw; weight=row_weight(row)),
+            var_mean_accum_raw=metric_accumulator_from_values([finite_mean_nonan(row.var_vals_raw)]; weight=row_weight(row)),
+            j2_slot_accum=metric_accumulator_from_values(row.j2_vals; weight=row_weight(row)),
+            j2_mean_accum=metric_accumulator_from_values([finite_mean_nonan(row.j2_vals)]; weight=row_weight(row)),
+        )
+        for row in metric_rows
+    ]
+    return two_force_replica_ci_metadata_from_accumulators(accum_bundles)
 end
 
 
@@ -656,7 +1247,7 @@ function aggregate_and_save_states(states::Vector, result_params::Vector, args; 
         error("No states were provided for aggregation.")
     end
     first_state = states[1]
-    state_weights = [max(Float64(averaged_sample_count(state)), 1.0) for state in states]
+    state_weights = [raw_sweep_weight(state) for state in states]
     total_weight = sum(state_weights)
     if total_weight <= 0
         error("Invalid aggregation weights: total effective sample weight is non-positive.")
@@ -683,6 +1274,20 @@ function aggregate_and_save_states(states::Vector, result_params::Vector, args; 
 
     total_t = Int(round(total_weight))
     avg_bond_pass_stats = average_bond_pass_stats(states)
+    replica_accum_bundles = NamedTuple[]
+    for state in states
+        norm_state = normalize_state_for_aggregation(state)
+        accum_bundle = two_force_metric_accumulator_bundle(norm_state)
+        if !isnothing(accum_bundle)
+            push!(replica_accum_bundles, accum_bundle)
+        end
+    end
+    if !isempty(replica_accum_bundles)
+        metadata = two_force_replica_ci_metadata_from_accumulators(replica_accum_bundles)
+        for (key, values) in metadata
+            avg_bond_pass_stats[key] = values
+        end
+    end
     dummy_state = FPDiffusive.setDummyState(first_state, avg_dists, mat_cuts_averaged, total_t, avg_bond_pass_stats)
 
     dummy_state_save_dir = save_dir_from_args(args)
@@ -721,12 +1326,13 @@ function aggregate_state_list_and_save(args; run_description::String="")
     stats_list = Dict{Symbol,Vector{Float64}}[]
     bond_weights = Float64[]
     spatial_weights = Float64[]
+    replica_accum_bundles = NamedTuple[]
 
     for (idx, state_path) in enumerate(state_files)
         println("Loading state for aggregation ($idx/$(length(state_files))): $state_path")
         @load state_path state param potential
         norm_state = normalize_state_for_aggregation(state)
-        state_weight = max(Float64(averaged_sample_count(norm_state)), 1.0)
+        state_weight = raw_sweep_weight(norm_state)
 
         if idx == 1
             first_state = norm_state
@@ -765,6 +1371,10 @@ function aggregate_state_list_and_save(args; run_description::String="")
         push!(stats_list, stats_dict)
         push!(bond_weights, bond_w)
         push!(spatial_weights, spatial_w)
+        accum_bundle = two_force_metric_accumulator_bundle(norm_state)
+        if !isnothing(accum_bundle)
+            push!(replica_accum_bundles, accum_bundle)
+        end
         total_weight += state_weight
 
         if idx % 5 == 0
@@ -787,6 +1397,12 @@ function aggregate_state_list_and_save(args; run_description::String="")
 
     total_t = Int(round(total_weight))
     avg_bond_pass_stats = average_bond_pass_stats_from_prepared(stats_list, bond_weights, spatial_weights)
+    if !isempty(replica_accum_bundles)
+        metadata = two_force_replica_ci_metadata_from_accumulators(replica_accum_bundles)
+        for (key, values) in metadata
+            avg_bond_pass_stats[key] = values
+        end
+    end
     dummy_state = FPDiffusive.setDummyState(first_state, avg_dists, mat_cuts_averaged, total_t, avg_bond_pass_stats)
 
     dummy_state_save_dir = save_dir_from_args(args)
@@ -833,6 +1449,7 @@ end
     ρ₀              = get(params, "ρ₀", defaults["ρ₀"])
     T                  = get(params, "T", defaults["T"])
     γ                 = get(params, "γ", defaults["γ"])
+    forcing_rate_scheme = String(get(params, "forcing_rate_scheme", defaults["forcing_rate_scheme"]))
     bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
 
     forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
@@ -843,7 +1460,8 @@ end
     # ρ₀ = N / (L^dim_num)
 
     # Initialize simulation parameters and state.
-    param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
+    param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
+                                 forcing_rate_scheme=forcing_rate_scheme)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
     state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
@@ -876,6 +1494,7 @@ function main()
     num_runs = get(args, "num_runs", 1)
     estimate_only = get(args, "estimate_only", false)
     estimate_sample_size = max(get(args, "estimate_sample_size", 100), 1)
+    explicit_save_tag = explicit_save_tag_from_args(args)
     seeds = rand(1:2^30,num_runs)
     println("Running $num_runs independent simulations in parallel.")
     if estimate_only && num_runs != 1
@@ -913,6 +1532,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
+            param = maybe_override_forcing_rate_scheme(param, args, params)
             defaults = get_default_params()
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
                 n_sweeps = args["continue_sweeps"]
@@ -928,6 +1548,12 @@ function main()
             results = pmap(seed -> run_one_simulation_from_state(param, state, seed, n_sweeps; warmup_sweeps=warmup_sweeps, cluster_mode=cluster_mode, description=run_description), seeds)
         elseif using_initial_state
             defaults = get_default_params()
+            if haskey(args, "config") && !isnothing(args["config"])
+                params = YAML.load_file(args["config"])
+            else
+                params = get_default_params()
+            end
+            initial_param = maybe_override_forcing_rate_scheme(initial_param, args, params)
             n_sweeps = n_sweeps_from_args(args)
             warmup_sweeps = warmup_sweeps_from_args(args)
             cluster_mode = cluster_mode_from_args(args)
@@ -980,6 +1606,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
+            param = maybe_override_forcing_rate_scheme(param, args, params)
             ic = get(params, "ic", get_default_params()["ic"])
             defaults = get_default_params()
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
@@ -1005,6 +1632,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
+            param = maybe_override_forcing_rate_scheme(param, args, params)
             n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
             warmup_sweeps = get_warmup_sweeps(params, defaults)
             cluster_mode = get_cluster_mode(params, defaults)
@@ -1031,6 +1659,7 @@ function main()
             ρ₀                = get(params, "ρ₀", defaults["ρ₀"])
             T                  = get(params, "T", defaults["T"])
             γ                 = get(params, "γ", defaults["γ"])
+            forcing_rate_scheme = String(get(params, "forcing_rate_scheme", defaults["forcing_rate_scheme"]))
             bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
             warmup_sweeps      = get_warmup_sweeps(params, defaults)
@@ -1045,7 +1674,8 @@ function main()
             dims = ntuple(i -> L, dim_num)
             # ρ₀ = N / prod(dims)
             
-            param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
+            param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
+                                         forcing_rate_scheme=forcing_rate_scheme)
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
@@ -1057,7 +1687,8 @@ function main()
         end
         
         defaults = get_default_params()
-        show_times = get(params, "show_times", defaults["show_times"])
+        has_explicit_show_times = haskey(args, "config") && !isnothing(args["config"]) && haskey(params, "show_times")
+        show_times = get_show_times(params, defaults, warmup_sweeps; has_explicit_show_times=has_explicit_show_times)
         save_times = get(params, "save_times", defaults["save_times"])
         save_dir = get(params, "save_dir", defaults["save_dir"])
         progress_file = String(get(params, "progress_file", ""))
@@ -1090,7 +1721,11 @@ function main()
             end
             println("\nSaving current state...")
             try
-                SaveUtils.save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state, description=description)
+                SaveUtils.save_state(state, param, save_dir;
+                                     tag=explicit_save_tag,
+                                     ic=ic,
+                                     relaxed_ic=using_initial_state,
+                                     description=description)
                 println("State saved successfully")
             catch e
                 println("Error saving state: ", e)
@@ -1126,7 +1761,11 @@ function main()
             end
         end
         
-        filename = save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state, description=description)
+        filename = save_state(state, param, save_dir;
+                              tag=explicit_save_tag,
+                              ic=ic,
+                              relaxed_ic=using_initial_state,
+                              description=description)
         final_state_saved[] = true
         println("Final state saved to: ", filename)
    end

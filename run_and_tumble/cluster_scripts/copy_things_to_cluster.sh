@@ -70,9 +70,64 @@ to_bool() {
     [[ "${raw}" == "1" || "${raw}" == "true" || "${raw}" == "yes" || "${raw}" == "on" ]]
 }
 
-copy_items=(
+ssh_control_dir=""
+ssh_control_path=""
+
+cleanup_ssh_master() {
+    if [[ -n "${ssh_control_path}" ]]; then
+        ssh -o ControlPath="${ssh_control_path}" -O exit "${remote_user}@${remote_host}" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${ssh_control_dir}" && -d "${ssh_control_dir}" ]]; then
+        rm -rf "${ssh_control_dir}"
+    fi
+}
+
+open_ssh_master() {
+    ssh_control_dir="$(mktemp -d /tmp/copy_to_cluster_XXXXXX)"
+    ssh_control_path="${ssh_control_dir}/control.sock"
+    ssh -MNf \
+        -o ControlMaster=yes \
+        -o ControlPersist=600 \
+        -o ControlPath="${ssh_control_path}" \
+        "${remote_user}@${remote_host}"
+}
+
+ssh_with_master() {
+    ssh \
+        -o ControlMaster=auto \
+        -o ControlPersist=600 \
+        -o ControlPath="${ssh_control_path}" \
+        "$@"
+}
+
+scp_with_master() {
+    scp \
+        -o ControlMaster=auto \
+        -o ControlPersist=600 \
+        -o ControlPath="${ssh_control_path}" \
+        "$@"
+}
+
+copy_group() {
+    local destination="$1"
+    shift
+    local -a files=("$@")
+    if (( ${#files[@]} == 0 )); then
+        return 0
+    fi
+    scp_with_master "${files[@]}" "${remote_user}@${remote_host}:${destination}/"
+}
+
+shopt -s nullglob
+trap cleanup_ssh_master EXIT
+
+root_jl_files=(
     "${REPO_ROOT}"/*.jl
+)
+top_level_yaml_files=(
     "${REPO_ROOT}"/configuration_files/*.yaml
+)
+cluster_script_files=(
     "${REPO_ROOT}"/cluster_scripts/*.sh
 )
 
@@ -86,16 +141,30 @@ if to_bool "${include_d_sweep_configs}"; then
         exit 1
     fi
     "${GENERATE_SCRIPT}" >/dev/null
-    copy_items+=(
+    d_sweep_warmup_files=(
         "${REPO_ROOT}"/configuration_files/two_force_d_sweep/warmup/*.yaml
+    )
+    d_sweep_production_files=(
         "${REPO_ROOT}"/configuration_files/two_force_d_sweep/production/*.yaml
     )
 fi
 
-target="${remote_user}@${remote_host}:${remote_dir}/"
-echo "Copying files to ${target}"
+echo "Copying files to ${remote_user}@${remote_host}:${remote_dir}/"
 echo "Include d-sweep configs: ${include_d_sweep_configs}"
-scp "${copy_items[@]}" "${target}"
+open_ssh_master
+ssh_with_master "${remote_user}@${remote_host}" \
+    "mkdir -p '${remote_dir}' '${remote_dir}/configuration_files' '${remote_dir}/cluster_scripts'"
+
+copy_group "${remote_dir}" "${root_jl_files[@]}"
+copy_group "${remote_dir}/configuration_files" "${top_level_yaml_files[@]}"
+copy_group "${remote_dir}/cluster_scripts" "${cluster_script_files[@]}"
+
+if to_bool "${include_d_sweep_configs}"; then
+    ssh_with_master "${remote_user}@${remote_host}" \
+        "mkdir -p '${remote_dir}/configuration_files/two_force_d_sweep/warmup' '${remote_dir}/configuration_files/two_force_d_sweep/production'"
+    copy_group "${remote_dir}/configuration_files/two_force_d_sweep/warmup" "${d_sweep_warmup_files[@]}"
+    copy_group "${remote_dir}/configuration_files/two_force_d_sweep/production" "${d_sweep_production_files[@]}"
+fi
 # scp match_and_recover_files.sh nativmr@tech-ui02.hep.technion.ac.il:/storage/ph_kafri/nativmr/run_and_tumble/
 
 # scp -rp dummy_states/passive_case/to_recover/* nativmr@tech-ui02.hep.technion.ac.il:/storage/ph_kafri/nativmr/run_and_tumble/

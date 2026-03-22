@@ -3,6 +3,11 @@
 using Distributed
 using Printf
 using Dates
+if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
+    # Under WSLg, Qt/GR can pick Wayland and then fail EGL initialization.
+    # Force the stable XWayland path before Plots/GR initialize.
+    ENV["QT_QPA_PLATFORM"] = "xcb"
+end
 using Plots
 using Random
 using FFTW
@@ -26,7 +31,11 @@ using .SaveUtils
 
 # Ensure all worker processes load the same files and modules.
 @everywhere begin
-    using Printf, Dates, Plots, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
+    using Printf, Dates, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
+    if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
+        ENV["QT_QPA_PLATFORM"] = "xcb"
+    end
+    using Plots
     include("potentials.jl")
     include("modules_run_and_tumble.jl")
     using .FP
@@ -164,6 +173,7 @@ end
         "forcing_magnitude" => 1.0,
         "forcing_magnitudes" => [1.0],
         "forcing_direction_flags" => [true],
+        "forcing_rate_scheme" => "legacy_penalty",
         "bond_pass_count_mode" => "nonzero_magnitude",
         "ic" => "random",
         "int_type" => "Int32",
@@ -225,6 +235,26 @@ end
         return fill(values[1], n)
     end
     error("$key_name must have length 1 or length $n.")
+end
+
+@everywhere function param_ffr_input(param)
+    if hasfield(typeof(param), :ffr)
+        return getfield(param, :ffr)
+    elseif hasfield(typeof(param), :ffrs)
+        return getfield(param, :ffrs)
+    end
+    return 0.0
+end
+
+@everywhere function maybe_override_forcing_rate_scheme(param, args, params)
+    has_explicit_config = haskey(args, "config") && !isnothing(args["config"]) && haskey(params, "forcing_rate_scheme")
+    if !has_explicit_config
+        return param
+    end
+    return FP.setParam(param.α, param.γ, param.ϵ, param.dims, param.ρ₀, param.D,
+                       param.potential_type, param.fluctuation_type, param.potential_magnitude,
+                       param_ffr_input(param);
+                       forcing_rate_scheme=String(params["forcing_rate_scheme"]))
 end
 
 @everywhere function forcing_bond_indices_from_type(forcing_type::AbstractString, dim_num::Int, L::Int)
@@ -434,6 +464,7 @@ end
     T                  = get(params, "T", defaults["T"])
     γ                 = get(params, "γ", defaults["γ"])
     ϵ                  = get(params, "ϵ", defaults["ϵ"])
+    forcing_rate_scheme = String(get(params, "forcing_rate_scheme", defaults["forcing_rate_scheme"]))
     bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
 
     forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
@@ -444,7 +475,8 @@ end
     # ρ₀ = N / (L^dim_num)
 
     # Initialize simulation parameters and state.
-    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
+    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
+                        forcing_rate_scheme=forcing_rate_scheme)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
     state = FP.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
@@ -491,6 +523,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
+            param = maybe_override_forcing_rate_scheme(param, args, params)
             defaults = get_default_params()
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
                 n_sweeps = args["continue_sweeps"]
@@ -502,6 +535,12 @@ function main()
             results = pmap(seed -> run_one_simulation_from_state(param,state,seed,n_sweeps), seeds)
         elseif using_initial_state
             defaults = get_default_params()
+            if haskey(args, "config") && !isnothing(args["config"])
+                params = YAML.load_file(args["config"])
+            else
+                params = get_default_params()
+            end
+            initial_param = maybe_override_forcing_rate_scheme(initial_param, args, params)
             n_sweeps = n_sweeps_from_args(args)
             results = pmap(seed -> begin
                     run_state = deepcopy(initial_state)
@@ -592,6 +631,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
+            param = maybe_override_forcing_rate_scheme(param, args, params)
             ic = get(params, "ic", get_default_params()["ic"])
             defaults = get_default_params()
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
@@ -614,6 +654,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
+            param = maybe_override_forcing_rate_scheme(param, args, params)
             n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
             seed = rand(1:2^30)
             rng = MersenneTwister(seed)
@@ -639,6 +680,7 @@ function main()
             T                  = get(params, "T", defaults["T"])
             γ                 = get(params, "γ", defaults["γ"])
             ϵ                  = get(params, "ϵ", defaults["ϵ"])
+            forcing_rate_scheme = String(get(params, "forcing_rate_scheme", defaults["forcing_rate_scheme"]))
             bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
             forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
@@ -650,7 +692,8 @@ function main()
             dims = ntuple(i -> L, dim_num)
             # ρ₀ = N / prod(dims)
             
-            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs)
+            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
+                                forcing_rate_scheme=forcing_rate_scheme)
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
