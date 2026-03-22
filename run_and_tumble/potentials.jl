@@ -1,8 +1,8 @@
 module Potentials
     import Random: AbstractRNG
     using Plots
-    export AbstractPotential ,Potential, MultiPotential, IndependentFluctuatingPoints, ProfileSwitchPotential
-    export potential_args, choose_potential, potential_update!
+    export AbstractPotential ,Potential, MultiPotential, IndependentFluctuatingPoints, ProfileSwitchPotential, BondForce
+    export potential_args, choose_potential, potential_update!, bondforce_update!
 
     # Abstract type for polymorphism
     abstract type AbstractPotential end
@@ -29,9 +29,16 @@ module Potentials
     mutable struct ProfileSwitchPotential <: AbstractPotential
         potentials::Vector{Potential}
         probabilities::Vector{Float64}
-        V::Vector{Float64}
+        V::AbstractArray{Float64}
         current::Int
     end
+
+    mutable struct BondForce
+        bond_indices::Tuple{Array{Int},Array{Int}}
+        direction_flag::Bool # True if the force is directed (1->2), False if it is directed away
+        magnitude::Float64
+    end
+
     # Utility: weighted sampling without dependencies
     function weighted_sample(rng::AbstractRNG, weights::Vector{Float64})
         total = sum(weights)
@@ -61,6 +68,10 @@ module Potentials
         probabilities = probs === nothing ? fill(1/n, n) : probs
         idx = weighted_sample(rng, probabilities)
         return ProfileSwitchPotential(pots, probabilities, deepcopy(pots[idx].V),idx)
+    end
+
+    function setBondForce(bond_indices, direction_flag, magnitude)
+        return BondForce(bond_indices, direction_flag, magnitude)
     end
 
     function potential_update!(p::Potential)
@@ -102,7 +113,21 @@ module Potentials
     function potential_update!(p::ProfileSwitchPotential, rng::AbstractRNG)
         # Randomly switch to a new profile
         p.current = weighted_sample(rng, p.probabilities)
-        p.V = deepcopy(p.potentials[p.current].V)
+        # p.V = deepcopy(p.potentials[p.current].V)
+        p.V = p.potentials[p.current].V
+    end
+
+    function bondforce_update!(bf::BondForce)
+        bf.direction_flag = !bf.direction_flag
+    end
+
+    function choose_bond_force(forcing_type, vertex1, vertex2, magnitude)
+        bond_indices = (vertex1, vertex2)
+        if forcing_type == "none"
+            return setBondForce(bond_indices, true, 0.0)
+        elseif forcing_type == "regular"
+            return setBondForce(bond_indices, true, magnitude)
+        end
     end
 
     # function potential_update!(p::IndependentFluctuatingPointsGaussian, rng::AbstractRNG)
@@ -138,7 +163,7 @@ module Potentials
         end
         V = zeros(Float64, dims)
         L = dims[1]
-        middle = Int(L÷2)
+        middle = Int(L÷2)+1
         v_string = v_args["type"]
         magnitude = get(v_args,"magnitude",1.0)
         dim = length(dims)
@@ -192,7 +217,6 @@ module Potentials
                 V[abs.(x.-shift) .> cut_at] .= 0
                 V[abs.(x.-shift) .<= cut_at] .= linear_potential(m, b, x[abs.(x.-shift) .<= cut_at])
                 magnitude = m*L+b
-                print(V)
             elseif v_string == "harmonic"
                 k = v_args["k"]
                 m_sign = v_args["m_sign"]
@@ -212,7 +236,18 @@ module Potentials
             elseif v_string == "random"
                 magnitude= v_args["scale"]
                 V = magnitude*rand(rng,dims...)
-
+            elseif v_string == "step_potential"
+                step = v_args["step"]
+                V[1:step] .= magnitude/2
+                V[step+1:end] .= -magnitude/2
+            elseif v_string == "step_potential_left"
+                step = v_args["step"]
+                V[1:step] .= magnitude
+                V[step+1:end] .= 0
+            elseif v_string == "step_potential_left"
+                step = v_args["step"]
+                V[1:step] .= 0
+                V[step+1:end] .= magnitude
             end
 
             if plot_flag
@@ -285,7 +320,7 @@ module Potentials
                 for i in axes(V, 1)
                     for j in axes(V, 2)
                         # Compute the condition for the mask
-                        if (x[i] - dims[1] / 2)^2 + (y[j] - dims[2] / 2)^2 <= 4
+                        if (x[i] - dims[1] / 2)^2 + (y[j] - dims[2] / 2)^2 <= 2
                             V[i, j] = -magnitude
                         end
                     end
@@ -309,6 +344,94 @@ module Potentials
                 V[middle-1,middle] = -magnitude
                 V[middle,middle+1] = -magnitude
                 V[middle,middle-1] = magnitude
+
+            elseif v_string == "escape_right" 
+                V[middle+1,middle] = -magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+            elseif v_string =="escape_left"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = -magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+            elseif v_string=="escape_up"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = -magnitude
+                V[middle,middle-1] = magnitude
+            elseif v_string=="escape_down"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = -magnitude
+
+            elseif v_string == "sneeze_right" 
+                V[middle+1,middle] = -magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+            elseif v_string =="sneeze_left"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = -magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+            elseif v_string=="sneeze_up"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = -magnitude
+                V[middle,middle-1] = magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+            elseif v_string=="sneeze_down"
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = -magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+
+            elseif v_string == "hallway_x"
+                V[middle,middle] = -magnitude
+
+                V[middle+1,middle] = -magnitude
+                V[middle-1,middle] = -magnitude
+                V[middle,middle+1] = magnitude
+                V[middle,middle-1] = magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+            elseif v_string == "hallway_y"
+                V[middle,middle] = -magnitude
+
+                V[middle+1,middle] = magnitude
+                V[middle-1,middle] = magnitude
+                V[middle,middle+1] = -magnitude
+                V[middle,middle-1] = -magnitude
+
+                V[middle-1,middle-1]= magnitude
+                V[middle+1,middle+1]= magnitude
+                V[middle+1,middle-1]= magnitude
+                V[middle-1,middle+1]= magnitude
+
             elseif v_string == "barrier"
                 x = LinRange(0, dims[1], dims[1])
                 y = LinRange(0, dims[2], dims[2])
@@ -316,6 +439,8 @@ module Potentials
                 V[end, :] .= 10^5 * magnitude
                 V[:, 1] .= 10^5 * magnitude
                 V[:, end] .= 10^5 * magnitude
+            elseif v_string == "escape_left"
+
             else
                 error("unsupported potential type : $v_string ")
             end
@@ -324,9 +449,11 @@ module Potentials
                 V_plot=heatmap(V, aspect_ratio=:equal, c=:viridis, xlabel="x", ylabel="y", title="2D Potential Map")
                 display(V_plot)
             end
-
+            println(fluctuation_type)
             if fluctuation_type == "no-fluctuation"
                 fluctuating_mask .= 0
+            elseif fluctuation_type == "zero-potential"
+                fluctuating_mask = -V
             elseif fluctuation_type == "reflection"
                 fluctuating_mask = -2 * V
             elseif fluctuation_type == "profile_switch"
@@ -340,6 +467,8 @@ module Potentials
                 potential = setProfileSwitchPotential(pots; probs=probs, rng=rng)
                 #check_potential_switch(potential,rng)
                 return potential
+            elseif fluctuation_type == "forcing"
+                println("Forcing scenario")
             else
                 error("unsupported fluctuation type")
             end
@@ -377,6 +506,7 @@ module Potentials
             v_linear_args = Dict("type"=> "linear", "slope" => magnitude, "shift"=>L÷2+displacement,"b"=>0, "cut_at"=>cut_at)
             v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center"=> L÷2)
             v_periodic_args = Dict("type"=>"periodic", "period" => L÷4, "magnitude"=>magnitude, "phase"=> L÷2)
+            v_step_args = Dict("type"=>"step_potential", "step"=>L÷2+displacement, "magnitude"=>magnitude)
             v_random_args = Dict("type"=>"random", "scale"=>magnitude )
             if !simple
                 v_ratchet_PmLr = Dict("type"=>"zero","potentials_profiles"=>[potential_args("smudge",dims;magnitude=magnitude,simple=true),potential_args("left_smudge",dims;magnitude=magnitude,simple=true),potential_args("minus_smudge",dims;magnitude=magnitude,simple=true),potential_args("left_minus_smudge",dims;magnitude=magnitude,simple=true)])
@@ -400,11 +530,31 @@ module Potentials
             v_harmonic_args = Dict("type"=>"harmonic", "k" => magnitude, "m_sign"=>1, "center_x"=> Lx÷2, "center_y"=> Ly÷2)
             v_periodic_args = Dict("type"=>"periodic", "period_x" => Lx÷4, "period_y" => Ly÷4, "magnitude"=>magnitude, "phase_x"=> dims[1]÷2, "phase_y"=> dims[2]÷2)
             v_random_args = Dict("type"=>"random", "scale"=>magnitude)
-            v_2D_wall_slide = Dict("type"=>"2D_wall_slide","magnitude"=>magnitude)
+            v_2D_x_wall_slide = Dict("type"=>"2D_x_wall_slide","magnitude"=>magnitude)
             v_xy_slide = Dict("type"=>"xy_slide","magnitude"=>magnitude)
             v_xy_slide_rotated = Dict("type"=>"xy_slide_rotated","magnitude"=>magnitude)
+            v_x_slide = Dict("type"=>"2D_x_slide","magnitude"=>magnitude)
+            v_y_slide = Dict("type"=>"2D_y_slide","magnitude"=>magnitude)
+
+            v_escape_right = Dict("type"=>"escape_right","magnitude"=>magnitude)
+            v_escape_left = Dict("type"=>"escape_left","magnitude"=>magnitude)
+            v_escape_up = Dict("type"=>"escape_up","magnitude"=>magnitude)
+            v_escape_down = Dict("type"=>"escape_down","magnitude"=>magnitude)
+
+            v_sneeze_right = Dict("type"=>"sneeze_right","magnitude"=>magnitude)
+            v_sneeze_left = Dict("type"=>"sneeze_left","magnitude"=>magnitude)
+            v_sneeze_up = Dict("type"=>"sneeze_up","magnitude"=>magnitude)
+            v_sneeze_down = Dict("type"=>"sneeze_down","magnitude"=>magnitude)
+
+            v_hallway_x = Dict("type"=>"hallway_x","magnitude"=>magnitude)
+            v_hallway_y = Dict("type"=>"hallway_y","magnitude"=>magnitude)
+
             if !simple
                 v_xy_slides =Dict("type"=>"zero","potentials_profiles"=>[potential_args("xy_slide",dims;magnitude=magnitude,simple=true),potential_args("xy_slide",dims;magnitude=-magnitude,simple=true),potential_args("xy_slide_rotated",dims;magnitude=magnitude,simple=true),potential_args("xy_slide_rotated",dims;magnitude=-magnitude,simple=true)])
+                v_rotating_1D_slides = Dict("type"=>"zero","potentials_profiles"=>[potential_args("2D_y_slide",dims;magnitude=magnitude,simple=true),potential_args("2D_x_slide",dims;magnitude=magnitude,simple=true),potential_args("2D_x_slide",dims;magnitude=-magnitude,simple=true),potential_args("2D_y_slide",dims;magnitude=-magnitude,simple=true)])
+                v_rotating_escape = Dict("type"=>"zero","potentials_profiles"=>[potential_args("escape_left",dims;magnitude=magnitude,simple=true),potential_args("escape_right",dims;magnitude=magnitude,simple=true),potential_args("escape_up",dims;magnitude=magnitude,simple=true),potential_args("escape_down",dims;magnitude=magnitude,simple=true)])
+                v_rotating_sneezing_box = Dict("type"=>"zero","potentials_profiles"=>[potential_args("sneeze_left",dims;magnitude=magnitude,simple=true),potential_args("sneeze_right",dims;magnitude=magnitude,simple=true),potential_args("sneeze_up",dims;magnitude=magnitude,simple=true),potential_args("sneeze_down",dims;magnitude=magnitude,simple=true)])
+                v_rotating_hallway = Dict("type"=>"zero","potentials_profiles"=>[potential_args("hallway_x",dims;magnitude=magnitude,simple=true),potential_args("hallway_y",dims;magnitude=magnitude,simple=true)])
             end
         else
             error("Unsupported number of dimensions: $dim. Only 1D and 2D cases are supported.")
@@ -434,6 +584,8 @@ module Potentials
             return v_harmonic_args
         elseif v_string == "periodic"
             return v_periodic_args
+        elseif v_string == "step_potential"
+            return v_step_args
         elseif v_string == "random"
             return v_random_args
         elseif v_string == "ratchet_PmLr"
@@ -454,14 +606,49 @@ module Potentials
             return v_linear_slides_cut3
         elseif v_string == "ratchet_PR_ML"
             return v_ratchet_PR_ML
-        elseif v_string == "2D_wall_slide"
-            return v_2D_wall_slide
+        elseif v_string == "2D_x_wall_slide"
+            return v_2D_x_wall_slide
+        elseif v_string == "2D_x_slide"
+            return v_x_slide
+        elseif v_string == "2D_y_slide"
+            return v_y_slide
+        elseif v_string == "rotating_1D_slides"
+            return v_rotating_1D_slides
         elseif v_string =="xy_slide"
             return v_xy_slide
         elseif v_string =="xy_slide_rotated"
             return v_xy_slide_rotated
         elseif v_string =="xy_slides"
             return v_xy_slides
+        elseif v_string == "escape_right"
+            return v_escape_right
+        elseif v_string == "escape_left"
+            return v_escape_left
+        elseif v_string == "escape_up"
+            return v_escape_up
+        elseif v_string == "escape_down"
+            return v_escape_down
+        elseif v_string == "rotating_escape"
+            return v_rotating_escape
+
+        elseif v_string == "sneeze_right"
+            return v_sneeze_right
+        elseif v_string == "sneeze_left"
+            return v_sneeze_left
+        elseif v_string == "sneeze_up"
+            return v_sneeze_up
+        elseif v_string == "sneeze_down"
+            return v_sneeze_down
+        elseif v_string == "rotating_sneezing_box"
+            return v_rotating_sneezing_box
+
+        elseif v_string == "hallway_x"
+            return v_hallway_x
+        elseif v_string == "hallway_y"
+            return v_hallway_y
+        elseif v_string == "rotating_hallway"
+            return v_rotating_hallway 
+
         else
             error("unsupported V string")
         end

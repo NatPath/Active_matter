@@ -13,6 +13,7 @@ using LinearAlgebra
 using JLD2
 using YAML
 using ArgParse
+# using BenchmarkTools
 
 # First, on the main process, include all necessary files.
 include("potentials.jl")
@@ -54,11 +55,59 @@ function parse_commandline()
             arg_type = Int
             required = false
             default = 1
+        "--initial_state"
+            help = "Path to saved state file to start from as t=0 (statistics reset)"
+            required = false
+        "--int_type"
+            help = "Integer type for positions/densities (e.g., Int16, Int32, Int64)"
+            arg_type = String
+            required = false
     end
     return parse_args(s)
 end
+
+@everywhere const INT_TYPE_MAP = Dict(
+    "Int8" => Int8,
+    "Int16" => Int16,
+    "Int32" => Int32,
+    "Int64" => Int64,
+    "UInt8" => UInt8,
+    "UInt16" => UInt16,
+    "UInt32" => UInt32,
+    "UInt64" => UInt64,
+)
+
+@everywhere function parse_int_type(value)
+    if value isa DataType && value <: Integer
+        return value
+    elseif value isa Symbol
+        return parse_int_type(String(value))
+    elseif value isa AbstractString
+        if haskey(INT_TYPE_MAP, value)
+            return INT_TYPE_MAP[value]
+        end
+        error("Unsupported int_type: $value. Use one of $(collect(keys(INT_TYPE_MAP))).")
+    else
+        error("Unsupported int_type: $value. Use a string like \"Int32\".")
+    end
+end
+
+@everywhere function resolve_int_type(args, params, defaults)
+    if haskey(args, "int_type") && !isnothing(args["int_type"])
+        return parse_int_type(args["int_type"])
+    end
+    return parse_int_type(get(params, "int_type", defaults["int_type"]))
+end
+# Load a saved state and reset its statistics so it can be used as a fresh initial condition.
+function load_initial_state(path)
+    println("Loading initial state from $path")
+    @load path state param potential
+    FP.reset_statistics!(state)
+    state.potential = potential
+    return state, param
+end
 # Estimate the total run time by running a sample of sweeps.
-@everywhere function estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+@everywhere function estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     println("Estimating run time using $sample_size sweeps...")
     # Clone the current state so that our sample does not affect the actual simulation.
     state_copy = deepcopy(state)
@@ -77,29 +126,39 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 16 
+    L= 32  
+    d = 2
     return Dict(
-        "dim_num" => 2,
+        "dim_num" => d,
         "D" => 1.0,
         "α" => 0.0,
         "L" => L,
-        "N" => L*100,
+        "ρ₀" => 100, # particles per site
         "T" => 1.0,
-        "γ′" => 1.0,
-        "ϵ" => 0.0,
-        "n_sweeps" => 1*10^6,
-        "potential_type" => "2D_wall_slide",
-        "fluctuation_type" => "reflection",
-        "potential_magnitude" => 16,
+        "γ" => 0.0,
+        "ϵ" => 0,
+        "n_sweeps" => 10^2,
+        # "potential_type" => "well",
+        # "fluctuation_type" => "reflection",
+        "potential_type" => "zero",
+        "fluctuation_type" => "no-fluctuation",
+        "potential_magnitude" => 0.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
-        "save_times" => [j*10^i for i in 6:12 for j in 1:9]
+        # "show_times" => [i for i in 1:1:100],
+        "save_times" => [j*10^i for i in 6:12 for j in 1:9],
+        "forcing_type" => "center_bond_x",
+        "ffr" => 0.001,
+        "forcing_fluctuation_type" => "alternating_direction",
+        "forcing_magnitude" => 1.0,
+        "ic" => "random",
+        "int_type" => "Int32",
     )
 end
 
 
 # Function to set up and run one independent simulation.
-@everywhere function run_one_simulation_from_state(param, state, seed,n_sweeps)
+@everywhere function run_one_simulation_from_state(param, state, seed,n_sweeps; relaxed_ic::Bool=false)
     println("Continuing simulation with seed $seed for $n_sweeps")
     rng = MersenneTwister(seed)
     # defaults = get_default_params()
@@ -137,18 +196,19 @@ end
     # v_smudge_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     # potential = Potentials.choose_potential(v_smudge_args, dims; fluctuation_type=fluctuation_type)
     # state = FP.setState(0, rng, param, T, potential)
-    dummy_state = setDummyState(state,state.ρ_avg,state.ρ_matrix_avg,state.t)
-    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    dummy_state = FP.setDummyState(state,state.ρ_avg,state.ρ_matrix_avg_cuts,state.t)
+    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     estimated_time_hours = estimated_time / 3600
     println("Estimated run time for this simulation: $estimated_time_hours hours")
     # Run the simulation (calculating correlations).
-    normalized_dist, corr_mat = run_simulation!(dummy_state, param, n_sweeps, rng;
+    dist, corr_mat_cuts = run_simulation!(dummy_state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=show_times,
-                                                 save_times=save_times)
-    return normalized_dist, corr_mat, dummy_state, param
+                                                 save_times=save_times,
+                                                 relaxed_ic=relaxed_ic)
+    return dist, corr_mat_cuts, dummy_state, param
 end
-# A very shitty function, find a cleaner way to do it! this is just a recepie for spagheti
+# A very shitty function, find a cleaner way to do it! this is just a recipe for spaghetti
 function n_sweeps_from_args(args)
     defaults = get_default_params()
     if haskey(args, "config") && !isnothing(args["config"])
@@ -177,6 +237,7 @@ end
     n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
     params["show_times"] = Int[]
     params["save_times"] = Int[]
+    int_type = resolve_int_type(args, params, defaults)
     
     # Set up simulation parameters.
     dim_num            = get(params, "dim_num", defaults["dim_num"])
@@ -186,32 +247,54 @@ end
     D                  = get(params, "D", defaults["D"])
     α                  = get(params, "α", defaults["α"])
     L                  = get(params, "L", defaults["L"])
-    N                  = get(params, "N", defaults["N"])
+    ρ₀              = get(params, "ρ₀", defaults["ρ₀"])
     T                  = get(params, "T", defaults["T"])
-    γ′                 = get(params, "γ′", defaults["γ′"])
+    γ                 = get(params, "γ", defaults["γ"])
     ϵ                  = get(params, "ϵ", defaults["ϵ"])
-    
+
+    forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
+    ffr = get(params, "ffr", defaults["ffr"])
+    forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
+    forcing_type = get(params, "forcing_type", defaults["forcing_type"])
+    if forcing_type == "center_bond_x"
+        if dim_num ==1
+            bond_indices = ([L÷2],[L÷2+1])
+        elseif dim_num == 2
+            bond_indices = ([L÷2,L÷2],[L÷2+1,L÷2])
+        end
+    elseif forcing_type == "center_bond_y"
+        if dim_num ==1
+            bond_indices = ([L÷2],[L÷2+1])
+        elseif dim_num == 2
+            bond_indices = ([L÷2,L÷2],[L÷2,L÷2+1])
+        end
+    else
+        error("Unsupported forcing type: $forcing_type")
+    end
+    forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
+
+    ic = get(params, "ic", defaults["ic"])
+
     dims = ntuple(i -> L, dim_num)
-    ρ₀ = N / L
-    γ = γ′ / N
+    # ρ₀ = N / (L^dim_num)
 
     # Initialize simulation parameters and state.
-    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+    param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude,ffr)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
-    state = FP.setState(0, rng, param, T, potential)
+    state = FP.setState(0, rng, param, T, potential, forcing; ic=ic, int_type=int_type)
    
     #estimate run time
-    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=1000)
+    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
     estimated_time_hours = estimated_time / 3600
     println("Estimated run time for this simulation: $estimated_time_hours hours")
 
     # Run the simulation (calculating correlations).
-    normalized_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
+    dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=params["show_times"],
                                                  save_times=params["save_times"])
-    return normalized_dist, corr_mat, state, param
+    return dist, corr_mat_cuts, state, param
 end
 
 # Main function.
@@ -220,10 +303,14 @@ function main()
     num_runs = get(args, "num_runs", 1)
     seeds = rand(1:2^30,num_runs)
     println("Running $num_runs independent simulations in parallel.")
+    using_initial_state = haskey(args, "initial_state") && !isnothing(args["initial_state"])
+    initial_state = nothing
+    initial_param = nothing
+    if using_initial_state
+        initial_state, initial_param = load_initial_state(args["initial_state"])
+    end
     if num_runs > 1
         if haskey(args, "continue") && !isnothing(args["continue"])
-            # # When continuing from a saved state, parallel runs are not allowed.
-            # error("Parallel runs are not supported when continuing from a saved state.")
             println("Continuing from saved aggregation: $(args["continue"])")
             @load args["continue"] state param potential
             if haskey(args, "config") && !isnothing(args["config"])
@@ -243,37 +330,73 @@ function main()
                 println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
             end
             results = pmap(seed -> run_one_simulation_from_state(param,state,seed,n_sweeps), seeds)
+        elseif using_initial_state
+            defaults = get_default_params()
+            n_sweeps = n_sweeps_from_args(args)
+            results = pmap(seed -> begin
+                    run_state = deepcopy(initial_state)
+                    run_param = deepcopy(initial_param)
+                    run_one_simulation_from_state(run_param, run_state, seed, n_sweeps; relaxed_ic=true)
+                end, seeds)
         else
             results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
             n_sweeps=n_sweeps_from_args(args)
         end
         # Use different seeds for each independent simulation.
         # Aggregate results (here we average the correlation matrices).
-        normalized_dists = [res[1] for res in results]
-        corr_mats = [res[2] for res in results]
+        dists = [res[1] for res in results]
+        mat_cuts = [res[2] for res in results]
         states = [res[3] for res in results]
         params = [res[4] for res in results]
         
-        #avg_corr = mean(corr_mats, dims=1)
-        #avg_dists = mean(normalized_dists,dims=1)
-        stacked_corr = cat(corr_mats..., dims=3)  # Stack matrices along a new third dimension
-        avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
-        stacked_dists = cat(normalized_dists..., dims=2)
-        avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
+        dim_num = length(params[1].dims)
+        if dim_num == 1
+            full_mats = [mat_cut[:full] for mat_cut in mat_cuts]
+            stacked_corr = cat(full_mats..., dims=3)  # Stack matrices along a new third dimension
+            avg_corr = dropdims(mean(stacked_corr, dims=3), dims=3)  # Average over the third dimension and drop it
+            stacked_dists = cat(dists..., dims=2)
+            avg_dists = dropdims(mean(stacked_dists, dims=2), dims=2)
+        elseif dim_num == 2
+            if haskey(mat_cuts[1],:full)
+                full_mats = [mat_cut[:full] for mat_cut in mat_cuts]
+                stacked_corr = cat(full_mats..., dims=5)  # Stack 4D tensors along 5th dimension
+                avg_corr = dropdims(mean(stacked_corr, dims=5), dims=5)  # Average over 5th dimension
+            else
+                x_cut_mats = [mat_cut[:x_cut] for mat_cut in mat_cuts]
+                y_cut_mats = [mat_cut[:y_cut] for mat_cut in mat_cuts]
+                diagonal_cut_mats = [mat_cut[:diag_cut] for mat_cut in mat_cuts]
+                stacked_corr_x_cut = cat(x_cut_mats..., dims=3)
+                stacked_corr_y_cut = cat(y_cut_mats..., dims=3)
+                stacked_corr_diagonal_cut = cat(diagonal_cut_mats..., dims=3)
+                avg_corr_x_cut = dropdims(mean(stacked_corr_x_cut, dims=3), dims=3)
+                avg_corr_y_cut = dropdims(mean(stacked_corr_y_cut, dims=3), dims=3)
+                avg_corr_diagonal_cut = dropdims(mean(stacked_corr_diagonal_cut, dims=3), dims=3)
+            end
+            stacked_dists = cat(dists..., dims=3)  # Stack 2D matrices along 3rd dimension
+            avg_dists = dropdims(mean(stacked_dists, dims=3), dims=3)  # Average over 3rd dimension
+        else
+            error("Unsupported correlation matrix dimensions: $(ndims(corr_mats[1]))")
+        end
+        if haskey(mat_cuts[1],:full)
+            mat_cuts_averaged = Dict(:full => avg_corr)
+        else
+            mat_cuts_averaged = Dict(:x_cut => avg_corr_x_cut, :y_cut => avg_corr_y_cut, :diag_cut => avg_corr_diagonal_cut)
+        end
+        
         total_t = n_sweeps*(num_runs-1)+states[1].t 
-        dummy_state = FP.setDummyState(states[1],avg_dists,avg_corr,total_t)
+        dummy_state = FP.setDummyState(states[1],avg_dists,mat_cuts_averaged,total_t)
 
         dummy_state_save_dir = "dummy_states"
-        save_state(dummy_state,params[1],dummy_state_save_dir)
+        save_state(dummy_state,params[1],dummy_state_save_dir; relaxed_ic=using_initial_state)
 
         
         # Save aggregated results to a separate file.
-        save_dir = "saved_states_parallel"
-        mkpath(save_dir)
-        now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
-        filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
-        @save filename normalized_dists corr_mats avg_corr avg_dists
-        println("Parallel results saved to: $filename")
+        # save_dir = "saved_states_parallel"
+        # mkpath(save_dir)
+        # now_str = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
+        # filename = @sprintf("%s/parallel_results_%s.jld2", save_dir, now_str)
+        # @save filename states params
+        # println("Parallel results saved to: $filename")
     else
         # Single-run mode.
         if haskey(args, "continue") && !isnothing(args["continue"])
@@ -287,6 +410,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
+            ic = get(params, "ic", get_default_params()["ic"])
             defaults = get_default_params()
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
                 n_sweeps = args["continue_sweeps"]
@@ -297,6 +421,21 @@ function main()
             end
             seed = rand(1:2^30)
             rng = MersenneTwister(seed)
+        elseif using_initial_state
+            state = deepcopy(initial_state)
+            param = deepcopy(initial_param)
+            defaults = get_default_params()
+            if haskey(args, "config") && !isnothing(args["config"])
+                println("Using configuration from file: $(args["config"])")
+                params = YAML.load_file(args["config"])
+            else
+                println("No config file provided. Using default parameters.")
+                params = get_default_params()
+            end
+            n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
+            seed = rand(1:2^30)
+            rng = MersenneTwister(seed)
+            ic = get(params, "ic", defaults["ic"])
         else
             if haskey(args, "config") && !isnothing(args["config"])
                 println("Using configuration from file: $(args["config"])")
@@ -314,24 +453,47 @@ function main()
             D                  = get(params, "D", defaults["D"])
             α                  = get(params, "α", defaults["α"])
             L                  = get(params, "L", defaults["L"])
-            N                  = get(params, "N", defaults["N"])
+            ρ₀                = get(params, "ρ₀", defaults["ρ₀"])
             T                  = get(params, "T", defaults["T"])
-            γ′                 = get(params, "γ′", defaults["γ′"])
+            γ                 = get(params, "γ", defaults["γ"])
             ϵ                  = get(params, "ϵ", defaults["ϵ"])
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
+            forcing_fluctuation_type = get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
+            ffr = get(params, "ffr", defaults["ffr"])
+            forcing_magnitude = get(params, "forcing_magnitude", defaults["forcing_magnitude"])
+            forcing_type = get(params, "forcing_type", defaults["forcing_type"])
+            ic = get(params, "ic", defaults["ic"])
+            int_type = resolve_int_type(args, params, defaults)
+            if forcing_type == "center_bond_x"
+                if dim_num ==1
+                    bond_indices = ([L÷2],[L÷2+1])
+                elseif dim_num == 2
+                    bond_indices = ([L÷2,L÷2],[L÷2+1,L÷2])
+                end
+            elseif forcing_type == "center_bond_y"
+                if dim_num ==1
+                    bond_indices = ([L÷2],[L÷2+1])
+                elseif dim_num == 2
+                    bond_indices = ([L÷2,L÷2],[L÷2,L÷2+1])
+                end
+            else
+                error("Unsupported forcing type: $forcing_type")
+            end
+            forcing = Potentials.setBondForce(bond_indices, true, forcing_magnitude)
+
+            ic = get(params, "ic", defaults["ic"])
             
             dims = ntuple(i -> L, dim_num)
-            ρ₀ = N / L
-            γ = γ′ / N
+            # ρ₀ = N / prod(dims)
             
-            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude)
+            param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffr )
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
             
-            state = FP.setState(0, rng, param, T, potential)
+            state = FP.setState(0, rng, param, T, potential, forcing; ic=ic, int_type=int_type)
         end
         
         show_times = get(params, "show_times", get_default_params()["show_times"])
@@ -342,7 +504,7 @@ function main()
             println("\nSaving current state...")
             try
                 save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-                SaveUtils.save_state(state, param, save_dir)
+                SaveUtils.save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
                 println("State saved successfully")
             catch e
                 println("Error saving state: ", e)
@@ -355,10 +517,11 @@ function main()
         Base.sigatomic_end()
         
         try
-            res_dist, corr_mat = run_simulation!(state, param, n_sweeps, rng;
+            res_dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  show_times=show_times,
                                                  save_times=save_times,
-                                                 plot_flag=true)
+                                                 plot_flag=true,
+                                                 relaxed_ic=using_initial_state)
         catch e
             if isa(e, InterruptException)
                 println("\nInterrupt detected, initiating cleanup...")
@@ -369,7 +532,7 @@ function main()
         end
         
         save_dir = get(params, "save_dir", get_default_params()["save_dir"])
-        filename = save_state(state, param, save_dir)
+        filename = save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state)
         println("Final state saved to: ", filename)
    end
 end
