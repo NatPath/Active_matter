@@ -94,8 +94,13 @@ end
         "ffr" => 1.0,
         "ffrs" => Float64[],
         "forcing_direction_flags" => Bool[],
+        "forcing_fluctuation_type" => "alternating_direction",
+        "forcing_fluctuation_types" => String[],
         "forcing_rate_scheme" => "legacy_penalty",
         "bond_pass_count_mode" => "all_forcing_bonds",
+        "simulation_mode" => "discrete_sweep",
+        "correlation_observable_mode" => "full",
+        "correlation_cut_offsets" => Float64[],
         "ic" => "random",
         "plot_final" => true,
         "save_final_plot" => true,
@@ -188,6 +193,30 @@ end
     return max(to_int(get(params, "warmup_sweeps", defaults["warmup_sweeps"]), "warmup_sweeps"), 0)
 end
 
+@everywhere function normalize_simulation_mode(raw_mode)
+    mode = lowercase(strip(String(raw_mode)))
+    if mode in ("discrete_sweep", "sweep", "discrete")
+        return "discrete_sweep"
+    elseif mode in ("ctmc_1d", "ctmc", "continuous_time", "continuous_time_1d", "continuous_time_monte_carlo")
+        return "ctmc_1d"
+    end
+    error("Unsupported simulation_mode: $raw_mode")
+end
+
+@everywhere function get_simulation_mode(params, defaults)
+    return normalize_simulation_mode(get(params, "simulation_mode", defaults["simulation_mode"]))
+end
+
+@everywhere function normalize_correlation_observable_mode(raw_mode)
+    mode = lowercase(strip(String(raw_mode)))
+    if mode in ("full", "full_matrix", "full_correlations")
+        return "full"
+    elseif mode in ("selected_site_cuts", "selected_cuts", "light_selected_cuts", "light")
+        return "selected_site_cuts"
+    end
+    error("Unsupported correlation_observable_mode: $raw_mode")
+end
+
 @everywhere function get_cluster_mode(params, defaults)
     return to_bool(get(params, "cluster_mode", defaults["cluster_mode"]), "cluster_mode")
 end
@@ -257,6 +286,16 @@ end
     error("Unsupported forcing_type: $forcing_type")
 end
 
+@everywhere function normalize_force_fluctuation_type(raw_type)
+    fluctuation_type = lowercase(strip(String(raw_type)))
+    if fluctuation_type in ("alternating_direction", "flip", "telegraph", "toggle")
+        return "alternating_direction"
+    elseif fluctuation_type in ("none", "static", "no-fluctuation", "no_fluctuation")
+        return "static"
+    end
+    error("Unsupported forcing_fluctuation_type: $raw_type")
+end
+
 @everywhere function parse_forcing_bond_pair(raw_pair, dim_num::Int, L::Int)
     if !(raw_pair isa AbstractVector) || length(raw_pair) != 2
         error("Each forcing_bond_pairs entry must contain exactly two endpoints.")
@@ -323,9 +362,10 @@ end
             base_site_raw isa Number || error("forcing_base_site must be numeric.")
             mod1(Int(round(Float64(base_site_raw))), L)
         else
-            # Center the midpoint of the two bond midpoints on the middle bond of the system.
+            # Match the legacy two_force_d_sweep convention used in explicit configs.
             # Here d is the gap between the right site of the left bond and the left site of the right bond.
-            mod1((L ÷ 2) - fld(d + 1, 2), L)
+            # The inferred pair is placed symmetrically around the center in the same way as the old hand-written files.
+            mod1(fld(L - d - 1, 2), L)
         end
         right_site = mod1(left_site + d + 1, L)
 
@@ -372,6 +412,54 @@ end
     return forcings, ffrs
 end
 
+@everywhere function build_force_fluctuation_types(params, defaults, n_forces::Int)
+    n_forces == 0 && return String[]
+
+    raw_types = if haskey(params, "forcing_fluctuation_types")
+        params["forcing_fluctuation_types"]
+    else
+        get(params, "forcing_fluctuation_type", defaults["forcing_fluctuation_type"])
+    end
+
+    fluctuation_types = expand_to_length(to_string_vector(raw_types, "forcing_fluctuation_types"), n_forces, "forcing_fluctuation_types")
+    return [normalize_force_fluctuation_type(raw_type) for raw_type in fluctuation_types]
+end
+
+@everywhere function build_correlation_observable_spec(params, defaults, dim_num::Int, L::Int, forcings, simulation_mode::AbstractString)
+    mode = normalize_correlation_observable_mode(get(params, "correlation_observable_mode", defaults["correlation_observable_mode"]))
+    if mode == "full"
+        return mode, Int[], nothing
+    end
+
+    dim_num == 1 || error("correlation_observable_mode=\"selected_site_cuts\" is currently supported only for dim_num=1.")
+    simulation_mode == "ctmc_1d" || error("correlation_observable_mode=\"selected_site_cuts\" is currently supported only for simulation_mode=\"ctmc_1d\".")
+
+    raw_offsets = if haskey(params, "correlation_cut_offsets")
+        params["correlation_cut_offsets"]
+    else
+        defaults["correlation_cut_offsets"]
+    end
+    offsets = if raw_offsets isa AbstractVector && isempty(raw_offsets)
+        [0.25]
+    else
+        to_float_vector(raw_offsets, "correlation_cut_offsets")
+    end
+
+    origin_site = if !isempty(forcings)
+        mod1(forcings[1].bond_indices[1][1], L)
+    else
+        max(1, div(L, 2))
+    end
+
+    selected_sites = Int[]
+    for offset in offsets
+        shift = isapprox(offset, round(offset); atol=1e-9) ? Int(round(offset)) : Int(round(offset * L))
+        push!(selected_sites, mod1(origin_site + shift, L))
+    end
+
+    return mode, unique(selected_sites), origin_site
+end
+
 @everywhere function create_state_from_params(params, defaults, rng)
     dim_num = to_int(get(params, "dim_num", defaults["dim_num"]), "dim_num")
     L = to_int(get(params, "L", defaults["L"]), "L")
@@ -386,25 +474,43 @@ end
     bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
     ic = String(get(params, "ic", defaults["ic"]))
     full_corr_tensor = to_bool(get(params, "full_corr_tensor", defaults["full_corr_tensor"]), "full_corr_tensor")
+    simulation_mode = get_simulation_mode(params, defaults)
 
     dims = ntuple(_ -> L, dim_num)
     forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
+    force_fluctuation_types = build_force_fluctuation_types(params, defaults, length(forcings))
+    correlation_observable_mode, selected_cut_sites, selected_cut_origin_site =
+        build_correlation_observable_spec(params, defaults, dim_num, L, forcings, simulation_mode)
 
     param = FPSSEP.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
                             forcing_rate_scheme=forcing_rate_scheme)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type, rng=rng, plot_flag=false)
-    state = FPSSEP.setState(0, rng, param, T, potential, forcings; ic=ic, full_corr_tensor=full_corr_tensor, bond_pass_count_mode=bond_pass_count_mode)
-    return state, param, ic
+    state = FPSSEP.setState(
+        0,
+        rng,
+        param,
+        T,
+        potential,
+        forcings;
+        ic=ic,
+        full_corr_tensor=full_corr_tensor,
+        bond_pass_count_mode=bond_pass_count_mode,
+        correlation_observable_mode=correlation_observable_mode,
+        selected_cut_sites=selected_cut_sites,
+        selected_cut_origin_site=selected_cut_origin_site,
+    )
+    return state, param, ic, force_fluctuation_types
 end
 
 @everywhere function run_one_simulation_from_config(args, seed)
     rng = MersenneTwister(seed)
     params, defaults = load_params(args)
-    state, param, _ = create_state_from_params(params, defaults, rng)
+    state, param, _, force_fluctuation_types = create_state_from_params(params, defaults, rng)
     n_sweeps = get_n_sweeps(params, defaults, args)
     warmup_sweeps = get_warmup_sweeps(params, defaults)
     description = get_description(params, defaults)
+    simulation_mode = get_simulation_mode(params, defaults)
 
     run_simulation!(state, param, n_sweeps, rng;
                     show_times=Int[],
@@ -413,11 +519,17 @@ end
                     plot_label=description,
                     save_description=description,
                     warmup_sweeps=warmup_sweeps,
-                    show_progress=false)
+                    show_progress=false,
+                    simulation_mode=simulation_mode,
+                    force_fluctuation_types=force_fluctuation_types)
     return state, param
 end
 
-@everywhere function run_one_simulation_from_state(param, state, seed, n_sweeps; warmup_sweeps::Int=0, description::String="")
+@everywhere function run_one_simulation_from_state(param, state, seed, n_sweeps;
+                                                   warmup_sweeps::Int=0,
+                                                   description::String="",
+                                                   simulation_mode::AbstractString="discrete_sweep",
+                                                   force_fluctuation_types::Vector{String}=String[])
     rng = MersenneTwister(seed)
     run_simulation!(state, param, n_sweeps, rng;
                     show_times=Int[],
@@ -426,7 +538,9 @@ end
                     plot_label=description,
                     save_description=description,
                     warmup_sweeps=warmup_sweeps,
-                    show_progress=false)
+                    show_progress=false,
+                    simulation_mode=simulation_mode,
+                    force_fluctuation_types=force_fluctuation_types)
     return state, param
 end
 
@@ -599,6 +713,7 @@ function run_single_simulation(args)
     save_dir = String(get(params, "save_dir", defaults["save_dir"]))
     warmup_sweeps = get_warmup_sweeps(params, defaults)
     n_sweeps = get_n_sweeps(params, defaults, args)
+    simulation_mode = get_simulation_mode(params, defaults)
     has_explicit_show_times = haskey(args, "config") && !isnothing(args["config"]) && haskey(params, "show_times")
     show_times = get_show_times(params, defaults, warmup_sweeps; has_explicit_show_times=has_explicit_show_times)
     save_times = get_save_times(params, defaults)
@@ -612,11 +727,13 @@ function run_single_simulation(args)
     if continuing
         state, param = load_saved_state(String(args["continue"]); reset_statistics=false)
         ic = "continued"
+        force_fluctuation_types = build_force_fluctuation_types(params, defaults, length(FPSSEP.get_state_forcings!(state)))
     elseif using_initial_state
         state, param = load_saved_state(String(args["initial_state"]); reset_statistics=true)
         ic = "initial_state"
+        force_fluctuation_types = build_force_fluctuation_types(params, defaults, length(FPSSEP.get_state_forcings!(state)))
     else
-        state, param, ic = create_state_from_params(params, defaults, rng)
+        state, param, ic, force_fluctuation_types = create_state_from_params(params, defaults, rng)
     end
     param = maybe_override_forcing_rate_scheme(param, args, params)
 
@@ -641,7 +758,9 @@ function run_single_simulation(args)
                     save_description=description,
                     warmup_sweeps=warmup_sweeps,
                     show_progress=!cluster_mode,
-                    relaxed_ic=using_initial_state)
+                    relaxed_ic=using_initial_state,
+                    simulation_mode=simulation_mode,
+                    force_fluctuation_types=force_fluctuation_types)
 
     filename = save_state(state, param, save_dir;
                           tag=get(args, "save_tag", nothing),
@@ -659,6 +778,7 @@ function run_multiple_simulations(args)
     save_dir = String(get(params, "save_dir", defaults["save_dir"]))
     warmup_sweeps = get_warmup_sweeps(params, defaults)
     n_sweeps = get_n_sweeps(params, defaults, args)
+    simulation_mode = get_simulation_mode(params, defaults)
     num_runs = Int(get(args, "num_runs", 1))
     seeds = rand(1:2^30, num_runs)
 
@@ -668,18 +788,28 @@ function run_multiple_simulations(args)
     if continuing
         base_state, base_param = load_saved_state(String(args["continue"]); reset_statistics=false)
         base_param = maybe_override_forcing_rate_scheme(base_param, args, params)
+        force_fluctuation_types = build_force_fluctuation_types(params, defaults, length(FPSSEP.get_state_forcings!(base_state)))
         results = pmap(seed -> begin
             state = deepcopy(base_state)
             param = deepcopy(base_param)
-            run_one_simulation_from_state(param, state, seed, n_sweeps; warmup_sweeps=warmup_sweeps, description=description)
+            run_one_simulation_from_state(param, state, seed, n_sweeps;
+                                          warmup_sweeps=warmup_sweeps,
+                                          description=description,
+                                          simulation_mode=simulation_mode,
+                                          force_fluctuation_types=force_fluctuation_types)
         end, seeds)
     elseif using_initial_state
         base_state, base_param = load_saved_state(String(args["initial_state"]); reset_statistics=true)
         base_param = maybe_override_forcing_rate_scheme(base_param, args, params)
+        force_fluctuation_types = build_force_fluctuation_types(params, defaults, length(FPSSEP.get_state_forcings!(base_state)))
         results = pmap(seed -> begin
             state = deepcopy(base_state)
             param = deepcopy(base_param)
-            run_one_simulation_from_state(param, state, seed, n_sweeps; warmup_sweeps=warmup_sweeps, description=description)
+            run_one_simulation_from_state(param, state, seed, n_sweeps;
+                                          warmup_sweeps=warmup_sweeps,
+                                          description=description,
+                                          simulation_mode=simulation_mode,
+                                          force_fluctuation_types=force_fluctuation_types)
         end, seeds)
     else
         results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
@@ -712,4 +842,6 @@ function main()
     end
 end
 
-main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

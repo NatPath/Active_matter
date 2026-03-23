@@ -1,0 +1,37 @@
+dim_num: 1
+simulation_mode: "ctmc_1d"
+
+L: 32
+ρ₀: 0.5
+D: 1.0
+T: 1.0
+γ: 0.0
+
+n_sweeps: 2000
+warmup_sweeps: 200
+cluster_mode: true
+description: "ctmc_1d_multi_fluctuating_bonds"
+
+potential_type: "zero"
+fluctuation_type: "no-fluctuation"
+potential_magnitude: 0.0
+ic: "random"
+
+forcing_bond_pairs:
+  - [8, 9]
+  - [16, 17]
+  - [24, 25]
+
+forcing_magnitudes: [0.8, 1.2, 0.5]
+ffrs: [0.2, 1.0, 3.0]
+forcing_direction_flags: [true, false, true]
+forcing_fluctuation_types: ["alternating_direction", "alternating_direction", "alternating_direction"]
+
+forcing_rate_scheme: "legacy_penalty"
+bond_pass_count_mode: "all_forcing_bonds"
+
+show_times: []
+save_times: []
+plot_final: false
+save_final_plot: false
+save_dir: "saved_states_ssep_ctmc"

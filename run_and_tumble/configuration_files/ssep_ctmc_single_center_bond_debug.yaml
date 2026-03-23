@@ -1,0 +1,46 @@
+dim_num: 1
+simulation_mode: "ctmc_1d"
+correlation_observable_mode: "selected_site_cuts"
+
+# Offsets for the tracked site cuts relative to the reference bond.
+# Non-integers are interpreted as fractions of L, so 0.25 means L/4 away.
+# Add more entries later if you want more selected cuts.
+correlation_cut_offsets: [0.125,0.25]
+
+# Keep L even if you want a unique middle bond.
+# You should be able to change only L and keep the fluctuating bond centered.
+L: 64
+ρ₀: 0.5
+D: 1.0
+T: 1.0
+γ: 0.0
+
+n_sweeps: 10000000
+warmup_sweeps: 10000
+cluster_mode: false
+description: "ctmc_single_center_bond_debug"
+
+potential_type: "zero"
+fluctuation_type: "no-fluctuation"
+potential_magnitude: 0.0
+ic: "random"
+
+# This stays at the middle bond when L changes.
+forcing_type: "center_bond_x"
+forcing_magnitude: 1.0
+ffr: 1.0
+forcing_direction_flags: [true]
+forcing_fluctuation_type: "alternating_direction"
+
+#forcing_rate_scheme: "legacy_penalty"
+forcing_rate_scheme: "symmetric_normalized"
+bond_pass_count_mode: "all_forcing_bonds"
+
+# In CTMC mode one "sweep" here means one unit of physical time.
+# These are good exploratory checkpoints before long non-plotting runs.
+# show_times: [1, 2, 5, 10, 20, 50, 100, 200, 500,1000]
+save_times: []
+
+plot_final: true
+save_final_plot: true
+save_dir: "saved_states_ssep_ctmc_debug"

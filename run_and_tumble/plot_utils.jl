@@ -14,6 +14,9 @@ const BOND_PASS_TRACK_MASK_KEY = :bond_pass_track_mask
 const BOND_PASS_SPATIAL_F_AVG_KEY = :bond_pass_spatial_f_avg
 const BOND_PASS_SPATIAL_F2_AVG_KEY = :bond_pass_spatial_f2_avg
 const BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY = :bond_pass_spatial_sample_count
+const SELECTED_SITE_CUTS_KEY = :selected_site_cuts
+const SELECTED_SITE_CUT_SITES_KEY = :selected_site_cut_sites
+const SELECTED_SITE_CUT_ORIGIN_SITE_KEY = :selected_site_cut_origin_site
 
 # Exact (Float64) value of exp(-1)*(I0(1)+I1(1)), where I0/I1 are modified Bessel functions.
 const SINGLE_ORIGIN_VARJ_BASELINE_FACTOR = 0.6736700229433489
@@ -22,6 +25,8 @@ const SINGLE_ORIGIN_VARJ_BASELINE_FACTOR_SYMMETRIC_NORMALIZED = 0.40072803681701
 
 const LEGACY_FORCING_RATE_SCHEME = "legacy_penalty"
 const SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME = "symmetric_normalized"
+const INDEPENDENT_CORRELATION_BASELINE_MODEL = :independent
+const SSEP_CORRELATION_BASELINE_MODEL = :ssep
 
 @inline function normalized_forcing_rate_scheme_for_plot(param)
     if !hasfield(typeof(param), :forcing_rate_scheme)
@@ -45,6 +50,74 @@ end
 
 @inline function single_origin_varj_baseline(param)
     return single_origin_varj_baseline_factor(param) * param.ρ₀
+end
+
+@inline function normalize_correlation_baseline_model(raw_model)
+    model = lowercase(strip(String(raw_model)))
+    if model in ("independent", "noninteracting", "non_interacting", "multinomial")
+        return INDEPENDENT_CORRELATION_BASELINE_MODEL
+    elseif model in ("ssep", "exclusion", "hardcore_exclusion", "hard_core_exclusion")
+        return SSEP_CORRELATION_BASELINE_MODEL
+    end
+    throw(ArgumentError("Unsupported correlation baseline model: $raw_model"))
+end
+
+@inline function correlation_baseline_model(param)
+    if hasfield(typeof(param), :correlation_baseline_model)
+        return normalize_correlation_baseline_model(getfield(param, :correlation_baseline_model))
+    end
+
+    param_module_name = String(nameof(parentmodule(typeof(param))))
+    if param_module_name == "FPSSEP"
+        return SSEP_CORRELATION_BASELINE_MODEL
+    elseif param_module_name in ("FP", "FPDiffusive")
+        return INDEPENDENT_CORRELATION_BASELINE_MODEL
+    end
+
+    throw(ArgumentError("Could not infer correlation baseline model for parameter type $(typeof(param)). Add a correlation_baseline_model field or extend correlation_baseline_model(param)."))
+end
+
+@inline function independent_connected_correlation_fix_term(num_sites::Integer, num_particles::Integer)
+    num_sites <= 0 && return 0.0
+    return Float64(num_particles) / (Float64(num_sites)^2)
+end
+
+@inline function ssep_connected_correlation_fix_term(num_sites::Integer, num_particles::Integer)
+    num_sites <= 1 && return 0.0
+    return Float64(num_particles * (num_sites - num_particles)) / (Float64(num_sites)^2 * Float64(num_sites - 1))
+end
+
+@inline function connected_correlation_fix_term(param; statistics_model=nothing)
+    num_sites = prod(param.dims)
+    num_particles = Int(param.N)
+    baseline_model = isnothing(statistics_model) ? correlation_baseline_model(param) : normalize_correlation_baseline_model(statistics_model)
+    if baseline_model == INDEPENDENT_CORRELATION_BASELINE_MODEL
+        return independent_connected_correlation_fix_term(num_sites, num_particles)
+    elseif baseline_model == SSEP_CORRELATION_BASELINE_MODEL
+        return ssep_connected_correlation_fix_term(num_sites, num_particles)
+    end
+    throw(ArgumentError("Unsupported connected-correlation statistics_model: $baseline_model"))
+end
+
+function connected_correlation_matrix_1d(state, param)
+    rho_avg = Float64.(state.ρ_avg)
+    return Float64.(state.ρ_matrix_avg_cuts[:full]) .- (rho_avg * transpose(rho_avg)) .+ connected_correlation_fix_term(param)
+end
+
+function finite_curve_ylims(curves...; pad_fraction::Float64=0.08, min_pad::Float64=1e-6)
+    values = Float64[]
+    for curve in curves
+        for value in curve
+            if isfinite(value)
+                push!(values, Float64(value))
+            end
+        end
+    end
+    isempty(values) && return nothing
+    ymin, ymax = extrema(values)
+    span = ymax - ymin
+    pad = span > 0 ? pad_fraction * span : max(abs(ymin), 1.0) * pad_fraction + min_pad
+    return (ymin - pad, ymax + pad)
 end
 
 function remove_antisymmetric_part_reflection(matrix, x0)
@@ -290,6 +363,11 @@ function plot_sweep(
 )
     dim_num = length(param.dims)
     if dim_num == 1
+        if has_selected_site_cuts_for_plot(state)
+            p = plot_selected_site_cuts_1d(state, param; sweep=sweep, label=label, include_instantaneous=true)
+            present_plot!(p)
+            return p
+        end
         if prefer_multiforce_plots && (length(get_forcing_list(state)) > 1 || has_tracked_force_bonds_for_plot(state, param))
             return plot_sweep_1d_multiforce(
                 sweep,
@@ -335,6 +413,123 @@ function force_bond_sites_1d(state, L)
         end
     end
     return bonds, direction_flags, magnitudes
+end
+
+function has_selected_site_cuts_for_plot(state)
+    return haskey(state.ρ_matrix_avg_cuts, SELECTED_SITE_CUTS_KEY)
+end
+
+function selected_site_cut_metadata_for_plot(state, L::Int)
+    has_selected_site_cuts_for_plot(state) || return Int[], 1, zeros(Float64, 0, L)
+    pair_avgs = Float64.(state.ρ_matrix_avg_cuts[SELECTED_SITE_CUTS_KEY])
+    selected_sites = Int.(round.(state.ρ_matrix_avg_cuts[SELECTED_SITE_CUT_SITES_KEY]))
+    origin_site = haskey(state.ρ_matrix_avg_cuts, SELECTED_SITE_CUT_ORIGIN_SITE_KEY) ?
+        mod1(Int(round(state.ρ_matrix_avg_cuts[SELECTED_SITE_CUT_ORIGIN_SITE_KEY][1])), L) :
+        1
+    return selected_sites, origin_site, pair_avgs
+end
+
+function centered_selected_site_cut_1d(
+    state,
+    param,
+    cut_site::Int,
+    pair_avg_row::AbstractVector{<:Real},
+    origin_site::Int;
+    smooth_diagonal::Bool=true,
+)
+    L = length(pair_avg_row)
+    rho_avg = Float64.(state.ρ_avg)
+    cut = Float64.(pair_avg_row) .- rho_avg[cut_site] .* rho_avg .+ connected_correlation_fix_term(param)
+    if smooth_diagonal
+        left_site = mod1(cut_site - 1, L)
+        right_site = mod1(cut_site + 1, L)
+        cut[cut_site] = 0.5 * (cut[left_site] + cut[right_site])
+    end
+    x_rel, perm = centered_periodic_axis(L, origin_site)
+    return x_rel, cut[perm]
+end
+
+function plot_selected_site_cuts_1d(
+    state,
+    param;
+    sweep=state.t,
+    label="",
+    include_instantaneous::Bool=true,
+)
+    L = param.dims[1]
+    x_range = 1:L
+    colors = [:red, :orange, :yellow, :cyan, :magenta, :green, :blue]
+    linestyles = [:solid, :dash, :dot, :dashdot, :dashdotdot]
+    bonds, direction_flags, _ = force_bond_sites_1d(state, L)
+    selected_sites, origin_site, pair_avgs = selected_site_cut_metadata_for_plot(state, L)
+
+    p_avg_density = plot(x_range, Float64.(state.ρ_avg),
+                         title="Time-averaged density",
+                         xlabel="Site",
+                         ylabel="⟨ρ(x)⟩",
+                         lw=2.5,
+                         color=:black,
+                         legend=false,
+                         framestyle=:box,
+                         grid=:y)
+    if hasfield(typeof(state), :forcing)
+        annotate_forcing_1d!(p_avg_density, state)
+    end
+    for (cut_idx, cut_site) in enumerate(selected_sites)
+        vline!(p_avg_density, [cut_site], color=colors[mod1(cut_idx, length(colors))], linestyle=:dash, alpha=0.4, lw=1.3, label=false)
+    end
+
+    p_inst_density = plot(x_range, Float64.(state.ρ),
+                          title="Instantaneous density",
+                          xlabel="Site",
+                          ylabel="ρ(x,t)",
+                          lw=2.0,
+                          color=:steelblue,
+                          legend=false,
+                          framestyle=:box,
+                          grid=:y)
+    annotate_force_markers_minimal_1d!(p_inst_density, bonds; direction_flags=direction_flags, colors=colors)
+    for (cut_idx, cut_site) in enumerate(selected_sites)
+        vline!(p_inst_density, [cut_site], color=colors[mod1(cut_idx, length(colors))], linestyle=:dash, alpha=0.4, lw=1.3, label=false)
+    end
+
+    p_force_averages = plot_force_passage_averages_1d(state, param)
+
+    p_selected_cuts = plot(title="Selected connected cuts",
+                           xlabel="x' - x_center",
+                           ylabel="C(x_ref,x')",
+                           framestyle=:box,
+                           grid=:y)
+    centered_cuts = Vector{Vector{Float64}}()
+    for (cut_idx, cut_site) in enumerate(selected_sites)
+        x_rel, centered_cut = centered_selected_site_cut_1d(state, param, cut_site, pair_avgs[cut_idx, :], origin_site)
+        relative_site = periodic_relative_coordinate(L, origin_site, cut_site)
+        color = colors[mod1(cut_idx, length(colors))]
+        linestyle = linestyles[mod1(cut_idx, length(linestyles))]
+        push!(centered_cuts, centered_cut)
+        plot!(p_selected_cuts, x_rel, centered_cut,
+              lw=2.2,
+              color=color,
+              linestyle=linestyle,
+              label=@sprintf("x_ref = center %+d", relative_site))
+    end
+    if !isempty(centered_cuts)
+        cut_ylims = finite_curve_ylims(centered_cuts...; pad_fraction=0.12)
+        if cut_ylims !== nothing
+            ylims!(p_selected_cuts, cut_ylims)
+        end
+    end
+
+    if include_instantaneous
+        return plot(p_avg_density, p_inst_density, p_force_averages, p_selected_cuts,
+                    layout=(2, 2),
+                    size=(1850, 980),
+                    plot_title=sweep_title_with_label("1D selected-cut sweep", sweep, label))
+    end
+    return plot(p_avg_density, p_force_averages, p_selected_cuts,
+                layout=(1, 3),
+                size=(1800, 520),
+                plot_title=sweep_title_with_label("1D selected-cut observables", sweep, label))
 end
 
 function centered_periodic_axis(L, ref_site)
@@ -533,9 +728,6 @@ function plot_centered_corr_cuts_at_fluctuating_bonds_1d(
               color=color,
               label=@sprintf("j%d bond (%d,%d)", force_idx, b1, b2))
     end
-
-    hline!(p, [0], color=:gray, linestyle=:dot, lw=1.2, label=false)
-    vline!(p, [0], color=:gray, linestyle=:dash, lw=1.6, label=false)
     return p
 end
 
@@ -580,8 +772,6 @@ function plot_centered_corr_cut_at_origin_1d(
              label=@sprintf("origin bond (%d,%d)", origin_site, origin_partner),
              framestyle=:box,
              grid=:y)
-    hline!(p, [0], color=:gray, linestyle=:dot, lw=1.2, label=false)
-    vline!(p, [0], color=:gray, linestyle=:dash, lw=1.6, label=false)
     return p
 end
 
@@ -609,8 +799,6 @@ function plot_centered_corr_cut_at_bond_1d(
              label=@sprintf("bond (%d,%d)", ref_site, ref_partner),
              framestyle=:box,
              grid=:y)
-    hline!(p, [0], color=:gray, linestyle=:dot, lw=1.2, label=false)
-    vline!(p, [0], color=:gray, linestyle=:dash, lw=1.6, label=false)
     if ref_position != 0
         vline!(p, [ref_position], color=color, linestyle=:dot, lw=1.4, alpha=0.8, label=false)
     end
@@ -640,8 +828,6 @@ function plot_centered_corr_cut_at_site_1d(
              label=@sprintf("x_ref = %d", ref_site),
              framestyle=:box,
              grid=:y)
-    hline!(p, [0], color=:gray, linestyle=:dot, lw=1.2, label=false)
-    vline!(p, [0], color=:gray, linestyle=:dash, lw=1.6, label=false)
     if ref_position != 0
         vline!(p, [ref_position], color=color, linestyle=:dot, lw=1.4, alpha=0.8, label=false)
     end
@@ -1099,8 +1285,7 @@ function plot_sweep_1d_multiforce(
     x_range = 1:L
     colors = [:red, :orange, :yellow, :cyan, :magenta, :green, :blue]
 
-    outer_prod_ρ = state.ρ_avg * transpose(state.ρ_avg)
-    corr_mat = state.ρ_matrix_avg_cuts[:full] .- outer_prod_ρ
+    corr_mat = connected_correlation_matrix_1d(state, param)
     corr_scale = maximum(abs.(corr_mat))
     if !isfinite(corr_scale) || corr_scale == 0
         corr_scale = 1.0
@@ -1233,8 +1418,7 @@ function plot_sweep_1d_multiforce(
 end
 
 function plot_sweep_1d(sweep, state, param; label="", plot_directional=false)
-    outer_prod_ρ = state.ρ_avg * transpose(state.ρ_avg)
-    corr_mat = state.ρ_matrix_avg_cuts[:full] - outer_prod_ρ
+    corr_mat = connected_correlation_matrix_1d(state, param)
 
     p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
     p1 = plot_instantaneous_state_1d(state, param)
@@ -1268,7 +1452,6 @@ function plot_sweep_1d(sweep, state, param; label="", plot_directional=false)
               ylabel="C",
               lw=2,
               color=:darkgreen)
-    vline!(p6, [0], label=false, color=:gray, linestyle=:dash)
     vline!(p6, [quarter_offset], label="x=center+L/4", color=:darkgreen, linestyle=:dot)
 
     p_final = plot(p0, p1, p4, p5, p6,
@@ -1281,7 +1464,7 @@ end
 
 function plot_sweep_2d(sweep, state, param; label="", plot_directional=false)
     dims = param.dims
-    fix_term = param.N / (prod(param.dims)^2)
+    fix_term = connected_correlation_fix_term(param)
     y0 = clamp(div(dims[2], 2), 1, dims[2])
     x0 = clamp(div(dims[1], 2), 1, dims[1])
     x_range = 1:dims[1]
@@ -1339,7 +1522,6 @@ function plot_sweep_2d(sweep, state, param; label="", plot_directional=false)
         color=:darkgreen,
         legend=false,
     )
-    vline!(p_quarter_cut, [0], label=false, color=:gray, linestyle=:dash)
     vline!(p_quarter_cut, [quarter_offset], label="x=center+L/4", color=:darkgreen, linestyle=:dot)
 
     p_empty = plot(axis=false, showaxis=false, grid=false, title="")
@@ -1425,8 +1607,10 @@ function plot_average_density_and_correlation(state, param; label="")
     dim_num = length(param.dims)
 
     if dim_num == 1
-        rho_avg = Float64.(state.ρ_avg)
-        corr_mat = Float64.(state.ρ_matrix_avg_cuts[:full]) .- (rho_avg * transpose(rho_avg))
+        if has_selected_site_cuts_for_plot(state)
+            return plot_selected_site_cuts_1d(state, param; sweep=state.t, label=label, include_instantaneous=false)
+        end
+        corr_mat = connected_correlation_matrix_1d(state, param)
         L = param.dims[1]
         center = clamp(div(L, 2), 1, L)
         quarter_site = mod1(center + fld(L, 4), L)
@@ -1460,7 +1644,6 @@ function plot_average_density_and_correlation(state, param; label="")
                              title="Connected correlation cut at x=$(quarter_site)",
                              lw=2,
                              color=:darkgreen)
-        vline!(p_quarter_cut, [0], label=false, color=:gray, linestyle=:dash)
         vline!(p_quarter_cut, [quarter_offset], label="x=center+L/4", color=:darkgreen, linestyle=:dot)
         vline!(p_corr, [quarter_site], label=false, color=:darkgreen, linestyle=:dash)
         return plot(p_density, p_corr, p_center_cut, p_quarter_cut,
@@ -1470,7 +1653,7 @@ function plot_average_density_and_correlation(state, param; label="")
     elseif dim_num == 2
         x0 = clamp(div(param.dims[1] + 1, 2), 1, param.dims[1])
         y0 = clamp(div(param.dims[2] + 1, 2), 1, param.dims[2])
-        fix_term = param.N / (prod(param.dims)^2)
+        fix_term = connected_correlation_fix_term(param)
 
         p_density = plot_density(state.ρ_avg, param, state; title="Time averaged density")
         if hasfield(typeof(state), :forcing)
@@ -1541,8 +1724,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             end
 
             for i in indices
-                outer_prod_ρ = state.ρ_avg*transpose(state.ρ_avg)
-                corr_mat = (state.ρ_matrix_avg_cuts[:full] - outer_prod_ρ) .+ (N / L^2)
+                corr_mat = connected_correlation_matrix_1d(state, param)
                 middle_spot = L ÷ 2
                 point_to_look_at = Int(middle_spot + i)
 
@@ -1608,8 +1790,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             end
         elseif dim_num == 2
             dims = param.dims
-            N = param.N
-            fix_term = N / (prod(dims)^2)
+            fix_term = connected_correlation_fix_term(param)
             
             # Setup output directories for 2D
             x_axis_dir = "$(results_dir)/x_axis_cut"

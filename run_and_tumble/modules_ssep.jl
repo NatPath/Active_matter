@@ -118,6 +118,9 @@ module FPSSEP
     const BOND_PASS_SPATIAL_F_AVG_KEY = :bond_pass_spatial_f_avg
     const BOND_PASS_SPATIAL_F2_AVG_KEY = :bond_pass_spatial_f2_avg
     const BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY = :bond_pass_spatial_sample_count
+    const SELECTED_SITE_CUTS_KEY = :selected_site_cuts
+    const SELECTED_SITE_CUT_SITES_KEY = :selected_site_cut_sites
+    const SELECTED_SITE_CUT_ORIGIN_SITE_KEY = :selected_site_cut_origin_site
 
     function bond_pass_track_mask_for_forcings(forcings::Vector{BondForce}, mode::AbstractString)
         if mode == "all_forcing_bonds"
@@ -146,6 +149,33 @@ module FPSSEP
         bond_pass_stats[BOND_PASS_SPATIAL_F_AVG_KEY] = zeros(Float64, L)
         bond_pass_stats[BOND_PASS_SPATIAL_F2_AVG_KEY] = zeros(Float64, L)
         bond_pass_stats[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY] = [0.0]
+        return nothing
+    end
+
+    function selected_site_cut_pair_matrix(ρ::AbstractVector{<:Number}, selected_sites::Vector{Int})
+        L = length(ρ)
+        cuts = zeros(Float64, length(selected_sites), L)
+        for (cut_idx, site) in enumerate(selected_sites)
+            occ_site = Float64(ρ[site])
+            if occ_site == 0.0
+                continue
+            end
+            @inbounds for other_site in 1:L
+                cuts[cut_idx, other_site] = occ_site * Float64(ρ[other_site])
+            end
+        end
+        return cuts
+    end
+
+    function initialize_selected_site_cut_stats!(
+        ρ_matrix_avg_cuts,
+        ρ::AbstractVector{<:Number},
+        selected_sites::Vector{Int},
+        origin_site::Int,
+    )
+        ρ_matrix_avg_cuts[SELECTED_SITE_CUTS_KEY] = selected_site_cut_pair_matrix(ρ, selected_sites)
+        ρ_matrix_avg_cuts[SELECTED_SITE_CUT_SITES_KEY] = Float64.(selected_sites)
+        ρ_matrix_avg_cuts[SELECTED_SITE_CUT_ORIGIN_SITE_KEY] = [Float64(origin_site)]
         return nothing
     end
 
@@ -275,6 +305,9 @@ module FPSSEP
         ic="random",
         full_corr_tensor=false,
         bond_pass_count_mode::AbstractString="nonzero_magnitude",
+        correlation_observable_mode::AbstractString="full",
+        selected_cut_sites::Vector{Int}=Int[],
+        selected_cut_origin_site::Union{Nothing,Int}=nothing,
     )
         dim = length(param.dims)
         chosen_sites = choose_initial_sites(param, rng; ic=String(ic))
@@ -291,9 +324,14 @@ module FPSSEP
 
         ρ_avg = Float64.(ρ)
         if dim == 1
-            ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}(
-                :full => ρ_avg * transpose(ρ_avg),
-            )
+            ρ_matrix_avg_cuts = Dict{Symbol,AbstractArray{Float64}}()
+            if correlation_observable_mode == "selected_site_cuts"
+                isempty(selected_cut_sites) && throw(ArgumentError("selected_cut_sites must be non-empty when correlation_observable_mode=\"selected_site_cuts\"."))
+                origin_site = isnothing(selected_cut_origin_site) ? 1 : mod1(Int(selected_cut_origin_site), param.dims[1])
+                initialize_selected_site_cut_stats!(ρ_matrix_avg_cuts, ρ_avg, unique(mod1.(selected_cut_sites, param.dims[1])), origin_site)
+            else
+                ρ_matrix_avg_cuts[:full] = ρ_avg * transpose(ρ_avg)
+            end
         elseif dim == 2
             x_middle = clamp(div(param.dims[1], 2), 1, param.dims[1])
             y_middle = clamp(div(param.dims[2], 2), 1, param.dims[2])
@@ -353,8 +391,16 @@ module FPSSEP
 
         dim = ndims(state.ρ)
         if dim == 1
-            ρf = float(state.ρ)
-            state.ρ_matrix_avg_cuts[:full] .= ρf * transpose(ρf)
+            if haskey(state.ρ_matrix_avg_cuts, SELECTED_SITE_CUTS_KEY)
+                selected_sites = Int.(round.(state.ρ_matrix_avg_cuts[SELECTED_SITE_CUT_SITES_KEY]))
+                origin_site = haskey(state.ρ_matrix_avg_cuts, SELECTED_SITE_CUT_ORIGIN_SITE_KEY) ?
+                    mod1(Int(round(state.ρ_matrix_avg_cuts[SELECTED_SITE_CUT_ORIGIN_SITE_KEY][1])), size(state.ρ, 1)) :
+                    1
+                initialize_selected_site_cut_stats!(state.ρ_matrix_avg_cuts, state.ρ, selected_sites, origin_site)
+            else
+                ρf = float(state.ρ)
+                state.ρ_matrix_avg_cuts[:full] .= ρf * transpose(ρf)
+            end
         elseif dim == 2
             ρf = float(state.ρ)
             if haskey(state.ρ_matrix_avg_cuts, :full)
@@ -381,6 +427,20 @@ module FPSSEP
             initialize_spatial_bond_passage_stats!(state.bond_pass_stats, size(state.ρ, 1))
         end
         return state
+    end
+
+    @inline has_selected_site_cuts(state) = haskey(state.ρ_matrix_avg_cuts, SELECTED_SITE_CUTS_KEY)
+
+    function selected_site_cut_sites_from_state(state)
+        has_selected_site_cuts(state) || return Int[]
+        return Int.(round.(state.ρ_matrix_avg_cuts[SELECTED_SITE_CUT_SITES_KEY]))
+    end
+
+    function selected_site_cut_origin_site_from_state(state, L::Int)
+        if has_selected_site_cuts(state) && haskey(state.ρ_matrix_avg_cuts, SELECTED_SITE_CUT_ORIGIN_SITE_KEY)
+            return mod1(Int(round(state.ρ_matrix_avg_cuts[SELECTED_SITE_CUT_ORIGIN_SITE_KEY][1])), L)
+        end
+        return 1
     end
 
     function param_ffrs(param)
@@ -484,6 +544,536 @@ module FPSSEP
 
     @inline forcing_rate(ffrs::AbstractVector{<:Real}, force_idx::Int) = force_idx <= length(ffrs) ? Float64(ffrs[force_idx]) : 0.0
     @inline is_static_zero_potential(param) = param.potential_type == "zero" && param.fluctuation_type == "no-fluctuation"
+
+    mutable struct FenwickTree
+        tree::Vector{Float64}
+        values::Vector{Float64}
+    end
+
+    FenwickTree(n::Int) = FenwickTree(zeros(Float64, n), zeros(Float64, n))
+
+    @inline function largest_power_of_two_leq(n::Int)
+        bit = 1
+        while (bit << 1) <= n
+            bit <<= 1
+        end
+        return bit
+    end
+
+    @inline function fenwick_set!(tree::FenwickTree, idx::Int, value::Float64)
+        delta = value - tree.values[idx]
+        tree.values[idx] = value
+        i = idx
+        n = length(tree.tree)
+        while i <= n
+            tree.tree[i] += delta
+            i += i & -i
+        end
+        return value
+    end
+
+    @inline function fenwick_total(tree::FenwickTree)
+        total = 0.0
+        i = length(tree.tree)
+        while i > 0
+            total += tree.tree[i]
+            i -= i & -i
+        end
+        return total
+    end
+
+    @inline function fenwick_sample(tree::FenwickTree, target::Float64)
+        idx = 0
+        cumulative = 0.0
+        bit = largest_power_of_two_leq(length(tree.tree))
+        while bit != 0
+            next_idx = idx + bit
+            if next_idx <= length(tree.tree) && cumulative + tree.tree[next_idx] < target
+                idx = next_idx
+                cumulative += tree.tree[next_idx]
+            end
+            bit >>= 1
+        end
+        return idx + 1
+    end
+
+    @inline function bond_left_site_and_orientation_1d(first_site::Int, second_site::Int, L::Int)
+        if mod1(first_site + 1, L) == second_site
+            return first_site, Int8(1)
+        elseif mod1(second_site + 1, L) == first_site
+            return second_site, Int8(-1)
+        end
+        throw(ArgumentError("CTMC 1D forcing bonds must connect nearest-neighbor sites on the ring. Got ($first_site, $second_site) for L=$L."))
+    end
+
+    @inline force_right_contribution(force::BondForce, orientation_sign::Int8) =
+        force.magnitude * (force.direction_flag ? Float64(orientation_sign) : -Float64(orientation_sign))
+
+    @inline function update_ctmc_site_observables!(
+        density_accum::Vector{Float64},
+        density_last_touch::Vector{Float64},
+        corr_accum::Matrix{Float64},
+        corr_last_touch::Matrix{Float64},
+        corr_current::Matrix{Float64},
+        ρ::AbstractVector{<:Integer},
+        t_local::Float64,
+        site::Int,
+    )
+        density_accum[site] += Float64(ρ[site]) * (t_local - density_last_touch[site])
+        density_last_touch[site] = t_local
+
+        L = length(ρ)
+        @inbounds for other_site in 1:L
+            corr_accum[site, other_site] += corr_current[site, other_site] * (t_local - corr_last_touch[site, other_site])
+            corr_last_touch[site, other_site] = t_local
+            if other_site != site
+                corr_accum[other_site, site] += corr_current[other_site, site] * (t_local - corr_last_touch[other_site, site])
+                corr_last_touch[other_site, site] = t_local
+            end
+        end
+        return nothing
+    end
+
+    @inline function refresh_ctmc_site_correlations!(
+        corr_current::Matrix{Float64},
+        ρ::AbstractVector{<:Integer},
+        site::Int,
+    )
+        occ_site = Float64(ρ[site])
+        L = length(ρ)
+        @inbounds for other_site in 1:L
+            occ_other = Float64(ρ[other_site])
+            corr_current[site, other_site] = occ_site * occ_other
+            corr_current[other_site, site] = occ_other * occ_site
+        end
+        return nothing
+    end
+
+    @inline function update_selected_site_cut_observables!(
+        cut_accum::Matrix{Float64},
+        cut_last_touch::Matrix{Float64},
+        cut_current::Matrix{Float64},
+        selected_sites::Vector{Int},
+        t_local::Float64,
+        site_a::Int,
+        site_b::Int,
+    )
+        L = size(cut_accum, 2)
+        for (cut_idx, cut_site) in enumerate(selected_sites)
+            if cut_site == site_a || cut_site == site_b
+                @inbounds for other_site in 1:L
+                    cut_accum[cut_idx, other_site] += cut_current[cut_idx, other_site] * (t_local - cut_last_touch[cut_idx, other_site])
+                    cut_last_touch[cut_idx, other_site] = t_local
+                end
+            else
+                cut_accum[cut_idx, site_a] += cut_current[cut_idx, site_a] * (t_local - cut_last_touch[cut_idx, site_a])
+                cut_last_touch[cut_idx, site_a] = t_local
+                cut_accum[cut_idx, site_b] += cut_current[cut_idx, site_b] * (t_local - cut_last_touch[cut_idx, site_b])
+                cut_last_touch[cut_idx, site_b] = t_local
+            end
+        end
+        return nothing
+    end
+
+    @inline function refresh_selected_site_cut_values!(
+        cut_current::Matrix{Float64},
+        ρ::AbstractVector{<:Integer},
+        selected_sites::Vector{Int},
+        site_a::Int,
+        site_b::Int,
+    )
+        L = size(cut_current, 2)
+        for (cut_idx, cut_site) in enumerate(selected_sites)
+            occ_cut = Float64(ρ[cut_site])
+            if cut_site == site_a || cut_site == site_b
+                @inbounds for other_site in 1:L
+                    cut_current[cut_idx, other_site] = occ_cut * Float64(ρ[other_site])
+                end
+            else
+                cut_current[cut_idx, site_a] = occ_cut * Float64(ρ[site_a])
+                cut_current[cut_idx, site_b] = occ_cut * Float64(ρ[site_b])
+            end
+        end
+        return nothing
+    end
+
+    @inline function finalize_selected_site_cut_observables!(
+        cut_accum::Matrix{Float64},
+        cut_last_touch::Matrix{Float64},
+        cut_current::Matrix{Float64},
+    )
+        n_cuts, L = size(cut_accum)
+        @inbounds for cut_idx in 1:n_cuts
+            for other_site in 1:L
+                cut_accum[cut_idx, other_site] += cut_current[cut_idx, other_site] * (1.0 - cut_last_touch[cut_idx, other_site])
+            end
+        end
+        return nothing
+    end
+
+    @inline function ctmc_rate_factor_1d(
+        state,
+        param,
+        from_idx::Int,
+        to_idx::Int,
+        directed_bond_forcing::Float64,
+        static_zero_potential::Bool,
+        rate_normalization::Float64,
+        scheme::AbstractString,
+    )
+        prefactor = bond_rate_prefactor(param.D, directed_bond_forcing, rate_normalization, scheme)
+        prefactor <= 0.0 && return 0.0
+        if static_zero_potential
+            return prefactor
+        end
+        ΔV = Float64(state.potential.V[to_idx] - state.potential.V[from_idx])
+        return prefactor * min(1.0, lookup_exp(state.exp_table, -ΔV / state.T))
+    end
+
+    @inline function recompute_ctmc_bond_rates_1d!(
+        event_tree::FenwickTree,
+        state,
+        param,
+        bond_left_site::Int,
+        right_neighbors::Vector{Int},
+        bond_right_forcing::Vector{Float64},
+        static_zero_potential::Bool,
+        rate_normalization::Float64,
+        scheme::AbstractString,
+    )
+        L = length(state.ρ)
+        right_site = right_neighbors[bond_left_site]
+
+        right_rate = 0.0
+        if state.ρ[bond_left_site] == 1 && state.ρ[right_site] == 0
+            right_rate = ctmc_rate_factor_1d(
+                state,
+                param,
+                bond_left_site,
+                right_site,
+                bond_right_forcing[bond_left_site],
+                static_zero_potential,
+                rate_normalization,
+                scheme,
+            )
+        end
+
+        left_rate = 0.0
+        if state.ρ[right_site] == 1 && state.ρ[bond_left_site] == 0
+            left_rate = ctmc_rate_factor_1d(
+                state,
+                param,
+                right_site,
+                bond_left_site,
+                -bond_right_forcing[bond_left_site],
+                static_zero_potential,
+                rate_normalization,
+                scheme,
+            )
+        end
+
+        fenwick_set!(event_tree, bond_left_site, right_rate)
+        fenwick_set!(event_tree, L + bond_left_site, left_rate)
+        return nothing
+    end
+
+    @inline function recompute_ctmc_bond_neighborhood_1d!(
+        event_tree::FenwickTree,
+        state,
+        param,
+        site_a::Int,
+        site_b::Int,
+        left_neighbors::Vector{Int},
+        right_neighbors::Vector{Int},
+        bond_right_forcing::Vector{Float64},
+        static_zero_potential::Bool,
+        rate_normalization::Float64,
+        scheme::AbstractString,
+    )
+        bond_1 = left_neighbors[site_a]
+        bond_2 = site_a
+        bond_3 = left_neighbors[site_b]
+        bond_4 = site_b
+
+        recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_1, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+        if bond_2 != bond_1
+            recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_2, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+        end
+        if bond_3 != bond_1 && bond_3 != bond_2
+            recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_3, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+        end
+        if bond_4 != bond_1 && bond_4 != bond_2 && bond_4 != bond_3
+            recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_4, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+        end
+        return nothing
+    end
+
+    @inline function record_ctmc_bond_passage_1d!(
+        forward_counts::Vector{Int64},
+        reverse_counts::Vector{Int64},
+        tracked_forces_by_bond::Vector{Vector{Int}},
+        right_hop_is_forward::BitVector,
+        bond_left_site::Int,
+        moved_right::Bool,
+    )
+        for force_idx in tracked_forces_by_bond[bond_left_site]
+            if moved_right == right_hop_is_forward[force_idx]
+                forward_counts[force_idx] += 1
+            else
+                reverse_counts[force_idx] += 1
+            end
+        end
+        return nothing
+    end
+
+    function update_ctmc_1d!(
+        param,
+        state,
+        rng;
+        collect_statistics::Bool=true,
+        force_fluctuation_types::Vector{String}=String[],
+    )
+        validate_exclusion_state(state)
+        length(param.dims) == 1 || throw(ArgumentError("CTMC SSEP currently supports only 1D systems."))
+
+        L = param.dims[1]
+        L >= 2 || throw(ArgumentError("CTMC SSEP requires L >= 2."))
+
+        left_neighbors, right_neighbors = precompute_periodic_neighbors_1d(L)
+        static_zero_potential = is_static_zero_potential(param)
+        ffrs = param_ffrs(param)
+        forcings = get_state_forcings!(state)
+        n_forces = length(forcings)
+        scheme = forcing_rate_scheme(param)
+        rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
+
+        if isempty(force_fluctuation_types)
+            force_fluctuation_types = fill("alternating_direction", n_forces)
+        elseif length(force_fluctuation_types) != n_forces
+            throw(ArgumentError("force_fluctuation_types must have length $n_forces, got $(length(force_fluctuation_types))."))
+        end
+
+        force_bond_left_sites = zeros(Int, n_forces)
+        force_orientation_signs = zeros(Int8, n_forces)
+        force_right_contributions = zeros(Float64, n_forces)
+        tracked_forces_by_bond = [Int[] for _ in 1:L]
+        right_hop_is_forward = falses(n_forces)
+        fluctuating_force_indices = Int[]
+
+        ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
+        tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
+        tracked_force_set = Set(tracked_force_indices)
+
+        for force_idx in 1:n_forces
+            force = forcings[force_idx]
+            first_site = mod1(force.bond_indices[1][1], L)
+            second_site = mod1(force.bond_indices[2][1], L)
+            bond_left_site, orientation_sign = bond_left_site_and_orientation_1d(first_site, second_site, L)
+            force_bond_left_sites[force_idx] = bond_left_site
+            force_orientation_signs[force_idx] = orientation_sign
+            force_right_contributions[force_idx] = force_right_contribution(force, orientation_sign)
+            right_hop_is_forward[force_idx] = orientation_sign == 1
+
+            if force_idx in tracked_force_set
+                push!(tracked_forces_by_bond[bond_left_site], force_idx)
+            end
+
+            fluctuation_type = force_fluctuation_types[force_idx]
+            if fluctuation_type == "alternating_direction"
+                if forcing_rate(ffrs, force_idx) > 0.0
+                    push!(fluctuating_force_indices, force_idx)
+                end
+            elseif fluctuation_type != "static"
+                throw(ArgumentError("Unsupported force fluctuation type for CTMC: $fluctuation_type"))
+            end
+        end
+
+        bond_right_forcing = zeros(Float64, L)
+        for force_idx in 1:n_forces
+            bond_right_forcing[force_bond_left_sites[force_idx]] += force_right_contributions[force_idx]
+        end
+
+        potential_event_count = param.γ > 0.0 ? 1 : 0
+        event_tree = FenwickTree(2 * L + length(fluctuating_force_indices) + potential_event_count)
+
+        for bond_left_site in 1:L
+            recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_left_site, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+        end
+
+        for (event_offset, force_idx) in enumerate(fluctuating_force_indices)
+            fenwick_set!(event_tree, 2 * L + event_offset, max(forcing_rate(ffrs, force_idx), 0.0))
+        end
+        flip_event_upper = 2 * L + length(fluctuating_force_indices)
+        if potential_event_count == 1
+            fenwick_set!(event_tree, length(event_tree.tree), max(param.γ, 0.0))
+        end
+
+        site_to_particle = zeros(Int, L)
+        for (particle_idx, particle) in enumerate(state.particles)
+            site_to_particle[particle.position[1]] = particle_idx
+        end
+
+        sweep_forward_counts = zeros(Int64, n_forces)
+        sweep_reverse_counts = zeros(Int64, n_forces)
+        sweep_spatial_forward_counts = zeros(Int64, L)
+        sweep_spatial_reverse_counts = zeros(Int64, L)
+
+        density_accum = collect_statistics ? zeros(Float64, L) : nothing
+        density_last_touch = collect_statistics ? zeros(Float64, L) : nothing
+        use_selected_site_cuts = collect_statistics && has_selected_site_cuts(state)
+        selected_cut_sites = use_selected_site_cuts ? selected_site_cut_sites_from_state(state) : Int[]
+        cut_accum = use_selected_site_cuts ? zeros(Float64, length(selected_cut_sites), L) : nothing
+        cut_last_touch = use_selected_site_cuts ? zeros(Float64, length(selected_cut_sites), L) : nothing
+        cut_current = use_selected_site_cuts ? selected_site_cut_pair_matrix(state.ρ, selected_cut_sites) : nothing
+        corr_accum = collect_statistics && !use_selected_site_cuts ? zeros(Float64, L, L) : nothing
+        corr_last_touch = collect_statistics && !use_selected_site_cuts ? zeros(Float64, L, L) : nothing
+        corr_current = collect_statistics && !use_selected_site_cuts ? Float64.(state.ρ) * transpose(Float64.(state.ρ)) : nothing
+
+        t_local = 0.0
+        while t_local < 1.0
+            total_rate = fenwick_total(event_tree)
+            total_rate <= 0.0 && break
+
+            dt = -log(rand(rng)) / total_rate
+            if t_local + dt >= 1.0
+                break
+            end
+            t_local += dt
+
+            target = max(rand(rng) * total_rate, nextfloat(0.0))
+            event_idx = fenwick_sample(event_tree, target)
+
+            if event_idx <= L
+                bond_left_site = event_idx
+                from_site = bond_left_site
+                to_site = right_neighbors[bond_left_site]
+                particle_idx = site_to_particle[from_site]
+                particle_idx == 0 && error("CTMC rate table selected an empty source site on bond $bond_left_site.")
+                site_to_particle[to_site] == 0 || error("CTMC rate table selected an occupied target site on bond $bond_left_site.")
+
+                if collect_statistics
+                    if use_selected_site_cuts
+                        density_accum[from_site] += Float64(state.ρ[from_site]) * (t_local - density_last_touch[from_site])
+                        density_last_touch[from_site] = t_local
+                        density_accum[to_site] += Float64(state.ρ[to_site]) * (t_local - density_last_touch[to_site])
+                        density_last_touch[to_site] = t_local
+                        update_selected_site_cut_observables!(cut_accum, cut_last_touch, cut_current, selected_cut_sites, t_local, from_site, to_site)
+                    else
+                        update_ctmc_site_observables!(density_accum, density_last_touch, corr_accum, corr_last_touch, corr_current, state.ρ, t_local, from_site)
+                        update_ctmc_site_observables!(density_accum, density_last_touch, corr_accum, corr_last_touch, corr_current, state.ρ, t_local, to_site)
+                    end
+                end
+
+                site_to_particle[from_site] = 0
+                site_to_particle[to_site] = particle_idx
+                state.particles[particle_idx].position = (to_site,)
+                state.ρ[from_site] = 0
+                state.ρ[to_site] = 1
+                state.ρ₊[from_site] = 0
+                state.ρ₊[to_site] = 1
+                state.ρ₋[from_site] = 0
+                state.ρ₋[to_site] = 1
+
+                if collect_statistics
+                    if use_selected_site_cuts
+                        refresh_selected_site_cut_values!(cut_current, state.ρ, selected_cut_sites, from_site, to_site)
+                    else
+                        refresh_ctmc_site_correlations!(corr_current, state.ρ, from_site)
+                        refresh_ctmc_site_correlations!(corr_current, state.ρ, to_site)
+                    end
+                end
+
+                record_ctmc_bond_passage_1d!(sweep_forward_counts, sweep_reverse_counts, tracked_forces_by_bond, right_hop_is_forward, bond_left_site, true)
+                sweep_spatial_forward_counts[bond_left_site] += 1
+                recompute_ctmc_bond_neighborhood_1d!(event_tree, state, param, from_site, to_site, left_neighbors, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+            elseif event_idx <= 2 * L
+                bond_left_site = event_idx - L
+                from_site = right_neighbors[bond_left_site]
+                to_site = bond_left_site
+                particle_idx = site_to_particle[from_site]
+                particle_idx == 0 && error("CTMC rate table selected an empty source site on reverse bond $bond_left_site.")
+                site_to_particle[to_site] == 0 || error("CTMC rate table selected an occupied target site on reverse bond $bond_left_site.")
+
+                if collect_statistics
+                    if use_selected_site_cuts
+                        density_accum[from_site] += Float64(state.ρ[from_site]) * (t_local - density_last_touch[from_site])
+                        density_last_touch[from_site] = t_local
+                        density_accum[to_site] += Float64(state.ρ[to_site]) * (t_local - density_last_touch[to_site])
+                        density_last_touch[to_site] = t_local
+                        update_selected_site_cut_observables!(cut_accum, cut_last_touch, cut_current, selected_cut_sites, t_local, from_site, to_site)
+                    else
+                        update_ctmc_site_observables!(density_accum, density_last_touch, corr_accum, corr_last_touch, corr_current, state.ρ, t_local, from_site)
+                        update_ctmc_site_observables!(density_accum, density_last_touch, corr_accum, corr_last_touch, corr_current, state.ρ, t_local, to_site)
+                    end
+                end
+
+                site_to_particle[from_site] = 0
+                site_to_particle[to_site] = particle_idx
+                state.particles[particle_idx].position = (to_site,)
+                state.ρ[from_site] = 0
+                state.ρ[to_site] = 1
+                state.ρ₊[from_site] = 0
+                state.ρ₊[to_site] = 1
+                state.ρ₋[from_site] = 0
+                state.ρ₋[to_site] = 1
+
+                if collect_statistics
+                    if use_selected_site_cuts
+                        refresh_selected_site_cut_values!(cut_current, state.ρ, selected_cut_sites, from_site, to_site)
+                    else
+                        refresh_ctmc_site_correlations!(corr_current, state.ρ, from_site)
+                        refresh_ctmc_site_correlations!(corr_current, state.ρ, to_site)
+                    end
+                end
+
+                record_ctmc_bond_passage_1d!(sweep_forward_counts, sweep_reverse_counts, tracked_forces_by_bond, right_hop_is_forward, bond_left_site, false)
+                sweep_spatial_reverse_counts[bond_left_site] += 1
+                recompute_ctmc_bond_neighborhood_1d!(event_tree, state, param, from_site, to_site, left_neighbors, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+            elseif event_idx <= flip_event_upper
+                fluctuating_event_idx = event_idx - 2 * L
+                force_idx = fluctuating_force_indices[fluctuating_event_idx]
+                bond_left_site = force_bond_left_sites[force_idx]
+
+                bond_right_forcing[bond_left_site] -= force_right_contributions[force_idx]
+                bondforce_update!(forcings[force_idx])
+                force_right_contributions[force_idx] = force_right_contribution(forcings[force_idx], force_orientation_signs[force_idx])
+                bond_right_forcing[bond_left_site] += force_right_contributions[force_idx]
+                recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_left_site, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+            else
+                potential_update!(state.potential, rng)
+                for bond_left_site in 1:L
+                    recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_left_site, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
+                end
+            end
+        end
+
+        interval_density = nothing
+        interval_corr = nothing
+        if collect_statistics
+            @inbounds for site in 1:L
+                density_accum[site] += Float64(state.ρ[site]) * (1.0 - density_last_touch[site])
+            end
+            interval_density = density_accum
+            if use_selected_site_cuts
+                finalize_selected_site_cut_observables!(cut_accum, cut_last_touch, cut_current)
+                interval_corr = cut_accum
+            else
+                @inbounds for site_i in 1:L
+                    for site_j in 1:L
+                        corr_accum[site_i, site_j] += corr_current[site_i, site_j] * (1.0 - corr_last_touch[site_i, site_j])
+                    end
+                end
+                interval_corr = corr_accum
+            end
+            update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
+            update_spatial_bond_passage_averages!(state, sweep_spatial_forward_counts, sweep_spatial_reverse_counts)
+        end
+
+        state.max_site_occupancy = isempty(state.particles) ? 0 : 1
+        state.t += 1
+        validate_exclusion_state(state)
+        return interval_density, interval_corr
+    end
 
     @inline function precompute_periodic_neighbors_1d(L::Int)
         left_neighbors = [i == 1 ? L : i - 1 for i in 1:L]
@@ -747,8 +1337,29 @@ module FPSSEP
     end
 end
 
-function update_and_compute_correlations!(state, param, rng; collect_statistics::Bool=true)
-    FPSSEP.update!(param, state, rng; collect_statistics=collect_statistics)
+function update_and_compute_correlations!(
+    state,
+    param,
+    rng;
+    collect_statistics::Bool=true,
+    simulation_mode::AbstractString="discrete_sweep",
+    force_fluctuation_types::Vector{String}=String[],
+)
+    interval_density = nothing
+    interval_corr = nothing
+    if simulation_mode == "ctmc_1d"
+        interval_density, interval_corr = FPSSEP.update_ctmc_1d!(
+            param,
+            state,
+            rng;
+            collect_statistics=collect_statistics,
+            force_fluctuation_types=force_fluctuation_types,
+        )
+    elseif simulation_mode == "discrete_sweep"
+        FPSSEP.update!(param, state, rng; collect_statistics=collect_statistics)
+    else
+        throw(ArgumentError("Unsupported SSEP simulation_mode: $simulation_mode"))
+    end
     if !collect_statistics
         return nothing
     end
@@ -758,10 +1369,18 @@ function update_and_compute_correlations!(state, param, rng; collect_statistics:
 
     dim_num = length(param.dims)
     if dim_num == 1
-        ρf = float(state.ρ)
+        ρf = isnothing(interval_density) ? float(state.ρ) : interval_density
         state.ρ_avg .= (state.ρ_avg .* weight_prev .+ ρf) ./ n_eff
-        ρ_matrix = ρf * transpose(ρf)
-        state.ρ_matrix_avg_cuts[:full] .= (state.ρ_matrix_avg_cuts[:full] .* weight_prev .+ ρ_matrix) ./ n_eff
+        if FPSSEP.has_selected_site_cuts(state)
+            selected_cuts = isnothing(interval_corr) ?
+                FPSSEP.selected_site_cut_pair_matrix(ρf, FPSSEP.selected_site_cut_sites_from_state(state)) :
+                interval_corr
+            state.ρ_matrix_avg_cuts[FPSSEP.SELECTED_SITE_CUTS_KEY] .=
+                (state.ρ_matrix_avg_cuts[FPSSEP.SELECTED_SITE_CUTS_KEY] .* weight_prev .+ selected_cuts) ./ n_eff
+        else
+            ρ_matrix = isnothing(interval_corr) ? (ρf * transpose(ρf)) : interval_corr
+            state.ρ_matrix_avg_cuts[:full] .= (state.ρ_matrix_avg_cuts[:full] .* weight_prev .+ ρ_matrix) ./ n_eff
+        end
     elseif dim_num == 2
         ρf = float(state.ρ)
         state.ρ_avg .= (state.ρ_avg .* weight_prev .+ ρf) ./ n_eff
@@ -799,6 +1418,8 @@ function run_simulation!(
     warmup_sweeps::Int=0,
     show_progress::Bool=true,
     relaxed_ic::Bool=false,
+    simulation_mode::AbstractString="discrete_sweep",
+    force_fluctuation_types::Vector{String}=String[],
 )
     println("Starting SSEP simulation")
     progress = show_progress ? Progress(n_sweeps) : nothing
@@ -813,7 +1434,14 @@ function run_simulation!(
             println("Warmup complete at sweep $sweep. Starting statistics accumulation.")
         end
 
-        update_and_compute_correlations!(state, param, rng; collect_statistics=collect_statistics)
+        update_and_compute_correlations!(
+            state,
+            param,
+            rng;
+            collect_statistics=collect_statistics,
+            simulation_mode=simulation_mode,
+            force_fluctuation_types=force_fluctuation_types,
+        )
 
         if sweep in save_times
             save_state(state, param, save_dir; relaxed_ic=relaxed_ic, description=save_description)
