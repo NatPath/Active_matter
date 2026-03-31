@@ -8,6 +8,7 @@ using Statistics
 
 include("potentials.jl")
 include("modules_diffusive_no_activity.jl")
+include("modules_ssep.jl")
 include("plot_utils.jl")
 
 using .PlotUtils
@@ -67,6 +68,20 @@ const AGG_TWO_FORCE_J2_MEAN_WEIGHT_KEY = :agg_two_force_j2_mean_weight
 const AGG_TWO_FORCE_J2_MEAN_SUM_KEY = :agg_two_force_j2_mean_sum
 const AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY = :agg_two_force_j2_mean_sumsq
 const AGG_TWO_FORCE_J2_MEAN_WEIGHTSQ_KEY = :agg_two_force_j2_mean_weightsq
+const AGG_CONNECTED_FULL_EXACT_KEY = :agg_connected_corr_full_exact
+const RUN_FAMILY_TWO_FORCE_D = "two_force_d"
+const RUN_FAMILY_SINGLE_ORIGIN_BOND = "single_origin_bond"
+const RUN_FAMILY_SSEP = "ssep"
+const RUN_FAMILY_BASE_RELPATHS = Dict(
+    RUN_FAMILY_TWO_FORCE_D => joinpath("runs", "two_force_d"),
+    RUN_FAMILY_SINGLE_ORIGIN_BOND => joinpath("runs", "single_origin_bond"),
+    RUN_FAMILY_SSEP => joinpath("runs", "ssep", "single_center_bond"),
+)
+const RUN_ID_FAMILIES_IN_SEARCH_ORDER = [
+    RUN_FAMILY_SSEP,
+    RUN_FAMILY_TWO_FORCE_D,
+    RUN_FAMILY_SINGLE_ORIGIN_BOND,
+]
 
 function wildcard_to_regex(pattern::String)
     special = Set(['.', '^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\'])
@@ -167,10 +182,10 @@ function parse_commandline()
             help = "Input path(s): JLD2 files, directories, or globs (optional when --run_id is used)"
             nargs = '*'
         "--mode"
-            help = "Mode: single, two_force_d, or run_id (run_id is an alias for two_force_d and expects --run_id)"
+            help = "Mode: single, two_force_d, or run_id (run_id auto-detects the supported run family)"
             default = "single"
         "--run_id"
-            help = "Run folder name under runs/two_force_d/(warmup|production|local/warmup|local/production)/<run_id>"
+            help = "Run folder name under supported runs/<family>/.../<run_id> folders"
             default = ""
         "--run_result_mode"
             help = "When using --run_id: warmup, production, local_warmup, local_production, or auto"
@@ -207,17 +222,26 @@ function parse_commandline()
             help = "Fixed constant offset C in bond-correlation model fit (default 0)"
             arg_type = Float64
             default = 0.0
+        "--collapse_power"
+            help = "Power n used for SSEP 1D data-collapse plots C(x,y)*y^n"
+            arg_type = Float64
+            default = 2.0
+        "--collapse_indices"
+            help = "Optional comma-separated subset of positive SSEP cut offsets to use for data collapse, e.g. 8,16,32"
+            default = ""
     end
     return parse_args(s)
 end
 
-function candidate_two_force_run_bases(cluster_results_root::AbstractString)
+function candidate_run_bases(cluster_results_root::AbstractString, family::AbstractString)
     requested_root = abspath(String(cluster_results_root))
     repo_root = abspath(@__DIR__)
+    base_rel = get(RUN_FAMILY_BASE_RELPATHS, String(family), nothing)
+    isnothing(base_rel) && error("Unsupported run family '$family'.")
     bases = String[]
     seen = Set{String}()
     for root in (repo_root, requested_root)
-        base = joinpath(root, "runs", "two_force_d")
+        base = joinpath(root, base_rel)
         if !(base in seen)
             push!(bases, base)
             push!(seen, base)
@@ -226,94 +250,152 @@ function candidate_two_force_run_bases(cluster_results_root::AbstractString)
     return bases
 end
 
-function resolve_run_id_dir(run_id::AbstractString, cluster_results_root::AbstractString, run_result_mode::AbstractString)
-    run_id_str = String(run_id)
+function run_result_mode_rel_paths(run_result_mode::AbstractString)
     run_result_mode_str = String(run_result_mode)
-    bases = candidate_two_force_run_bases(cluster_results_root)
-    tried = String[]
-
-    mode_rel_paths = if run_result_mode_str == "warmup"
-        [("warmup", "warmup"), (joinpath("local", "warmup"), "local_warmup")]
+    if run_result_mode_str == "warmup"
+        return [("warmup", "warmup"), (joinpath("local", "warmup"), "local_warmup")]
     elseif run_result_mode_str == "production"
-        [("production", "production"), (joinpath("local", "production"), "local_production")]
+        return [("production", "production"), (joinpath("local", "production"), "local_production")]
     elseif run_result_mode_str == "local_warmup"
-        [(joinpath("local", "warmup"), "local_warmup")]
+        return [(joinpath("local", "warmup"), "local_warmup")]
     elseif run_result_mode_str == "local_production"
-        [(joinpath("local", "production"), "local_production")]
+        return [(joinpath("local", "production"), "local_production")]
     elseif run_result_mode_str == "auto"
-        [
+        return [
             ("warmup", "warmup"),
             ("production", "production"),
             (joinpath("local", "warmup"), "local_warmup"),
             (joinpath("local", "production"), "local_production"),
         ]
-    else
-        error("--run_result_mode must be warmup, production, local_warmup, local_production, or auto. Got '$run_result_mode_str'.")
     end
+    error("--run_result_mode must be warmup, production, local_warmup, local_production, or auto. Got '$run_result_mode_str'.")
+end
+
+function resolve_run_id_dir(run_id::AbstractString, cluster_results_root::AbstractString, run_result_mode::AbstractString;
+                            preferred_families::AbstractVector{<:AbstractString}=String[])
+    run_id_str = String(run_id)
+    run_result_mode_str = String(run_result_mode)
+    family_order = unique(vcat(String.(preferred_families), RUN_ID_FAMILIES_IN_SEARCH_ORDER))
+    mode_rel_paths = run_result_mode_rel_paths(run_result_mode_str)
+    tried = String[]
 
     if run_result_mode_str != "auto"
-        for base in bases
-            for (rel_path, resolved_mode) in mode_rel_paths
-                dir = joinpath(base, rel_path, run_id_str)
-                push!(tried, dir)
-                if isdir(dir)
-                    return dir, resolved_mode
+        for family in family_order
+            bases = candidate_run_bases(cluster_results_root, family)
+            for base in bases
+                for (rel_path, resolved_mode) in mode_rel_paths
+                    dir = joinpath(base, rel_path, run_id_str)
+                    push!(tried, dir)
+                    if isdir(dir)
+                        return dir, resolved_mode, family
+                    end
                 end
             end
         end
         error("run_id not found in mode=$run_result_mode_str. Tried: $(join(tried, ", "))")
     end
 
-    matches = Vector{Tuple{String,String,Int}}()
+    matches = Vector{Tuple{String,String,String,Int,Int}}()
     seen_dirs = Set{String}()
-    for (base_i, base) in enumerate(bases)
-        for (rel_path, resolved_mode) in mode_rel_paths
-            dir = joinpath(base, rel_path, run_id_str)
-            push!(tried, dir)
-            if isdir(dir) && !(dir in seen_dirs)
-                push!(matches, (dir, resolved_mode, base_i))
-                push!(seen_dirs, dir)
+    for (family_i, family) in enumerate(family_order)
+        bases = candidate_run_bases(cluster_results_root, family)
+        for (base_i, base) in enumerate(bases)
+            for (rel_path, resolved_mode) in mode_rel_paths
+                dir = joinpath(base, rel_path, run_id_str)
+                push!(tried, dir)
+                if isdir(dir) && !(dir in seen_dirs)
+                    push!(matches, (dir, resolved_mode, family, base_i, family_i))
+                    push!(seen_dirs, dir)
+                end
             end
         end
     end
 
     if length(matches) == 1
         match = matches[1]
-        return match[1], match[2]
+        return match[1], match[2], match[3]
     elseif isempty(matches)
         error("run_id not found for mode=auto. Tried: $(join(tried, ", "))")
     else
-        min_base_i = minimum(m[3] for m in matches)
-        preferred = [m for m in matches if m[3] == min_base_i]
+        min_family_i = minimum(m[5] for m in matches)
+        preferred_family_matches = [m for m in matches if m[5] == min_family_i]
+        min_base_i = minimum(m[4] for m in preferred_family_matches)
+        preferred = [m for m in preferred_family_matches if m[4] == min_base_i]
         if length(preferred) == 1
             match = preferred[1]
-            return match[1], match[2]
+            return match[1], match[2], match[3]
         end
 
-        choices = join(["$(m[1]) [$(m[2])]" for m in preferred], ", ")
+        choices = join(["$(m[1]) [$(m[2]), family=$(m[3])]" for m in preferred], ", ")
         error("run_id is ambiguous (found multiple matches in the preferred search root). Use --run_result_mode/--cluster_results_root to disambiguate. Preferred matches: $choices")
     end
 end
 
-function collect_files_from_run_id(run_id::AbstractString, cluster_results_root::AbstractString, run_result_mode::AbstractString)
-    run_dir, resolved_mode = resolve_run_id_dir(run_id, cluster_results_root, run_result_mode)
-    states_dir = joinpath(run_dir, "states")
-    isdir(states_dir) || error("States directory not found for run_id: $(states_dir)")
-
-    files = String[]
-    for (root, _, names) in walkdir(states_dir)
-        for name in names
-            if endswith(lowercase(name), ".jld2")
-                push!(files, joinpath(root, name))
-            end
+function latest_jld2_file_in_dir(dir::AbstractString)
+    isdir(dir) || return nothing
+    best_path = nothing
+    best_mtime = -1.0
+    for name in readdir(dir)
+        path = joinpath(dir, name)
+        isfile(path) || continue
+        endswith(lowercase(path), ".jld2") || continue
+        mtime = try
+            stat(path).mtime
+        catch
+            0.0
+        end
+        if best_path === nothing || mtime >= best_mtime
+            best_path = path
+            best_mtime = mtime
         end
     end
-    sort!(files)
-    isempty(files) && error("No JLD2 files found in run states directory: $(states_dir)")
+    return best_path
+end
+
+function collect_ssep_files_from_run_dir(run_dir::AbstractString)
+    candidate_dirs = [
+        joinpath(run_dir, "aggregated"),
+        joinpath(run_dir, "states", "aggregated"),
+        joinpath(run_dir, "states"),
+    ]
+    for dir in candidate_dirs
+        latest = latest_jld2_file_in_dir(dir)
+        latest === nothing || return [latest]
+    end
+    error("No JLD2 files found for SSEP run in aggregated/ or states/ under: $(run_dir)")
+end
+
+function collect_files_from_run_id(run_id::AbstractString, cluster_results_root::AbstractString, run_result_mode::AbstractString;
+                                   preferred_families::AbstractVector{<:AbstractString}=String[])
+    run_dir, resolved_mode, resolved_family = resolve_run_id_dir(
+        run_id,
+        cluster_results_root,
+        run_result_mode;
+        preferred_families=preferred_families,
+    )
+
+    files = if resolved_family == RUN_FAMILY_SSEP
+        collect_ssep_files_from_run_dir(run_dir)
+    else
+        states_dir = joinpath(run_dir, "states")
+        isdir(states_dir) || error("States directory not found for run_id: $(states_dir)")
+
+        collected = String[]
+        for (root, _, names) in walkdir(states_dir)
+            for name in names
+                if endswith(lowercase(name), ".jld2")
+                    push!(collected, joinpath(root, name))
+                end
+            end
+        end
+        sort!(collected)
+        isempty(collected) && error("No JLD2 files found in run states directory: $(states_dir)")
+        collected
+    end
 
     ts = Dates.format(now(), "yyyymmdd-HHMMSS")
     default_out_dir = joinpath(run_dir, "reports", "load_and_plot_" * ts)
-    return files, default_out_dir, resolved_mode, run_dir
+    return files, default_out_dir, resolved_mode, run_dir, resolved_family
 end
 
 function ensure_state_potential!(state, potential)
@@ -394,8 +476,24 @@ function param_ffr_input_for_plot(param)
     return 0.0
 end
 
-function canonicalize_loaded_param(param)
-    param isa FPDiffusive.Param && return param
+function loaded_module_name(obj)
+    try
+        return String(nameof(parentmodule(typeof(obj))))
+    catch
+        return ""
+    end
+end
+
+function canonicalize_loaded_param(param; state=nothing)
+    param_module = loaded_module_name(param)
+    state_module = isnothing(state) ? "" : loaded_module_name(state)
+
+    if param isa FPDiffusive.Param || param_module in ("FPSSEP", "FPDiffusive", "FP")
+        return param
+    end
+    if state_module == "FPSSEP"
+        return param
+    end
 
     required = (:γ, :dims, :ρ₀, :D, :potential_type, :fluctuation_type, :potential_magnitude)
     all(name -> has_prop(param, name), required) || return param
@@ -473,11 +571,20 @@ function load_state_bundle(saved_state::String)
         error("Missing state/param payload (keys: $available_keys)")
     end
 
-    param = canonicalize_loaded_param(param)
+    param = canonicalize_loaded_param(param; state=state)
     return state, param, potential
 end
 
+function param_module_name_for_plot(param)
+    return loaded_module_name(param)
+end
+
+function is_ssep_state(state, param)
+    return loaded_module_name(state) == "FPSSEP" || param_module_name_for_plot(param) == "FPSSEP"
+end
+
 function is_common_diffusive_state(state, param)
+    is_ssep_state(state, param) && return false
     rho_avg = get_prop(state, :ρ_avg, nothing)
     rho_matrix_avg_cuts = get_prop(state, :ρ_matrix_avg_cuts, nothing)
     forcing = get_prop(state, :forcing, nothing)
@@ -488,6 +595,58 @@ function is_common_diffusive_state(state, param)
     forcing === nothing && return false
     dims === nothing && return false
     return dims isa Tuple || dims isa AbstractVector
+end
+
+function selected_cut_indices_from_state(state, param)
+    length(param.dims) == 1 || return Int[]
+    PlotUtils.has_selected_site_cuts_for_plot(state) || return Int[]
+    L = Int(param.dims[1])
+    selected_sites, origin_site, _ = PlotUtils.selected_site_cut_metadata_for_plot(state, L)
+    offsets = Int[]
+    for site in selected_sites
+        offset = Int(round(abs(periodic_displacement_1d(Float64(site - origin_site), L))))
+        offset > 0 && push!(offsets, offset)
+    end
+    return sort(unique(offsets))
+end
+
+function parse_requested_collapse_indices(raw_value)::Union{Nothing,Vector{Int}}
+    value = strip(String(raw_value))
+    isempty(value) && return nothing
+    lowercase(value) == "all" && return nothing
+
+    requested = Int[]
+    seen = Set{Int}()
+    for chunk in split(value, ',')
+        token = strip(chunk)
+        isempty(token) && continue
+        parsed = try
+            parse(Int, token)
+        catch
+            error("Invalid --collapse_indices entry '$token'. Use a comma-separated list of positive integers, e.g. 8,16,32.")
+        end
+        parsed > 0 || error("--collapse_indices entries must be positive. Got $parsed.")
+        if !(parsed in seen)
+            push!(requested, parsed)
+            push!(seen, parsed)
+        end
+    end
+
+    isempty(requested) && error("--collapse_indices did not contain any valid positive integers.")
+    return requested
+end
+
+function resolve_collapse_indices(available_indices::Vector{Int}, requested_indices::Union{Nothing,Vector{Int}}, saved_state::AbstractString)
+    isnothing(requested_indices) && return available_indices
+
+    missing = [idx for idx in requested_indices if !(idx in available_indices)]
+    if !isempty(missing)
+        error(
+            "Requested collapse indices $(missing) are not available in $(saved_state). " *
+            "Available positive cut offsets: $(available_indices)."
+        )
+    end
+    return requested_indices
 end
 
 function bond_pass_stats_dict(state)
@@ -546,6 +705,9 @@ function tracked_force_indices(state, magnitudes::AbstractVector{<:Real})
 end
 
 function connected_corr_mat_1d(state)
+    if haskey(state.ρ_matrix_avg_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
+        return Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY])
+    end
     outer_prod_ρ = state.ρ_avg * transpose(state.ρ_avg)
     return state.ρ_matrix_avg_cuts[:full] .- outer_prod_ρ
 end
@@ -1883,6 +2045,40 @@ function save_diffusive_sweep_components(saved_state::String, state, param, out_
     end
 end
 
+function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir::String;
+                                      collapse_power::Float64=2.0,
+                                      requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing)
+    base_name = replace(basename(saved_state), ".jld2" => "")
+    state_dir = joinpath(out_dir, base_name)
+    sweep_dir = joinpath(state_dir, "current_sweep_statistics")
+    collapse_dir = joinpath(state_dir, "data_collapse")
+    mkpath(sweep_dir)
+    mkpath(collapse_dir)
+
+    p_sweep = PlotUtils.plot_sweep(state.t, state, param)
+    savefig_or_placeholder(
+        p_sweep,
+        joinpath(sweep_dir, "00_composite.png");
+        placeholder_title="SSEP sweep plot unavailable",
+    )
+
+    available_indices = selected_cut_indices_from_state(state, param)
+    if isempty(available_indices)
+        println("Skipping SSEP data collapse for ", saved_state, ": no positive selected cut indices were found.")
+        return
+    end
+    indices = resolve_collapse_indices(available_indices, requested_collapse_indices, saved_state)
+
+    PlotUtils.plot_data_colapse(
+        [(state, param, base_name)],
+        collapse_power,
+        indices,
+        collapse_dir,
+        true,
+    )
+    println("Saved SSEP data collapse using indices ", indices, " under ", collapse_dir)
+end
+
 function save_legacy_sweep_plot(saved_state::String, state, param, out_dir::String)
     base_name = replace(basename(saved_state), ".jld2" => "")
     state_dir = joinpath(out_dir, base_name, "current_sweep_statistics")
@@ -2759,13 +2955,15 @@ function main()
     skip_per_state_flag = get(args, "skip_per_state_sweep", false)
     with_per_state_flag = get(args, "with_per_state_sweep", false)
     corr_model_c = Float64(get(args, "corr_model_c", 0.0))
+    collapse_power = Float64(get(args, "collapse_power", 2.0))
+    requested_collapse_indices = parse_requested_collapse_indices(get(args, "collapse_indices", ""))
     mode_raw = String(args["mode"])
     run_id = strip(String(get(args, "run_id", "")))
     if !isempty(run_id) && mode_raw == "single"
-        println("run_id was provided with mode=single; using two_force_d analysis mode.")
+        println("run_id was provided with mode=single; auto-detecting run family.")
         mode_raw = "run_id"
     end
-    mode = mode_raw == "run_id" ? "two_force_d" : mode_raw
+    mode = mode_raw == "run_id" ? "run_id" : mode_raw
     run_result_mode = String(get(args, "run_result_mode", "auto"))
     cluster_results_root = String(get(args, "cluster_results_root", "cluster_results"))
     out_dir_arg = String(args["out_dir"])
@@ -2777,36 +2975,54 @@ function main()
     files = String[]
     resolved_run_mode = ""
     resolved_run_dir = ""
+    resolved_run_family = ""
     out_dir = out_dir_arg
 
     if mode_raw == "run_id" && isempty(run_id)
         error("--mode run_id requires --run_id.")
     end
-    if !isempty(run_id) && mode != "two_force_d"
-        error("--run_id is supported only with --mode run_id or --mode two_force_d.")
+    if !isempty(run_id) && !(mode in ("run_id", "two_force_d", "single"))
+        error("--run_id is supported only with --mode single, --mode two_force_d, or --mode run_id.")
     end
     if skip_per_state_flag && with_per_state_flag
         error("Use only one of --skip_per_state_sweep or --with_per_state_sweep.")
     end
 
     skip_per_state = skip_per_state_flag
-    if !isempty(run_id) && !skip_per_state_flag && !with_per_state_flag
-        skip_per_state = true
-        println("run_id mode: defaulting to analysis-only (no per-state sweeps). Pass --with_per_state_sweep to include per-state plots.")
-    elseif with_per_state_flag
-        skip_per_state = false
-    end
 
     if !isempty(run_id)
-        files, run_out_dir, resolved_run_mode, resolved_run_dir = collect_files_from_run_id(
+        preferred_families = if mode_raw == "two_force_d"
+            [RUN_FAMILY_TWO_FORCE_D]
+        else
+            String[]
+        end
+        files, run_out_dir, resolved_run_mode, resolved_run_dir, resolved_run_family = collect_files_from_run_id(
             run_id,
             cluster_results_root,
-            run_result_mode,
+            run_result_mode;
+            preferred_families=preferred_families,
         )
         if out_dir_arg == out_dir_default
             out_dir = run_out_dir
         end
-        println("Using run_id='", run_id, "' (mode=", resolved_run_mode, ") from ", resolved_run_dir)
+        if mode_raw == "two_force_d" && resolved_run_family != RUN_FAMILY_TWO_FORCE_D
+            error("run_id '$run_id' resolved to family '$resolved_run_family', but --mode two_force_d was requested.")
+        end
+        if mode_raw == "run_id"
+            mode = resolved_run_family == RUN_FAMILY_TWO_FORCE_D ? "two_force_d" : "single"
+        end
+        println("Using run_id='", run_id, "' (mode=", resolved_run_mode, ", family=", resolved_run_family, ") from ", resolved_run_dir)
+    end
+
+    if !isempty(run_id) && !skip_per_state_flag && !with_per_state_flag
+        if resolved_run_family == RUN_FAMILY_TWO_FORCE_D
+            skip_per_state = true
+            println("run_id mode: defaulting to analysis-only for two_force_d runs. Pass --with_per_state_sweep to include per-state plots.")
+        else
+            skip_per_state = false
+        end
+    elseif with_per_state_flag
+        skip_per_state = false
     end
 
     if !isempty(inputs)
@@ -2834,7 +3050,16 @@ function main()
                 println("Processing sweep plots for ", saved_state)
                 state, param, potential = load_state_bundle(saved_state)
                 ensure_state_potential!(state, potential)
-                if is_common_diffusive_state(state, param)
+                if is_ssep_state(state, param)
+                    save_ssep_sweep_and_collapse(
+                        saved_state,
+                        state,
+                        param,
+                        out_dir;
+                        collapse_power=collapse_power,
+                        requested_collapse_indices=requested_collapse_indices,
+                    )
+                elseif is_common_diffusive_state(state, param)
                     save_diffusive_sweep_components(
                         saved_state,
                         state,

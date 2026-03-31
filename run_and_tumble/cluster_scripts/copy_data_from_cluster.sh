@@ -12,7 +12,7 @@ Core options:
   --latest                                Fetch latest run_id in selected run family (can combine with filters)
   --list                                  List run registry entries and exit
   --tail <N>                              Number of listed entries (default: 30)
-  --run_family <two_force_d|single_origin_bond|auto>
+  --run_family <two_force_d|single_origin_bond|ssep|auto>
                                           Registry family for --list/--latest (default: two_force_d)
 
 Run filters for --list / --latest:
@@ -31,15 +31,21 @@ Paths / connection:
   --sync_scope <auto|aggregation|full>    Data sync scope:
                                           auto (default): if run_id looks aggregated (_nr...), fetch aggregated artifacts only
                                           aggregation: fetch aggregated state files + run metadata
-                                          (prefers states/aggregated, with legacy fallback; excludes states/aggregated/archive)
+                                          (prefers aggregated/, then states/aggregated, with legacy fallback;
+                                          excludes aggregated/archive and states/aggregated/archive)
                                           full: fetch full run directory
 
 Post-processing:
   --plot                                  Run load_and_plot.jl after sync
-  --aggregated_saved_only                 Restrict copy/plot to *_id-aggregated_saved_*.jld2
-                                          (forces --sync_scope aggregation)
+  --aggregated_saved_only                 Restrict copy/plot to live *_id-aggregated_saved_*.jld2 only
+                                          under aggregated/ (or states/aggregated/ / states/<state_subdir>/ when provided)
+                                          and skip legacy fallback paths
+  --state_subdir <name>                   Custom subdir under states/ for aggregation sync/plot
+                                          (example: debug_new_raw_post_t8e9_20260325)
   --state_glob <pattern>                  File glob for state selection in aggregation sync/plot
                                           (default aggregation glob: *id-aggregated_*.jld2)
+  --sample_count <N>                      For aggregation sync with --state_subdir, fetch only the latest N
+                                          matching files from that remote subdir
   --skip_per_state_sweep                  Pass --skip_per_state_sweep to load_and_plot.jl
   --baseline_j2 <value>                   Baseline override for two_force_d analysis
                                           (default when omitted: automatic rho0^2-based baseline from load_and_plot.jl)
@@ -50,6 +56,7 @@ Examples:
   bash copy_data_from_cluster.sh --latest --run_family single_origin_bond --mode production --L 128 --rho 100 --n_sweeps 1000000
   bash copy_data_from_cluster.sh --run_id single_production_L128_rho100_ns1000000_f1.0_ffr1.0_20260225-152138 --plot
   bash copy_data_from_cluster.sh --run_id two_force_production_L128_rho100_ns1000000_d2-32-s2_nr8_dag_20260225-180000 --sync_scope aggregation
+  bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id two_force_warmup_production_L256_rho100_..._production_20260226-032016 --aggregated_saved_only --plot
 USAGE_EOF
 }
@@ -87,17 +94,68 @@ sync_scope="auto"
 
 plot_after_sync="false"
 aggregated_saved_only="false"
+state_subdir=""
 state_glob=""
 state_glob_explicit="false"
 skip_per_state="false"
 baseline_j2=""
 plot_mode="two_force_d"
 plot_mode_explicit="false"
+sample_count="0"
+
+ssh_control_dir=""
+ssh_control_path=""
 
 declare -A REGISTRY_REL_MAP
+declare -A RUN_ROOT_REL_MAP
 REGISTRY_REL_MAP["two_force_d"]="runs/two_force_d/run_registry.csv"
 REGISTRY_REL_MAP["single_origin_bond"]="runs/single_origin_bond/run_registry.csv"
-ALL_FAMILIES=("two_force_d" "single_origin_bond")
+REGISTRY_REL_MAP["ssep"]="runs/ssep/single_center_bond/run_registry.csv"
+RUN_ROOT_REL_MAP["two_force_d"]="runs/two_force_d"
+RUN_ROOT_REL_MAP["single_origin_bond"]="runs/single_origin_bond"
+RUN_ROOT_REL_MAP["ssep"]="runs/ssep/single_center_bond"
+ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep")
+
+cleanup_ssh_master() {
+    if [[ -n "${ssh_control_path}" ]]; then
+        ssh -o ControlPath="${ssh_control_path}" -O exit "${remote_user}@${remote_host}" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${ssh_control_dir}" && -d "${ssh_control_dir}" ]]; then
+        rm -rf "${ssh_control_dir}"
+    fi
+}
+
+open_ssh_master() {
+    ssh_control_dir="$(mktemp -d /tmp/copy_from_cluster_XXXXXX)"
+    ssh_control_path="${ssh_control_dir}/control.sock"
+    ssh -MNf \
+        -o ControlMaster=yes \
+        -o ControlPersist=600 \
+        -o ControlPath="${ssh_control_path}" \
+        "${remote_user}@${remote_host}"
+}
+
+scp_with_master() {
+    scp \
+        -o ControlMaster=auto \
+        -o ControlPersist=600 \
+        -o ControlPath="${ssh_control_path}" \
+        "$@"
+}
+
+rsync_with_master() {
+    rsync \
+        -e "ssh -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=${ssh_control_path}" \
+        "$@"
+}
+
+ssh_with_master() {
+    ssh \
+        -o ControlMaster=auto \
+        -o ControlPersist=600 \
+        -o ControlPath="${ssh_control_path}" \
+        "$@"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -178,9 +236,17 @@ while [[ $# -gt 0 ]]; do
             aggregated_saved_only="true"
             shift 1
             ;;
+        --state_subdir)
+            state_subdir="${2:-}"
+            shift 2
+            ;;
         --state_glob)
             state_glob="${2:-}"
             state_glob_explicit="true"
+            shift 2
+            ;;
+        --sample_count)
+            sample_count="${2:-}"
             shift 2
             ;;
         --skip_per_state_sweep)
@@ -216,8 +282,8 @@ if ! [[ "${tail_n}" =~ ^[0-9]+$ ]] || (( tail_n <= 0 )); then
     echo "--tail must be a positive integer. Got '${tail_n}'."
     exit 1
 fi
-if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "auto" ]]; then
-    echo "--run_family must be two_force_d, single_origin_bond, or auto. Got '${run_family}'."
+if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "auto" ]]; then
+    echo "--run_family must be two_force_d, single_origin_bond, ssep, or auto. Got '${run_family}'."
     exit 1
 fi
 if [[ "${sync_scope}" != "auto" && "${sync_scope}" != "aggregation" && "${sync_scope}" != "full" ]]; then
@@ -227,6 +293,26 @@ fi
 if [[ "${state_glob_explicit}" == "true" && -z "${state_glob}" ]]; then
     echo "--state_glob cannot be empty."
     exit 1
+fi
+if [[ -n "${state_subdir}" ]]; then
+    if [[ "${state_subdir}" == /* || "${state_subdir}" == *".."* ]]; then
+        echo "--state_subdir must be a relative subdir under states/. Got '${state_subdir}'."
+        exit 1
+    fi
+fi
+if ! [[ "${sample_count}" =~ ^[0-9]+$ ]]; then
+    echo "--sample_count must be a non-negative integer. Got '${sample_count}'."
+    exit 1
+fi
+if (( sample_count > 0 )); then
+    if [[ "${sync_scope}" == "full" ]]; then
+        echo "--sample_count is supported only with aggregation sync."
+        exit 1
+    fi
+    if [[ -z "${state_subdir}" ]]; then
+        echo "--sample_count requires --state_subdir so the remote sample set is well-defined."
+        exit 1
+    fi
 fi
 if [[ "${plot_mode_explicit}" == "true" && "${plot_mode}" != "single" && "${plot_mode}" != "two_force_d" ]]; then
     echo "--mode_plot must be single or two_force_d. Got '${plot_mode}'."
@@ -243,6 +329,9 @@ if [[ "${aggregated_saved_only}" == "true" ]]; then
     fi
 fi
 
+trap cleanup_ssh_master EXIT
+open_ssh_master
+
 sync_registry() {
     local family="$1"
     local registry_rel="${REGISTRY_REL_MAP[$family]}"
@@ -250,7 +339,7 @@ sync_registry() {
 
     mkdir -p "$(dirname "${local_registry}")"
     echo "Syncing ${family} run registry from cluster..." >&2
-    if scp "${remote_user}@${remote_host}:${remote_root}/${registry_rel}" "${local_registry}"; then
+    if scp_with_master "${remote_user}@${remote_host}:${remote_root}/${registry_rel}" "${local_registry}"; then
         echo "${local_registry}"
         return 0
     fi
@@ -328,7 +417,20 @@ prune_local_aggregation_matches() {
     local pruned_count=0
     local dir file
 
-    for dir in "${run_dir}/states/aggregated" "${run_dir}/states"; do
+    local search_dirs=("${run_dir}/states/aggregated" "${run_dir}/states")
+    if [[ "${aggregated_saved_only}" == "true" ]]; then
+        if [[ -n "${state_subdir}" ]]; then
+            search_dirs=("${run_dir}/states/${state_subdir}")
+        else
+            search_dirs=("${run_dir}/aggregated" "${run_dir}/states/aggregated")
+        fi
+    elif [[ -n "${state_subdir}" ]]; then
+        search_dirs=("${run_dir}/states/${state_subdir}" "${run_dir}/aggregated" "${run_dir}/states/aggregated" "${run_dir}/states")
+    else
+        search_dirs=("${run_dir}/aggregated" "${run_dir}/states/aggregated" "${run_dir}/states")
+    fi
+
+    for dir in "${search_dirs[@]}"; do
         [[ -d "${dir}" ]] || continue
         while IFS= read -r -d '' file; do
             rm -f "${file}"
@@ -453,9 +555,9 @@ if [[ -z "${run_id}" ]]; then
         selected_family="two_force_d"
     fi
 
-    if [[ "${selected_family}" == "single_origin_bond" ]]; then
+    if [[ "${selected_family}" != "two_force_d" ]]; then
         if [[ -n "${filter_d_min}" || -n "${filter_d_max}" || -n "${filter_d_step}" ]]; then
-            echo "WARNING: --d_min/--d_max/--d_step filters are ignored for single_origin_bond." >&2
+            echo "WARNING: --d_min/--d_max/--d_step filters are ignored for ${selected_family}." >&2
         fi
     fi
 
@@ -510,9 +612,11 @@ else
     if (( found_count == 0 )); then
         two_force_registry="${local_root}/${REGISTRY_REL_MAP[two_force_d]}"
         single_registry="${local_root}/${REGISTRY_REL_MAP[single_origin_bond]}"
-        echo "run_id '${run_id}' not found in either registry:"
+        ssep_registry="${local_root}/${REGISTRY_REL_MAP[ssep]}"
+        echo "run_id '${run_id}' not found in available registries:"
         echo "  ${two_force_registry}"
         echo "  ${single_registry}"
+        echo "  ${ssep_registry}"
         exit 1
     fi
 
@@ -533,6 +637,8 @@ fi
 
 if [[ "${resolved_family}" == "two_force_d" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_dmin reg_dmax reg_dstep reg_cpus reg_mem reg_run_root reg_log_dir reg_state_dir reg_warmup_state_dir <<< "${registry_row}"
+elif [[ "${resolved_family}" == "ssep" ]]; then
+    IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
 else
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_cpus reg_mem reg_run_root reg_log_dir reg_state_dir reg_warmup_state_dir reg_ffr reg_force_strength <<< "${registry_row}"
 fi
@@ -545,10 +651,10 @@ mode="${reg_mode}"
 if [[ -n "${reg_run_root}" ]]; then
     remote_run_dir="${reg_run_root}"
 else
-    remote_run_dir="${remote_root}/runs/${resolved_family}/${mode}/${run_id}"
+    remote_run_dir="${remote_root}/${RUN_ROOT_REL_MAP[$resolved_family]}/${mode}/${run_id}"
 fi
 
-local_run_dir="${local_root}/runs/${resolved_family}/${mode}/${run_id}"
+local_run_dir="${local_root}/${RUN_ROOT_REL_MAP[$resolved_family]}/${mode}/${run_id}"
 mkdir -p "${local_run_dir}"
 
 echo "Fetching run:"
@@ -566,45 +672,125 @@ if [[ "${sync_scope_effective}" == "auto" ]]; then
     fi
 fi
 echo "  sync_scope=${sync_scope_effective}"
+if [[ -n "${state_subdir}" ]]; then
+    echo "  state_subdir=${state_subdir}"
+fi
 
 aggregation_glob="*id-aggregated_*.jld2"
 if [[ "${state_glob_explicit}" == "true" ]]; then
     aggregation_glob="${state_glob}"
+elif [[ "${resolved_family}" == "ssep" && -n "${reg_aggregate_run_id:-}" ]]; then
+    aggregation_glob="*id-${reg_aggregate_run_id}.jld2"
 elif [[ -n "${state_glob}" ]]; then
     aggregation_glob="${state_glob}"
 fi
 if [[ "${sync_scope_effective}" == "aggregation" ]]; then
     echo "  aggregation_state_glob=${aggregation_glob}"
 fi
+if (( sample_count > 0 )); then
+    echo "  sample_count=${sample_count}"
+fi
 
 if [[ "${sync_scope_effective}" == "aggregation" && "${aggregated_saved_only}" == "true" ]]; then
     prune_local_aggregation_matches "${local_run_dir}" "${aggregation_glob}"
 fi
 
+sync_latest_ssep_aggregate_only="false"
+if [[ "${sync_scope_effective}" == "aggregation" && "${resolved_family}" == "ssep" && -z "${state_subdir}" && "${aggregated_saved_only}" != "true" ]]; then
+    sync_latest_ssep_aggregate_only="true"
+fi
+
 if [[ "${sync_scope_effective}" == "aggregation" ]]; then
-    rsync -av --progress --prune-empty-dirs \
-        --exclude='states/aggregated/archive/***' \
-        --include='*/' \
-        --include='run_info.txt' \
-        --include='manifest.csv' \
-        --include='reports/***' \
-        --include="states/aggregated/${aggregation_glob}" \
-        --include="states/${aggregation_glob}" \
-        --include="${aggregation_glob}" \
-        --exclude='*' \
-        "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
+    if [[ "${sync_latest_ssep_aggregate_only}" == "true" ]]; then
+        remote_latest_cmd=$(
+            cat <<EOF
+cd $(printf '%q' "${remote_run_dir}") && for dir in aggregated states/aggregated states; do if [[ -d "\${dir}" ]]; then find "\${dir}" -maxdepth 1 -type f -name $(printf '%q' "${aggregation_glob}") ! -path '*/archive/*' -printf '%T@ %p\n'; fi; done | sort -nr | head -n 1
+EOF
+        )
+        latest_remote_rel_path="$(
+            ssh_with_master "${remote_user}@${remote_host}" "${remote_latest_cmd}" | awk '{ $1=\"\"; sub(/^ /,\"\"); print }' | tail -n 1
+        )"
+        if [[ -z "${latest_remote_rel_path}" ]]; then
+            echo "No remote aggregate matched ${aggregation_glob} under aggregated/ or states/; nothing to sync."
+        else
+            files_from="$(mktemp)"
+            {
+                echo "run_info.txt"
+                echo "manifest.csv"
+                echo "${latest_remote_rel_path}"
+            } > "${files_from}"
+            rsync_with_master -av --progress --files-from="${files_from}" \
+                "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
+            rm -f "${files_from}"
+        fi
+    elif (( sample_count > 0 )); then
+        remote_state_dir="${remote_run_dir}/states/${state_subdir}"
+        remote_list_cmd=$(
+            cat <<EOF
+cd $(printf '%q' "${remote_state_dir}") && find . -maxdepth 1 -type f -name $(printf '%q' "${aggregation_glob}") -printf '%T@ %f\n' | sort -nr | head -n $(printf '%q' "${sample_count}")
+EOF
+        )
+        mapfile -t sampled_remote_entries < <(
+            ssh_with_master "${remote_user}@${remote_host}" "${remote_list_cmd}" | awk '{ $1=""; sub(/^ /,""); print }'
+        )
+        if (( ${#sampled_remote_entries[@]} == 0 )); then
+            echo "No remote files matched ${aggregation_glob} under states/${state_subdir}; nothing to sync."
+        else
+            files_from="$(mktemp)"
+            {
+                echo "run_info.txt"
+                for sampled_file in "${sampled_remote_entries[@]}"; do
+                    [[ -n "${sampled_file}" ]] || continue
+                    echo "states/${state_subdir}/${sampled_file}"
+                done
+            } > "${files_from}"
+            rsync_with_master -av --progress --files-from="${files_from}" \
+                "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
+            rm -f "${files_from}"
+        fi
+    else
+        rsync_args=(-av --progress --prune-empty-dirs
+            --exclude='aggregated/archive/***'
+            --exclude='states/aggregated/archive/***'
+            --include='*/'
+            --include='run_info.txt'
+            --include='manifest.csv'
+            --include='reports/***')
+        if [[ -n "${state_subdir}" ]]; then
+            rsync_args+=(--include="states/${state_subdir}/${aggregation_glob}")
+        elif [[ "${aggregated_saved_only}" == "true" ]]; then
+            rsync_args+=(--include="aggregated/${aggregation_glob}" --include="states/aggregated/${aggregation_glob}")
+        elif [[ "${resolved_family}" == "ssep" ]]; then
+            rsync_args+=(--include="aggregated/${aggregation_glob}")
+        fi
+        if [[ "${aggregated_saved_only}" != "true" ]]; then
+            rsync_args+=(
+                --include="aggregated/${aggregation_glob}"
+                --include="states/aggregated/${aggregation_glob}"
+                --include="states/${aggregation_glob}"
+                --include="${aggregation_glob}"
+            )
+        fi
+        rsync_args+=(
+            --exclude='*'
+            "${remote_user}@${remote_host}:${remote_run_dir}/"
+            "${local_run_dir}/"
+        )
+        rsync_with_master "${rsync_args[@]}"
+    fi
 else
-    rsync -av --progress \
+    rsync_with_master -av --progress \
+        --exclude='aggregated/archive/***' \
         --exclude='states/aggregated/archive/***' \
         "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
 fi
 
 if [[ "${plot_after_sync}" == "true" ]]; then
     if [[ "${plot_mode_explicit}" != "true" ]]; then
-        if [[ "${resolved_family}" == "single_origin_bond" ]]; then
-            plot_mode="single"
-        else
+        if [[ "${resolved_family}" == "two_force_d" ]]; then
             plot_mode="two_force_d"
+        else
+            plot_mode="single"
         fi
     fi
 
@@ -622,10 +808,22 @@ if [[ "${plot_after_sync}" == "true" ]]; then
         fi
     }
 
+    states_dir_custom="${local_run_dir}/states/${state_subdir}"
+    states_dir_new_aggregated="${local_run_dir}/aggregated"
     states_dir_aggregated="${local_run_dir}/states/aggregated"
     states_dir_legacy="${local_run_dir}/states"
     states_dir="${states_dir_legacy}"
-    if [[ "${sync_scope_effective}" == "aggregation" && -d "${states_dir_aggregated}" ]]; then
+    if [[ "${aggregated_saved_only}" == "true" && -n "${state_subdir}" ]]; then
+        states_dir="${states_dir_custom}"
+    elif [[ "${aggregated_saved_only}" == "true" && -d "${states_dir_new_aggregated}" ]]; then
+        states_dir="${states_dir_new_aggregated}"
+    elif [[ "${aggregated_saved_only}" == "true" ]]; then
+        states_dir="${states_dir_aggregated}"
+    elif [[ "${sync_scope_effective}" == "aggregation" && -n "${state_subdir}" && -d "${states_dir_custom}" ]]; then
+        states_dir="${states_dir_custom}"
+    elif [[ "${sync_scope_effective}" == "aggregation" && -d "${states_dir_new_aggregated}" ]]; then
+        states_dir="${states_dir_new_aggregated}"
+    elif [[ "${sync_scope_effective}" == "aggregation" && -d "${states_dir_aggregated}" ]]; then
         states_dir="${states_dir_aggregated}"
     fi
     if [[ ! -d "${states_dir}" ]]; then
@@ -634,7 +832,19 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     fi
 
     mapfile -t state_files < <(find_state_files "${states_dir}")
-    if (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_legacy}" && -d "${states_dir_legacy}" ]]; then
+    if [[ "${aggregated_saved_only}" != "true" ]] && (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_new_aggregated}" && -d "${states_dir_new_aggregated}" ]]; then
+        mapfile -t state_files < <(find_state_files "${states_dir_new_aggregated}")
+        if (( ${#state_files[@]} > 0 )); then
+            states_dir="${states_dir_new_aggregated}"
+        fi
+    fi
+    if [[ "${aggregated_saved_only}" != "true" ]] && (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_aggregated}" && -d "${states_dir_aggregated}" ]]; then
+        mapfile -t state_files < <(find_state_files "${states_dir_aggregated}")
+        if (( ${#state_files[@]} > 0 )); then
+            states_dir="${states_dir_aggregated}"
+        fi
+    fi
+    if [[ "${aggregated_saved_only}" != "true" ]] && (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_legacy}" && -d "${states_dir_legacy}" ]]; then
         mapfile -t state_files < <(find_state_files "${states_dir_legacy}")
         if (( ${#state_files[@]} > 0 )); then
             states_dir="${states_dir_legacy}"

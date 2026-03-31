@@ -4,36 +4,120 @@ using JLD2
 using YAML
 using ArgParse
 using Random
-if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
+using Statistics
+
+function _parse_bool_literal(raw)
+    raw === nothing && return nothing
+    value = lowercase(strip(String(raw)))
+    if value in ("1", "true", "yes", "on", "y", "t")
+        return true
+    elseif value in ("0", "false", "no", "off", "n", "f", "")
+        return false
+    end
+    return nothing
+end
+
+function _argv_value(flag::AbstractString)
+    idx = findfirst(==(flag), ARGS)
+    if idx === nothing || idx >= length(ARGS)
+        return nothing
+    end
+    return ARGS[idx + 1]
+end
+
+function _read_config_bool(path::AbstractString, key::AbstractString)
+    !isfile(path) && return nothing
+    prefix = string(key, ":")
+    for raw_line in eachline(path)
+        line = strip(raw_line)
+        isempty(line) && continue
+        startswith(line, "#") && continue
+        startswith(line, prefix) || continue
+        value = strip(line[length(prefix) + 1:end])
+        comment_idx = findfirst(==('#'), value)
+        if comment_idx !== nothing
+            value = strip(value[1:prevind(value, comment_idx)])
+        end
+        value = strip(replace(value, "\"" => "", "'" => ""))
+        parsed = _parse_bool_literal(value)
+        parsed === nothing || return parsed
+    end
+    return nothing
+end
+
+function _config_requests_performance_mode()
+    config_path = _argv_value("--config")
+    config_path === nothing && return false
+    performance_mode = _read_config_bool(String(config_path), "performance_mode")
+    performance_mode !== nothing && return performance_mode
+    cluster_mode = _read_config_bool(String(config_path), "cluster_mode")
+    cluster_mode !== nothing && return cluster_mode
+    return false
+end
+
+const RUN_SSEP_HEADLESS = begin
+    env_headless = _parse_bool_literal(get(ENV, "RUN_AND_TUMBLE_HEADLESS", "0")) === true
+    aggregate_mode = "--aggregate_state_list" in ARGS
+    cli_performance_mode = "--performance_mode" in ARGS
+    env_headless || aggregate_mode || cli_performance_mode || _config_requests_performance_mode()
+end
+
+if !RUN_SSEP_HEADLESS && haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
     # Under WSLg, Qt/GR can pick Wayland and then fail EGL initialization.
     # Force the stable XWayland path before Plots/GR initialize.
     ENV["QT_QPA_PLATFORM"] = "xcb"
 end
-using Plots
-using Statistics
+if !RUN_SSEP_HEADLESS
+    using Plots
+end
 
 include("modules_ssep.jl")
 include("save_utils.jl")
 
 using .Potentials
 using .FPSSEP
-using .PlotUtils
 using .SaveUtils
 
+if !RUN_SSEP_HEADLESS
+    include("plot_utils.jl")
+    using .PlotUtils
+    plot_sweep_runner = PlotUtils.plot_sweep
+    plot_summary_runner = PlotUtils.plot_average_density_and_correlation
+    present_plot_runner = PlotUtils.present_plot!
+else
+    plot_sweep_runner = nothing
+    plot_summary_runner = nothing
+    present_plot_runner = nothing
+end
+
+@everywhere const RUN_SSEP_HEADLESS_WORKER = $RUN_SSEP_HEADLESS
 @everywhere begin
     using JLD2
     using YAML
     using Random
     using Statistics
-    if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
+    local run_ssep_headless = RUN_SSEP_HEADLESS_WORKER
+    if !run_ssep_headless && haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
         ENV["QT_QPA_PLATFORM"] = "xcb"
     end
-    using Plots
+    if !run_ssep_headless
+        using Plots
+    end
     if myid() != 1
         include("modules_ssep.jl")
         using .Potentials
         using .FPSSEP
-        using .PlotUtils
+        if !run_ssep_headless
+            include("plot_utils.jl")
+            using .PlotUtils
+            global plot_sweep_runner = PlotUtils.plot_sweep
+            global plot_summary_runner = PlotUtils.plot_average_density_and_correlation
+            global present_plot_runner = PlotUtils.present_plot!
+        else
+            global plot_sweep_runner = nothing
+            global plot_summary_runner = nothing
+            global present_plot_runner = nothing
+        end
     end
 end
 
@@ -65,6 +149,9 @@ function parse_commandline()
             help = "Path to a newline-delimited list of saved states to aggregate"
             arg_type = String
             required = false
+        "--performance_mode"
+            help = "Disable progress bars and plotting for lean runtime"
+            action = :store_true
     end
     return parse_args(settings)
 end
@@ -79,6 +166,7 @@ end
         "γ" => 0.0,
         "n_sweeps" => 100000,
         "warmup_sweeps" => 10000,
+        "performance_mode" => false,
         "cluster_mode" => false,
         "description" => "",
         "potential_type" => "zero",
@@ -101,6 +189,8 @@ end
         "simulation_mode" => "discrete_sweep",
         "correlation_observable_mode" => "full",
         "correlation_cut_offsets" => Float64[],
+        "correlation_cut_sites" => Int[],
+        "correlation_cut_origin_site" => nothing,
         "ic" => "random",
         "plot_final" => true,
         "save_final_plot" => true,
@@ -217,8 +307,17 @@ end
     error("Unsupported correlation_observable_mode: $raw_mode")
 end
 
+@everywhere function get_performance_mode(params, defaults)
+    if haskey(params, "performance_mode")
+        return to_bool(params["performance_mode"], "performance_mode")
+    elseif haskey(params, "cluster_mode")
+        return to_bool(params["cluster_mode"], "cluster_mode")
+    end
+    return to_bool(get(defaults, "performance_mode", false), "performance_mode")
+end
+
 @everywhere function get_cluster_mode(params, defaults)
-    return to_bool(get(params, "cluster_mode", defaults["cluster_mode"]), "cluster_mode")
+    return get_performance_mode(params, defaults)
 end
 
 @everywhere function get_description(params, defaults)
@@ -445,16 +544,39 @@ end
         to_float_vector(raw_offsets, "correlation_cut_offsets")
     end
 
-    origin_site = if !isempty(forcings)
+    reflected_offset_shifts = Int[]
+    for offset in offsets
+        shift = isapprox(offset, round(offset); atol=1e-9) ? Int(round(offset)) : Int(round(offset * L))
+        push!(reflected_offset_shifts, shift)
+        shift != 0 && push!(reflected_offset_shifts, -shift)
+    end
+
+    raw_cut_sites = if haskey(params, "correlation_cut_sites")
+        params["correlation_cut_sites"]
+    else
+        get(defaults, "correlation_cut_sites", Int[])
+    end
+    explicit_cut_sites = raw_cut_sites isa AbstractVector && !isempty(raw_cut_sites) ?
+        [mod1(Int(site), L) for site in to_int_vector(raw_cut_sites, "correlation_cut_sites")] :
+        Int[]
+
+    origin_site = if haskey(params, "correlation_cut_origin_site") && !isnothing(params["correlation_cut_origin_site"])
+        mod1(to_int(params["correlation_cut_origin_site"], "correlation_cut_origin_site"), L)
+    elseif haskey(defaults, "correlation_cut_origin_site") && !isnothing(defaults["correlation_cut_origin_site"])
+        mod1(to_int(defaults["correlation_cut_origin_site"], "correlation_cut_origin_site"), L)
+    elseif !isempty(forcings)
         mod1(forcings[1].bond_indices[1][1], L)
     else
         max(1, div(L, 2))
     end
 
     selected_sites = Int[]
-    for offset in offsets
-        shift = isapprox(offset, round(offset); atol=1e-9) ? Int(round(offset)) : Int(round(offset * L))
-        push!(selected_sites, mod1(origin_site + shift, L))
+    if !isempty(explicit_cut_sites)
+        append!(selected_sites, explicit_cut_sites)
+    else
+        for shift in reflected_offset_shifts
+            push!(selected_sites, mod1(origin_site + shift, L))
+        end
     end
 
     return mode, unique(selected_sites), origin_site
@@ -601,6 +723,7 @@ function load_saved_state(path; reset_statistics::Bool=false)
     println("Loading state from $path")
     @load path state param potential
     state.potential = potential
+    FPSSEP.clear_redundant_ssep_view_stale_flags!(state)
     FPSSEP.validate_exclusion_state(state)
     if reset_statistics
         FPSSEP.reset_statistics!(state)
@@ -655,12 +778,16 @@ function aggregate_states(states, result_param, save_dir; save_tag=nothing, desc
     if !startswith(resolved_tag, "aggregated_")
         resolved_tag = "aggregated_" * resolved_tag
     end
+    FPSSEP.sync_redundant_ssep_views!(aggregated_state; force=true)
     filename = save_state(aggregated_state, result_param, save_dir; tag=resolved_tag, ic="aggregated", relaxed_ic=relaxed_ic, description=description)
     return aggregated_state, filename
 end
 
 function aggregate_state_list_and_save(args)
     params, defaults = load_params(args)
+    if get(args, "performance_mode", false)
+        params["performance_mode"] = true
+    end
     description = get_description(params, defaults)
     save_dir = String(get(params, "save_dir", defaults["save_dir"]))
     state_files = read_state_list(String(args["aggregate_state_list"]))
@@ -684,17 +811,18 @@ function aggregate_state_list_and_save(args)
 end
 
 function maybe_render_summary(state, param, params, defaults, filename, description)
-    cluster_mode = get_cluster_mode(params, defaults)
+    performance_mode = get_performance_mode(params, defaults)
     plot_final = to_bool(get(params, "plot_final", defaults["plot_final"]), "plot_final")
     save_final_plot = to_bool(get(params, "save_final_plot", defaults["save_final_plot"]), "save_final_plot")
-    if !plot_final && !save_final_plot
+    if performance_mode || isnothing(plot_summary_runner) || (!plot_final && !save_final_plot)
         return nothing
     end
 
-    plot_obj = PlotUtils.plot_average_density_and_correlation(state, param; label=description)
-    if plot_final && !cluster_mode
-        configure_interactive_plots!(cluster_mode, params, defaults)
-        PlotUtils.present_plot!(plot_obj)
+    FPSSEP.sync_redundant_ssep_views!(state; force=true)
+    plot_obj = plot_summary_runner(state, param; label=description)
+    if plot_final
+        configure_interactive_plots!(performance_mode, params, defaults)
+        present_plot_runner(plot_obj)
     end
     if save_final_plot
         plot_dir = joinpath(dirname(filename), "plots")
@@ -709,6 +837,9 @@ end
 
 function run_single_simulation(args)
     params, defaults = load_params(args)
+    if get(args, "performance_mode", false)
+        params["performance_mode"] = true
+    end
     description = get_description(params, defaults)
     save_dir = String(get(params, "save_dir", defaults["save_dir"]))
     warmup_sweeps = get_warmup_sweeps(params, defaults)
@@ -717,8 +848,8 @@ function run_single_simulation(args)
     has_explicit_show_times = haskey(args, "config") && !isnothing(args["config"]) && haskey(params, "show_times")
     show_times = get_show_times(params, defaults, warmup_sweeps; has_explicit_show_times=has_explicit_show_times)
     save_times = get_save_times(params, defaults)
-    cluster_mode = get_cluster_mode(params, defaults)
-    configure_interactive_plots!(cluster_mode, params, defaults)
+    performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
+    configure_interactive_plots!(performance_mode, params, defaults)
 
     using_initial_state = haskey(args, "initial_state") && !isnothing(args["initial_state"])
     continuing = haskey(args, "continue") && !isnothing(args["continue"])
@@ -743,6 +874,7 @@ function run_single_simulation(args)
             return
         end
         try
+            FPSSEP.sync_redundant_ssep_views!(state; force=true)
             save_state(state, param, save_dir; ic=ic, relaxed_ic=using_initial_state, description=description)
         catch err
             println("Failed to save final SSEP state during shutdown: $err")
@@ -750,18 +882,20 @@ function run_single_simulation(args)
     end
 
     run_simulation!(state, param, n_sweeps, rng;
-                    show_times=cluster_mode ? Int[] : show_times,
+                    show_times=performance_mode ? Int[] : show_times,
                     save_times=save_times,
                     save_dir=save_dir,
-                    plot_flag=!cluster_mode,
+                    plot_flag=!performance_mode,
+                    plotter=plot_sweep_runner,
                     plot_label=description,
                     save_description=description,
                     warmup_sweeps=warmup_sweeps,
-                    show_progress=!cluster_mode,
+                    show_progress=!performance_mode,
                     relaxed_ic=using_initial_state,
                     simulation_mode=simulation_mode,
                     force_fluctuation_types=force_fluctuation_types)
 
+    FPSSEP.sync_redundant_ssep_views!(state; force=true)
     filename = save_state(state, param, save_dir;
                           tag=get(args, "save_tag", nothing),
                           ic=ic,
@@ -774,6 +908,9 @@ end
 
 function run_multiple_simulations(args)
     params, defaults = load_params(args)
+    if get(args, "performance_mode", false)
+        params["performance_mode"] = true
+    end
     description = get_description(params, defaults)
     save_dir = String(get(params, "save_dir", defaults["save_dir"]))
     warmup_sweeps = get_warmup_sweeps(params, defaults)

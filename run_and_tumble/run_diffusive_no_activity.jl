@@ -4,17 +4,74 @@
 using Distributed
 using Printf
 using Dates
-if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
+
+function _parse_bool_literal(raw)
+    raw === nothing && return nothing
+    value = lowercase(strip(String(raw)))
+    if value in ("1", "true", "yes", "on", "y", "t")
+        return true
+    elseif value in ("0", "false", "no", "off", "n", "f", "")
+        return false
+    end
+    return nothing
+end
+
+function _argv_value(flag::AbstractString)
+    idx = findfirst(==(flag), ARGS)
+    if idx === nothing || idx >= length(ARGS)
+        return nothing
+    end
+    return ARGS[idx + 1]
+end
+
+function _read_config_bool(path::AbstractString, key::AbstractString)
+    !isfile(path) && return nothing
+    prefix = string(key, ":")
+    for raw_line in eachline(path)
+        line = strip(raw_line)
+        isempty(line) && continue
+        startswith(line, "#") && continue
+        startswith(line, prefix) || continue
+        value = strip(line[length(prefix) + 1:end])
+        comment_idx = findfirst(==('#'), value)
+        if comment_idx !== nothing
+            value = strip(value[1:prevind(value, comment_idx)])
+        end
+        value = strip(replace(value, "\"" => "", "'" => ""))
+        parsed = _parse_bool_literal(value)
+        parsed === nothing || return parsed
+    end
+    return nothing
+end
+
+function _config_requests_performance_mode()
+    config_path = _argv_value("--config")
+    config_path === nothing && return false
+    performance_mode = _read_config_bool(String(config_path), "performance_mode")
+    performance_mode !== nothing && return performance_mode
+    cluster_mode = _read_config_bool(String(config_path), "cluster_mode")
+    cluster_mode !== nothing && return cluster_mode
+    return false
+end
+
+const RUN_AND_TUMBLE_HEADLESS = begin
+    env_headless = _parse_bool_literal(get(ENV, "RUN_AND_TUMBLE_HEADLESS", "0")) === true
+    aggregate_mode = "--aggregate_state_list" in ARGS
+    cli_performance_mode = "--performance_mode" in ARGS
+    env_headless || aggregate_mode || cli_performance_mode || _config_requests_performance_mode()
+end
+
+if !RUN_AND_TUMBLE_HEADLESS && haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
     # Under WSLg, Qt/GR can pick Wayland and then fail EGL initialization.
     # Force the stable XWayland path before Plots/GR initialize.
     ENV["QT_QPA_PLATFORM"] = "xcb"
 end
-using Plots
+if !RUN_AND_TUMBLE_HEADLESS
+    using Plots
+end
 using Random
-using FFTW
 using ProgressMeter
 using Statistics
-using LsqFit 
 using LinearAlgebra
 using JLD2
 using YAML
@@ -22,13 +79,17 @@ using ArgParse
 # using BenchmarkTools
 
 # First, on the main process, include all necessary files.
-include("potentials.jl")
 include("modules_diffusive_no_activity.jl")
-include("plot_utils.jl")
 include("save_utils.jl")
 using .FPDiffusive
-using .PlotUtils
 using .SaveUtils
+if !RUN_AND_TUMBLE_HEADLESS
+    include("plot_utils.jl")
+    using .PlotUtils
+    plot_sweep_runner = PlotUtils.plot_sweep
+else
+    plot_sweep_runner = nothing
+end
 
 const AGG_TWO_FORCE_REPLICA_COUNT_KEY = :agg_two_force_replica_count
 const AGG_TWO_FORCE_VAR_SLOT_MEAN_KEY = :agg_two_force_var_slot_mean
@@ -79,19 +140,28 @@ const AGG_TWO_FORCE_J2_MEAN_WEIGHT_KEY = :agg_two_force_j2_mean_weight
 const AGG_TWO_FORCE_J2_MEAN_SUM_KEY = :agg_two_force_j2_mean_sum
 const AGG_TWO_FORCE_J2_MEAN_SUMSQ_KEY = :agg_two_force_j2_mean_sumsq
 const AGG_TWO_FORCE_J2_MEAN_WEIGHTSQ_KEY = :agg_two_force_j2_mean_weightsq
+const AGG_CONNECTED_FULL_EXACT_KEY = :agg_connected_corr_full_exact
 
 # Ensure all worker processes load the same files and modules.
+@everywhere const RUN_AND_TUMBLE_HEADLESS_WORKER = $RUN_AND_TUMBLE_HEADLESS
 @everywhere begin
-    using Printf, Dates, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
-    if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
+    using Printf, Dates, Random, ProgressMeter, Statistics, LinearAlgebra, JLD2, YAML, ArgParse
+    local run_and_tumble_headless = RUN_AND_TUMBLE_HEADLESS_WORKER
+    if !run_and_tumble_headless && haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
         ENV["QT_QPA_PLATFORM"] = "xcb"
     end
-    using Plots
-    include("potentials.jl")
+    if !run_and_tumble_headless
+        using Plots
+    end
     include("modules_diffusive_no_activity.jl")
     using .FPDiffusive
-    include("plot_utils.jl")
-    using .PlotUtils
+    if !run_and_tumble_headless
+        include("plot_utils.jl")
+        using .PlotUtils
+        global plot_sweep_runner = PlotUtils.plot_sweep
+    else
+        global plot_sweep_runner = nothing
+    end
     # include("save_utils.jl")
     # using .SaveUtils
 end
@@ -130,13 +200,18 @@ function parse_commandline()
             help = "Path to newline-delimited state files to aggregate (one .jld2 path per line)"
             arg_type = String
             required = false
+        "--performance_mode"
+            help = "Disable progress bars and plotting for lean runtime"
+            action = :store_true
         "--estimate_only"
             help = "Estimate runtime and exit without running the simulation (single-run mode)"
+            action = :store_true
+        "--estimate_runtime"
+            help = "Estimate runtime before running the simulation"
             action = :store_true
         "--estimate_sample_size"
             help = "Number of sample sweeps to use for runtime estimation"
             arg_type = Int
-            default = 100
             required = false
     end
     return parse_args(s)
@@ -234,7 +309,10 @@ end
         "γ" => 0.0,
         "n_sweeps" => 10^6,
         "warmup_sweeps" => 0,
+        "performance_mode" => false,
         "cluster_mode" => false,
+        "estimate_runtime" => false,
+        "estimate_sample_size" => 100,
         "description" => "",
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
@@ -326,15 +404,16 @@ end
 end
 
 @everywhere function param_ffr_input(param)
-    if hasfield(typeof(param), :ffr)
-        return getfield(param, :ffr)
-    elseif hasfield(typeof(param), :ffrs)
-        return getfield(param, :ffrs)
+    if loaded_param_has_field(param, :ffr)
+        return loaded_param_field(param, :ffr)
+    elseif loaded_param_has_field(param, :ffrs)
+        return loaded_param_field(param, :ffrs)
     end
     return 0.0
 end
 
 @everywhere function maybe_override_forcing_rate_scheme(param, args, params)
+    param = canonicalize_loaded_param(param)
     has_explicit_config = haskey(args, "config") && !isnothing(args["config"]) && haskey(params, "forcing_rate_scheme")
     if !has_explicit_config
         return param
@@ -372,8 +451,32 @@ end
     return sort(unique(to_int_vector(raw_show_times, "show_times")))
 end
 
+@everywhere function get_performance_mode(params, defaults)
+    if haskey(params, "performance_mode")
+        return to_bool(params["performance_mode"], "performance_mode")
+    elseif haskey(params, "cluster_mode")
+        return to_bool(params["cluster_mode"], "cluster_mode")
+    end
+    return to_bool(get(defaults, "performance_mode", false), "performance_mode")
+end
+
 @everywhere function get_cluster_mode(params, defaults)
-    return to_bool(get(params, "cluster_mode", defaults["cluster_mode"]), "cluster_mode")
+    return get_performance_mode(params, defaults)
+end
+
+@everywhere function get_estimate_runtime(params, defaults)
+    return to_bool(get(params, "estimate_runtime", defaults["estimate_runtime"]), "estimate_runtime")
+end
+
+@everywhere function get_estimate_sample_size(params, defaults, cli_value=nothing)
+    if !isnothing(cli_value)
+        return max(Int(cli_value), 1)
+    end
+    raw_value = get(params, "estimate_sample_size", defaults["estimate_sample_size"])
+    if !(raw_value isa Number)
+        error("estimate_sample_size must be numeric.")
+    end
+    return max(Int(round(Float64(raw_value))), 1)
 end
 
 @everywhere function get_description(params, defaults)
@@ -538,6 +641,106 @@ end
     return forcings, ffrs
 end
 
+function force_signature(force)
+    return (
+        Tuple(Int.(force.bond_indices[1])),
+        Tuple(Int.(force.bond_indices[2])),
+        Float64(force.magnitude),
+    )
+end
+
+function loaded_param_has_field(param, field_name::Symbol)
+    if hasfield(typeof(param), field_name)
+        return true
+    end
+    if hasfield(typeof(param), :fields)
+        field_names = Tuple(typeof(param).parameters[2])
+        return field_name in field_names
+    end
+    return false
+end
+
+function loaded_param_field(param, field_name::Symbol)
+    if hasfield(typeof(param), field_name)
+        return getfield(param, field_name)
+    end
+    if hasfield(typeof(param), :fields)
+        field_names = Tuple(typeof(param).parameters[2])
+        idx = findfirst(==(field_name), field_names)
+        idx === nothing && error("Loaded param does not contain field $(field_name).")
+        raw_fields = getfield(param, :fields)
+        values = if raw_fields isa AbstractVector && length(raw_fields) == 1 && raw_fields[1] isa AbstractVector
+            raw_fields[1]
+        else
+            raw_fields
+        end
+        return values[idx]
+    end
+    error("Unsupported loaded param type $(typeof(param)); cannot read field $(field_name).")
+end
+
+function reconcile_loaded_state_with_config!(state, loaded_param, params, defaults)
+    dim_num = Int(get(params, "dim_num", length(normalized_dims_tuple(loaded_param_field(loaded_param, :dims)))))
+    loaded_dims = normalized_dims_tuple(loaded_param_field(loaded_param, :dims))
+    L = Int(get(params, "L", loaded_dims[1]))
+    dims = ntuple(_ -> L, dim_num)
+    if dims != loaded_dims
+        error("Loaded initial_state dims=$(loaded_dims) do not match config dims=$(dims).")
+    end
+
+    potential_type = String(get(params, "potential_type", loaded_param_field(loaded_param, :potential_type)))
+    fluctuation_type = String(get(params, "fluctuation_type", loaded_param_field(loaded_param, :fluctuation_type)))
+    potential_magnitude = Float64(get(params, "potential_magnitude", loaded_param_field(loaded_param, :potential_magnitude)))
+    D = Float64(get(params, "D", loaded_param_field(loaded_param, :D)))
+    ρ₀ = Float64(get(params, "ρ₀", loaded_param_field(loaded_param, :ρ₀)))
+    γ = Float64(get(params, "γ", loaded_param_field(loaded_param, :γ)))
+    forcing_rate_scheme = String(get(params, "forcing_rate_scheme", defaults["forcing_rate_scheme"]))
+    bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
+
+    config_forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
+    saved_forcings = deepcopy(FPDiffusive.get_state_forcings!(state))
+
+    if length(saved_forcings) == length(config_forcings)
+        saved_sigs = force_signature.(saved_forcings)
+        config_sigs = force_signature.(config_forcings)
+        if saved_sigs == config_sigs
+            for i in eachindex(config_forcings)
+                config_forcings[i].direction_flag = saved_forcings[i].direction_flag
+            end
+        else
+            println("WARNING: initial_state forcing definitions differ from config; using config forcings and config default direction flags.")
+        end
+    else
+        println("WARNING: initial_state force count ($(length(saved_forcings))) differs from config force count ($(length(config_forcings))); using config forcings.")
+    end
+
+    state.forcing = config_forcings
+    FPDiffusive.configure_bond_passage_tracking!(state, bond_pass_count_mode)
+
+    reconciled_param = FPDiffusive.setParam(
+        γ,
+        dims,
+        ρ₀,
+        D,
+        potential_type,
+        fluctuation_type,
+        potential_magnitude,
+        ffrs;
+        forcing_rate_scheme=forcing_rate_scheme,
+    )
+
+    println("Reconciled initial_state with config:")
+    println("  dims=$(dims)")
+    println("  forcing_rate_scheme=$(forcing_rate_scheme)")
+    println("  bond_pass_count_mode=$(bond_pass_count_mode)")
+    println("  num_forces=$(length(config_forcings))")
+    for (i, force) in enumerate(config_forcings)
+        println("    force[$i] bond=$(force.bond_indices) magnitude=$(force.magnitude) direction=$(force.direction_flag) ffr=$(i <= length(ffrs) ? ffrs[i] : NaN)")
+    end
+
+    return state, reconciled_param
+end
+
 @everywhere function average_array_list(arrays::Vector{<:AbstractArray})
     if isempty(arrays)
         error("Cannot average an empty array list.")
@@ -548,9 +751,6 @@ end
 end
 
 @everywhere function raw_sweep_weight(state)
-    if hasfield(typeof(state), :t)
-        return max(Float64(getfield(state, :t)), 1.0)
-    end
     if hasfield(typeof(state), :bond_pass_stats)
         stats = getfield(state, :bond_pass_stats)
         if haskey(stats, :bond_pass_sample_count) && !isempty(stats[:bond_pass_sample_count])
@@ -561,6 +761,9 @@ end
         if haskey(raw_cuts, :bond_pass_sample_count) && !isempty(raw_cuts[:bond_pass_sample_count])
             return max(Float64(raw_cuts[:bond_pass_sample_count][1]), 1.0)
         end
+    end
+    if hasfield(typeof(state), :t)
+        return max(Float64(getfield(state, :t)), 1.0)
     end
     return 1.0
 end
@@ -858,6 +1061,30 @@ function bond_center_value_from_corr(corr_mat::AbstractMatrix{<:Real}, b1::Int, 
     return 0.5 * (cut[b1] + cut[b2])
 end
 
+function rho_outer_from_avg(rho_avg::AbstractArray{<:Real})
+    nd = ndims(rho_avg)
+    left_shape = (size(rho_avg)..., ntuple(_ -> 1, nd)...)
+    right_shape = (ntuple(_ -> 1, nd)..., size(rho_avg)...)
+    rho_float = Float64.(rho_avg)
+    return reshape(rho_float, left_shape...) .* reshape(rho_float, right_shape...)
+end
+
+function exact_connected_corr_full(state)
+    if !hasfield(typeof(state), :ρ_matrix_avg_cuts) || !hasfield(typeof(state), :ρ_avg)
+        return nothing
+    end
+    corr_cuts = getfield(state, :ρ_matrix_avg_cuts)
+    if haskey(corr_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
+        return Float64.(corr_cuts[AGG_CONNECTED_FULL_EXACT_KEY])
+    end
+    if !haskey(corr_cuts, :full)
+        return nothing
+    end
+    rho_avg = Float64.(getfield(state, :ρ_avg))
+    full_corr = Float64.(corr_cuts[:full])
+    return full_corr .- rho_outer_from_avg(rho_avg)
+end
+
 function extract_two_force_replica_metrics(state)
     if !hasfield(typeof(state), :ρ_avg) || !hasfield(typeof(state), :ρ_matrix_avg_cuts)
         return nothing
@@ -866,12 +1093,11 @@ function extract_two_force_replica_metrics(state)
     ndims(rho_avg) == 1 || return nothing
     L = length(rho_avg)
 
-    corr_cuts = getfield(state, :ρ_matrix_avg_cuts)
-    if !(corr_cuts isa AbstractDict) || !haskey(corr_cuts, :full)
+    corr_mat = exact_connected_corr_full(state)
+    if isnothing(corr_mat)
         return nothing
     end
-    full_corr = corr_cuts[:full]
-    if ndims(full_corr) != 2 || size(full_corr, 1) != L || size(full_corr, 2) != L
+    if ndims(corr_mat) != 2 || size(corr_mat, 1) != L || size(corr_mat, 2) != L
         return nothing
     end
 
@@ -886,7 +1112,6 @@ function extract_two_force_replica_metrics(state)
         tracked = collect(1:length(bonds))
     end
 
-    corr_mat = Float64.(full_corr) .- (rho_avg * transpose(rho_avg))
     var_vals_smoothed = Float64[]
     var_vals_raw = Float64[]
     for idx in tracked
@@ -1096,7 +1321,18 @@ end
 
 
 # Function to set up and run one independent simulation.
-@everywhere function run_one_simulation_from_state(param, state, seed, n_sweeps; relaxed_ic::Bool=false, warmup_sweeps::Int=0, cluster_mode::Bool=false, description::String="")
+@everywhere function run_one_simulation_from_state(
+    param,
+    state,
+    seed,
+    n_sweeps;
+    relaxed_ic::Bool=false,
+    warmup_sweeps::Int=0,
+    performance_mode::Bool=false,
+    estimate_runtime::Bool=false,
+    estimate_sample_size::Int=100,
+    description::String="",
+)
     println("Continuing simulation with seed $seed for $n_sweeps")
     rng = MersenneTwister(seed)
     # defaults = get_default_params()
@@ -1134,18 +1370,22 @@ end
     # state = FPDiffusive.setState(0, rng, param, T, potential)
     state_bond_pass_stats = hasfield(typeof(state), :bond_pass_stats) ? deepcopy(getfield(state, :bond_pass_stats)) : Dict{Symbol,Vector{Float64}}()
     dummy_state = FPDiffusive.setDummyState(state, state.ρ_avg, state.ρ_matrix_avg_cuts, state.t, state_bond_pass_stats)
-    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
-    estimated_time_hours = estimated_time / 3600
-    println("Estimated run time for this simulation: $estimated_time_hours hours")
+    if estimate_runtime
+        estimated_time = estimate_run_time(dummy_state, param, n_sweeps, rng; sample_size=max(estimate_sample_size, 1))
+        estimated_time_hours = estimated_time / 3600
+        println("Estimated run time for this simulation: $estimated_time_hours hours")
+    end
     # Run the simulation (calculating correlations).
     dist, corr_mat_cuts = run_simulation!(dummy_state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=show_times,
                                                  save_times=save_times,
+                                                 plot_flag=!performance_mode,
+                                                 plotter=plot_sweep_runner,
                                                  warmup_sweeps=warmup_sweeps,
                                                  plot_label=description,
                                                  save_description=description,
-                                                 show_progress=!cluster_mode,
+                                                 show_progress=!performance_mode,
                                                  relaxed_ic=relaxed_ic)
     return dist, corr_mat_cuts, dummy_state, param
 end
@@ -1176,7 +1416,7 @@ function warmup_sweeps_from_args(args)
     return get_warmup_sweeps(params, defaults)
 end
 
-function cluster_mode_from_args(args)
+function performance_mode_from_args(args)
     defaults = get_default_params()
     if haskey(args, "config") && !isnothing(args["config"])
         println("Using configuration from file: $(args["config"])")
@@ -1185,7 +1425,14 @@ function cluster_mode_from_args(args)
         println("No config file provided. Using default parameters.")
         params = get_default_params()
     end
-    return get_cluster_mode(params, defaults)
+    if get(args, "performance_mode", false)
+        return true
+    end
+    return get_performance_mode(params, defaults)
+end
+
+function cluster_mode_from_args(args)
+    return performance_mode_from_args(args)
 end
 
 function description_from_args(args)
@@ -1206,6 +1453,66 @@ function save_dir_from_args(args)
         params = defaults
     end
     return get(params, "save_dir", defaults["save_dir"])
+end
+
+function normalized_dims_tuple(raw_dims)
+    if raw_dims isa Tuple
+        return Tuple(Int.(collect(raw_dims)))
+    elseif raw_dims isa AbstractVector
+        return Tuple(Int.(collect(raw_dims)))
+    end
+    return (Int(raw_dims),)
+end
+
+function forcing_rate_scheme_from_param(param)
+    if loaded_param_has_field(param, :forcing_rate_scheme)
+        return String(loaded_param_field(param, :forcing_rate_scheme))
+    end
+    return FPDiffusive.LEGACY_FORCING_RATE_SCHEME
+end
+
+function canonicalize_loaded_param(param)
+    return FPDiffusive.setParam(
+        Float64(loaded_param_field(param, :γ)),
+        normalized_dims_tuple(loaded_param_field(param, :dims)),
+        Float64(loaded_param_field(param, :ρ₀)),
+        Float64(loaded_param_field(param, :D)),
+        String(loaded_param_field(param, :potential_type)),
+        String(loaded_param_field(param, :fluctuation_type)),
+        Float64(loaded_param_field(param, :potential_magnitude)),
+        param_ffr_input(param);
+        forcing_rate_scheme=forcing_rate_scheme_from_param(param),
+    )
+end
+
+function aggregation_save_param_from_args(args; fallback_param=nothing)
+    defaults = get_default_params()
+    if haskey(args, "config") && !isnothing(args["config"])
+        params = YAML.load_file(args["config"])
+        dim_num = get(params, "dim_num", defaults["dim_num"])
+        potential_type = get(params, "potential_type", defaults["potential_type"])
+        fluctuation_type = get(params, "fluctuation_type", defaults["fluctuation_type"])
+        potential_magnitude = get(params, "potential_magnitude", defaults["potential_magnitude"])
+        D = get(params, "D", defaults["D"])
+        L = get(params, "L", defaults["L"])
+        ρ₀ = get(params, "ρ₀", defaults["ρ₀"])
+        γ = get(params, "γ", defaults["γ"])
+        forcing_rate_scheme = String(get(params, "forcing_rate_scheme", defaults["forcing_rate_scheme"]))
+        _, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
+        dims = ntuple(i -> L, dim_num)
+        return FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
+                                    forcing_rate_scheme=forcing_rate_scheme)
+    end
+    if !isnothing(fallback_param)
+        return canonicalize_loaded_param(fallback_param)
+    end
+    dim_num = defaults["dim_num"]
+    L = defaults["L"]
+    dims = ntuple(i -> L, dim_num)
+    return FPDiffusive.setParam(defaults["γ"], dims, defaults["ρ₀"], defaults["D"],
+                                defaults["potential_type"], defaults["fluctuation_type"],
+                                defaults["potential_magnitude"], defaults["ffrs"];
+                                forcing_rate_scheme=String(defaults["forcing_rate_scheme"]))
 end
 
 function legacy_bond_pass_stats(state)
@@ -1271,6 +1578,28 @@ function aggregate_and_save_states(states::Vector, result_params::Vector, args; 
         end
         mat_cuts_averaged[key] = weighted_sum ./ total_weight
     end
+    exact_connected_sum = nothing
+    exact_connected_shape = nothing
+    for (state, weight) in zip(states, state_weights)
+        connected_full = exact_connected_corr_full(state)
+        if isnothing(connected_full)
+            exact_connected_sum = nothing
+            exact_connected_shape = nothing
+            break
+        end
+        if isnothing(exact_connected_sum)
+            exact_connected_sum = zeros(Float64, size(connected_full))
+            exact_connected_shape = size(connected_full)
+        elseif size(connected_full) != exact_connected_shape
+            exact_connected_sum = nothing
+            exact_connected_shape = nothing
+            break
+        end
+        exact_connected_sum .+= connected_full .* weight
+    end
+    if !isnothing(exact_connected_sum)
+        mat_cuts_averaged[AGG_CONNECTED_FULL_EXACT_KEY] = exact_connected_sum ./ total_weight
+    end
 
     total_t = Int(round(total_weight))
     avg_bond_pass_stats = average_bond_pass_stats(states)
@@ -1299,7 +1628,8 @@ function aggregate_and_save_states(states::Vector, result_params::Vector, args; 
     if !startswith(save_tag, "aggregated_")
         save_tag = "aggregated_" * save_tag
     end
-    filename = save_state(dummy_state, result_params[1], dummy_state_save_dir;
+    save_param = aggregation_save_param_from_args(args; fallback_param=result_params[1])
+    filename = save_state(dummy_state, save_param, dummy_state_save_dir;
                           tag=save_tag, ic="aggregated", relaxed_ic=using_initial_state, description=run_description)
     println("Final aggregated state saved to: ", filename)
     return filename
@@ -1321,6 +1651,8 @@ function aggregate_state_list_and_save(args; run_description::String="")
     avg_dists = nothing
     mat_cuts_weighted = Dict{Symbol,Any}()
     shared_corr_keys = Set{Symbol}()
+    exact_connected_weighted = nothing
+    exact_connected_shape = nothing
     total_weight = 0.0
 
     stats_list = Dict{Symbol,Vector{Float64}}[]
@@ -1345,6 +1677,12 @@ function aggregate_state_list_and_save(args; run_description::String="")
                 weighted_sum .+= norm_state.ρ_matrix_avg_cuts[key] .* state_weight
                 mat_cuts_weighted[key] = weighted_sum
             end
+            connected_full = exact_connected_corr_full(norm_state)
+            if !isnothing(connected_full)
+                exact_connected_weighted = zeros(Float64, size(connected_full))
+                exact_connected_weighted .+= connected_full .* state_weight
+                exact_connected_shape = size(connected_full)
+            end
         else
             if size(avg_dists) != size(norm_state.ρ_avg)
                 error("Cannot aggregate states with different ρ_avg sizes: got $(size(norm_state.ρ_avg)), expected $(size(avg_dists)).")
@@ -1365,6 +1703,15 @@ function aggregate_state_list_and_save(args; run_description::String="")
                 mat_cuts_weighted[key] .+= norm_state.ρ_matrix_avg_cuts[key] .* state_weight
             end
             shared_corr_keys = new_shared
+            if !isnothing(exact_connected_weighted)
+                connected_full = exact_connected_corr_full(norm_state)
+                if isnothing(connected_full) || size(connected_full) != exact_connected_shape
+                    exact_connected_weighted = nothing
+                    exact_connected_shape = nothing
+                else
+                    exact_connected_weighted .+= connected_full .* state_weight
+                end
+            end
         end
 
         stats_dict, bond_w, spatial_w = bond_pass_stats_with_weights(norm_state)
@@ -1394,6 +1741,9 @@ function aggregate_state_list_and_save(args; run_description::String="")
     for (key, weighted_sum) in mat_cuts_weighted
         mat_cuts_averaged[key] = weighted_sum ./ total_weight
     end
+    if !isnothing(exact_connected_weighted)
+        mat_cuts_averaged[AGG_CONNECTED_FULL_EXACT_KEY] = exact_connected_weighted ./ total_weight
+    end
 
     total_t = Int(round(total_weight))
     avg_bond_pass_stats = average_bond_pass_stats_from_prepared(stats_list, bond_weights, spatial_weights)
@@ -1414,7 +1764,8 @@ function aggregate_state_list_and_save(args; run_description::String="")
     if !startswith(save_tag, "aggregated_")
         save_tag = "aggregated_" * save_tag
     end
-    filename = save_state(dummy_state, first_param, dummy_state_save_dir;
+    save_param = aggregation_save_param_from_args(args; fallback_param=first_param)
+    filename = save_state(dummy_state, save_param, dummy_state_save_dir;
                           tag=save_tag, ic="aggregated", relaxed_ic=false, description=run_description)
     println("Final aggregated state saved to: ", filename)
 end
@@ -1433,7 +1784,9 @@ end
     # For parallel runs, disable any visualization or state saving I/O.
     n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
     warmup_sweeps = get_warmup_sweeps(params, defaults)
-    cluster_mode = get_cluster_mode(params, defaults)
+    performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
+    estimate_runtime = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
+    estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
     description = get_description(params, defaults)
     params["show_times"] = Int[]
     params["save_times"] = Int[]
@@ -1463,23 +1816,26 @@ end
     param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
                                  forcing_rate_scheme=forcing_rate_scheme)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
-    potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
+    potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type, rng=rng, plot_flag=!performance_mode)
     state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
    
-    #estimate run time
-    estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=100)
-    estimated_time_hours = estimated_time / 3600
-    println("Estimated run time for this simulation: $estimated_time_hours hours")
+    if estimate_runtime
+        estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
+        estimated_time_hours = estimated_time / 3600
+        println("Estimated run time for this simulation: $estimated_time_hours hours")
+    end
 
     # Run the simulation (calculating correlations).
     dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=params["show_times"],
                                                  save_times=params["save_times"],
+                                                 plot_flag=!performance_mode,
+                                                 plotter=plot_sweep_runner,
                                                  plot_label=description,
                                                  save_description=description,
                                                  warmup_sweeps=warmup_sweeps,
-                                                 show_progress=!cluster_mode)
+                                                 show_progress=!performance_mode)
     return dist, corr_mat_cuts, state, param
 end
 
@@ -1493,7 +1849,6 @@ function main()
     end
     num_runs = get(args, "num_runs", 1)
     estimate_only = get(args, "estimate_only", false)
-    estimate_sample_size = max(get(args, "estimate_sample_size", 100), 1)
     explicit_save_tag = explicit_save_tag_from_args(args)
     seeds = rand(1:2^30,num_runs)
     println("Running $num_runs independent simulations in parallel.")
@@ -1542,10 +1897,22 @@ function main()
                 println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
             end
             warmup_sweeps = get_warmup_sweeps(params, defaults)
-            cluster_mode = get_cluster_mode(params, defaults)
+            performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
+            estimate_runtime = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
+            estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
             run_description = get_description(params, defaults)
             println("Warmup sweeps per restarted run: $warmup_sweeps")
-            results = pmap(seed -> run_one_simulation_from_state(param, state, seed, n_sweeps; warmup_sweeps=warmup_sweeps, cluster_mode=cluster_mode, description=run_description), seeds)
+            results = pmap(seed -> run_one_simulation_from_state(
+                    param,
+                    state,
+                    seed,
+                    n_sweeps;
+                    warmup_sweeps=warmup_sweeps,
+                    performance_mode=performance_mode,
+                    estimate_runtime=estimate_runtime,
+                    estimate_sample_size=estimate_sample_size,
+                    description=run_description,
+                ), seeds)
         elseif using_initial_state
             defaults = get_default_params()
             if haskey(args, "config") && !isnothing(args["config"])
@@ -1553,14 +1920,27 @@ function main()
             else
                 params = get_default_params()
             end
-            initial_param = maybe_override_forcing_rate_scheme(initial_param, args, params)
+            initial_state, initial_param = reconcile_loaded_state_with_config!(initial_state, initial_param, params, defaults)
             n_sweeps = n_sweeps_from_args(args)
             warmup_sweeps = warmup_sweeps_from_args(args)
-            cluster_mode = cluster_mode_from_args(args)
+            performance_mode = performance_mode_from_args(args)
+            estimate_runtime = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
+            estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
             results = pmap(seed -> begin
                     run_state = deepcopy(initial_state)
                     run_param = deepcopy(initial_param)
-                    run_one_simulation_from_state(run_param, run_state, seed, n_sweeps; relaxed_ic=true, warmup_sweeps=warmup_sweeps, cluster_mode=cluster_mode, description=run_description)
+                    run_one_simulation_from_state(
+                        run_param,
+                        run_state,
+                        seed,
+                        n_sweeps;
+                        relaxed_ic=true,
+                        warmup_sweeps=warmup_sweeps,
+                        performance_mode=performance_mode,
+                        estimate_runtime=estimate_runtime,
+                        estimate_sample_size=estimate_sample_size,
+                        description=run_description,
+                    )
                 end, seeds)
         else
             results = pmap(seed -> run_one_simulation_from_config(args, seed), seeds)
@@ -1617,7 +1997,9 @@ function main()
                 println("Continuing simulation for $n_sweeps more sweeps (from config/defaults)")
             end
             warmup_sweeps = get_warmup_sweeps(params, defaults)
-            cluster_mode = get_cluster_mode(params, defaults)
+            performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
+            estimate_runtime = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
+            estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
             description = get_description(params, defaults)
             seed = rand(1:2^30)
             rng = MersenneTwister(seed)
@@ -1632,10 +2014,12 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
-            param = maybe_override_forcing_rate_scheme(param, args, params)
+            state, param = reconcile_loaded_state_with_config!(state, param, params, defaults)
             n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
             warmup_sweeps = get_warmup_sweeps(params, defaults)
-            cluster_mode = get_cluster_mode(params, defaults)
+            performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
+            estimate_runtime = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
+            estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
             description = get_description(params, defaults)
             seed = rand(1:2^30)
             rng = MersenneTwister(seed)
@@ -1663,7 +2047,9 @@ function main()
             bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
             n_sweeps           = get(params, "n_sweeps", defaults["n_sweeps"])
             warmup_sweeps      = get_warmup_sweeps(params, defaults)
-            cluster_mode       = get_cluster_mode(params, defaults)
+            performance_mode   = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
+            estimate_runtime   = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
+            estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
             description        = get_description(params, defaults)
             forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
             ic = get(params, "ic", defaults["ic"])
@@ -1680,7 +2066,7 @@ function main()
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
-            potential_plot_flag = !cluster_mode
+            potential_plot_flag = !performance_mode
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=potential_plot_flag)
             
             state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
@@ -1689,7 +2075,7 @@ function main()
         defaults = get_default_params()
         has_explicit_show_times = haskey(args, "config") && !isnothing(args["config"]) && haskey(params, "show_times")
         show_times = get_show_times(params, defaults, warmup_sweeps; has_explicit_show_times=has_explicit_show_times)
-        save_times = get(params, "save_times", defaults["save_times"])
+        save_times = to_int_vector(get(params, "save_times", defaults["save_times"]), "save_times")
         save_dir = get(params, "save_dir", defaults["save_dir"])
         progress_file = String(get(params, "progress_file", ""))
         progress_interval_raw = get(params, "progress_interval", 25)
@@ -1699,10 +2085,16 @@ function main()
         if !(@isdefined warmup_sweeps)
             warmup_sweeps = get_warmup_sweeps(params, defaults)
         end
-        if !(@isdefined cluster_mode)
-            cluster_mode = get_cluster_mode(params, defaults)
+        if !(@isdefined performance_mode)
+            performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
         end
-        if cluster_mode
+        if !(@isdefined estimate_runtime)
+            estimate_runtime = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
+        end
+        if !(@isdefined estimate_sample_size)
+            estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
+        end
+        if performance_mode
             show_times = Int[]
         end
 
@@ -1711,6 +2103,12 @@ function main()
             estimated_time_hours = estimated_time / 3600
             println("Estimated run time for this simulation: $estimated_time_hours hours")
             return
+        end
+
+        if estimate_runtime
+            estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
+            estimated_time_hours = estimated_time / 3600
+            println("Estimated run time for this simulation: $estimated_time_hours hours")
         end
         
         # Register an exit hook to save state at exit.
@@ -1741,11 +2139,12 @@ function main()
             res_dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  show_times=show_times,
                                                  save_times=save_times,
-                                                 plot_flag=!cluster_mode,
+                                                 plot_flag=!performance_mode,
+                                                 plotter=plot_sweep_runner,
                                                  plot_label=description,
                                                  save_description=description,
                                                  warmup_sweeps=warmup_sweeps,
-                                                 show_progress=!cluster_mode,
+                                                 show_progress=!performance_mode,
                                                  save_dir=save_dir,
                                                  progress_file=progress_file,
                                                  progress_interval=progress_interval,

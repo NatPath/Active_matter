@@ -177,6 +177,48 @@ function choose_safe_state_filename(
     error("Could not build a filename within filesystem limits. Try a shorter save tag (current id='$run_id').")
 end
 
+function atomic_jld2_save(filename::AbstractString, state, param, potential; max_attempts::Int=3)
+    save_dir = dirname(filename)
+    base_name = basename(filename)
+    mkpath(save_dir)
+    last_err = nothing
+
+    for attempt in 1:max_attempts
+        temp_name = joinpath(
+            save_dir,
+            "." * base_name * ".tmp-" * string(getpid()) * "-" * Dates.format(now(), "yyyymmdd-HHMMSSsss") * "-a" * string(attempt),
+        )
+        try
+            isfile(temp_name) && rm(temp_name; force=true)
+            jldopen(temp_name, "w"; iotype=IOStream) do file
+                file["state"] = state
+                file["param"] = param
+                file["potential"] = potential
+            end
+            if isfile(filename)
+                rm(filename; force=true)
+            end
+            mv(temp_name, filename; force=true)
+            return filename
+        catch err
+            last_err = err
+            try
+                isfile(temp_name) && rm(temp_name; force=true)
+            catch
+            end
+            if attempt < max_attempts
+                println("WARNING: save attempt $(attempt)/$(max_attempts) failed for $(filename): $(sprint(showerror, err))")
+                sleep(min(5.0, 0.5 * 2.0^(attempt - 1)))
+            end
+        end
+    end
+
+    if last_err !== nothing
+        throw(last_err)
+    end
+    error("atomic_jld2_save failed unexpectedly for $(filename)")
+end
+
 function save_aggregation(agg_res,param,total_sweeps,save_dir; description=nothing)
     mkpath(save_dir)
     state = agg_res
@@ -206,7 +248,7 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir; description=nothi
         force_distance_suffix,
         total_sweeps)
     potential = state.potential 
-    @save filename state param potential
+    atomic_jld2_save(filename, state, param, potential)
     return filename
 end
 
@@ -250,7 +292,7 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
         run_id=run_id,
     )
     potential = state.potential 
-    @save filename state param potential
+    atomic_jld2_save(filename, state, param, potential)
     println("Saved a state to $filename")
     return filename
 end

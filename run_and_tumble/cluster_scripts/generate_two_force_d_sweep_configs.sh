@@ -101,7 +101,7 @@ T: 1.0
 γ: 0.0
 n_sweeps: ${WARMUP_SWEEPS}
 warmup_sweeps: 0
-cluster_mode: true
+performance_mode: true
 description: "two_force_d${d}_warmup"
 
 potential_type: "zero"
@@ -132,7 +132,7 @@ T: 1.0
 γ: 0.0
 n_sweeps: ${PRODUCTION_SWEEPS}
 warmup_sweeps: 0
-cluster_mode: true
+performance_mode: true
 description: "two_force_d${d}_prod"
 
 potential_type: "zero"

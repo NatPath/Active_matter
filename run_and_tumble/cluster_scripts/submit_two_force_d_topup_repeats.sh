@@ -26,6 +26,10 @@ Options:
                                     (default: infer from target run_info or "2 GB")
   --aggregate_request_cpus <int>    Aggregate request_cpus (default: 1)
   --julia_num_procs_aggregate <int> Aggregate JULIA_NUM_PROCS_AGGREGATE (default: 1)
+  --replica_retries <int>           DAG retry count for replica nodes (default: 2)
+  --estimate_runtime                Enable runtime estimation prints inside replica jobs
+  --estimate_sample_size <int>      Sample sweeps used when --estimate_runtime is enabled
+                                    (default: 100)
   --dag_maxjobs <int>               Forwarded to condor_submit_dag -maxjobs
                                     (default: 0, no DAGMan submitted-node throttle)
   --dag_maxidle <int>               Forwarded to condor_submit_dag -maxidle
@@ -118,6 +122,9 @@ request_cpus=""
 request_memory=""
 aggregate_request_cpus="1"
 julia_num_procs_aggregate="1"
+replica_retries="2"
+estimate_runtime="false"
+estimate_sample_size="100"
 dag_maxjobs="0"
 dag_maxidle="0"
 job_label=""
@@ -164,6 +171,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --julia_num_procs_aggregate)
             julia_num_procs_aggregate="${2:-}"
+            shift 2
+            ;;
+        --replica_retries)
+            replica_retries="${2:-}"
+            shift 2
+            ;;
+        --estimate_runtime)
+            estimate_runtime="true"
+            shift
+            ;;
+        --estimate_sample_size)
+            estimate_sample_size="${2:-}"
             shift 2
             ;;
         --dag_maxjobs)
@@ -213,7 +232,7 @@ case "${mode}" in
         ;;
 esac
 
-for numeric_name in num_repeats n_sweeps request_cpus aggregate_request_cpus julia_num_procs_aggregate dag_maxjobs dag_maxidle; do
+for numeric_name in num_repeats n_sweeps request_cpus aggregate_request_cpus julia_num_procs_aggregate replica_retries estimate_sample_size dag_maxjobs dag_maxidle; do
     numeric_value="${!numeric_name}"
     if [[ -n "${numeric_value}" ]] && ! [[ "${numeric_value}" =~ ^[0-9]+$ ]]; then
         echo "--${numeric_name} must be a non-negative integer. Got '${numeric_value}'."
@@ -238,6 +257,10 @@ if (( aggregate_request_cpus <= 0 )); then
 fi
 if (( julia_num_procs_aggregate <= 0 )); then
     echo "--julia_num_procs_aggregate must be a positive integer. Got '${julia_num_procs_aggregate}'."
+    exit 1
+fi
+if (( replica_retries < 0 )); then
+    echo "--replica_retries must be a non-negative integer. Got '${replica_retries}'."
     exit 1
 fi
 for include_raw_dir in "${include_raw_dirs[@]}"; do
@@ -291,6 +314,10 @@ echo "  request_cpus=${request_cpus}"
 echo "  request_memory=${request_memory}"
 echo "  aggregate_request_cpus=${aggregate_request_cpus}"
 echo "  julia_num_procs_aggregate=${julia_num_procs_aggregate}"
+echo "  replica_retries=${replica_retries}"
+echo "  performance_mode=true"
+echo "  estimate_runtime=${estimate_runtime}"
+echo "  estimate_sample_size=${estimate_sample_size}"
 echo "  dag_maxjobs=${dag_maxjobs}"
 echo "  dag_maxidle=${dag_maxidle}"
 echo "  aggregated_subdir=aggregated"
@@ -316,11 +343,16 @@ submit_cmd=(
     --request_memory "${request_memory}"
     --aggregate_request_cpus "${aggregate_request_cpus}"
     --julia_num_procs_aggregate "${julia_num_procs_aggregate}"
+    --replica_retries "${replica_retries}"
+    --estimate_sample_size "${estimate_sample_size}"
     --aggregated_subdir "aggregated"
     --dag_maxjobs "${dag_maxjobs}"
     --dag_maxidle "${dag_maxidle}"
     --job_label "${job_label}"
 )
+if [[ "${estimate_runtime}" == "true" ]]; then
+    submit_cmd+=(--estimate_runtime)
+fi
 if [[ -n "${batch_name}" ]]; then
     submit_cmd+=(--batch_name "${batch_name}")
 fi

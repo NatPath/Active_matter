@@ -100,6 +100,15 @@ two_force_find_run_info_by_run_id() {
     return 1
 }
 
+two_force_infer_spacing_from_run_id() {
+    local rid="$1"
+    if [[ "${rid}" =~ -lm(_|$) ]]; then
+        echo "log_midpoints"
+    else
+        echo "linear"
+    fi
+}
+
 two_force_resolve_target_production_run_info() {
     local repo_root="$1"
     local lookup_run_id="$2"
@@ -133,6 +142,82 @@ two_force_resolve_target_production_run_info() {
     fi
 
     echo "${resolved_info}"
+}
+
+two_force_lookup_latest_matching_warmup_state_dir() {
+    local repo_root="$1"
+    local prod_run_info="$2"
+    local registry_file="${repo_root}/runs/two_force_d/run_registry.csv"
+    local L_val rho_val d_min d_max d_step d_spacing result
+
+    [[ -f "${registry_file}" ]] || return 1
+
+    L_val="$(two_force_read_key_value "${prod_run_info}" "L")"
+    rho_val="$(two_force_read_key_value "${prod_run_info}" "rho0")"
+    d_min="$(two_force_read_key_value "${prod_run_info}" "d_min")"
+    d_max="$(two_force_read_key_value "${prod_run_info}" "d_max")"
+    d_step="$(two_force_read_key_value "${prod_run_info}" "d_step")"
+    d_spacing="$(two_force_read_key_value "${prod_run_info}" "d_spacing")"
+    if [[ -z "${d_spacing}" ]]; then
+        d_spacing="$(two_force_infer_spacing_from_run_id "$(two_force_read_key_value "${prod_run_info}" "run_id")")"
+    fi
+
+    result="$(
+        awk -F, -v L="${L_val}" -v rho="${rho_val}" -v dmin="${d_min}" -v dmax="${d_max}" -v dstep="${d_step}" -v spacing="${d_spacing}" '
+            NR == 1 {next}
+            $3 == "warmup" && $4 == L && $5 == rho && $7 == dmin && $8 == dmax && $9 == dstep {
+                if (spacing == "log_midpoints" && $2 !~ /-lm(_|$)/) next
+                if (spacing != "log_midpoints" && $2 ~ /-lm(_|$)/) next
+                state_dir = $14
+            }
+            END {print state_dir}
+        ' "${registry_file}"
+    )"
+    if [[ -n "${result}" && -d "${result}" ]]; then
+        echo "${result}"
+        return 0
+    fi
+    return 1
+}
+
+two_force_resolve_warmup_state_dir_for_run() {
+    local repo_root="$1"
+    local prod_run_info="$2"
+    local current_info="$2"
+    local depth=0
+    local candidate warmup_run_id continue_run_id warmup_info
+
+    while (( depth < 12 )); do
+        candidate="$(two_force_read_key_value "${current_info}" "warmup_state_dir")"
+        if [[ -n "${candidate}" && -d "${candidate}" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+
+        warmup_run_id="$(two_force_read_key_value "${current_info}" "warmup_run_id")"
+        if [[ -n "${warmup_run_id}" ]]; then
+            warmup_info="$(two_force_find_run_info_by_run_id "${repo_root}" "${warmup_run_id}" "warmup" || true)"
+            if [[ -n "${warmup_info}" && -f "${warmup_info}" ]]; then
+                candidate="$(two_force_read_key_value "${warmup_info}" "state_dir")"
+                if [[ -n "${candidate}" && -d "${candidate}" ]]; then
+                    echo "${candidate}"
+                    return 0
+                fi
+            fi
+        fi
+
+        continue_run_id="$(two_force_read_key_value "${current_info}" "continue_run_id")"
+        if [[ -z "${continue_run_id}" ]]; then
+            break
+        fi
+        current_info="$(two_force_find_run_info_by_run_id "${repo_root}" "${continue_run_id}" "production" || true)"
+        if [[ -z "${current_info}" || ! -f "${current_info}" ]]; then
+            break
+        fi
+        depth=$((depth + 1))
+    done
+
+    two_force_lookup_latest_matching_warmup_state_dir "${repo_root}" "${prod_run_info}" || return 1
 }
 
 two_force_list_add_repeats_job_roots() {

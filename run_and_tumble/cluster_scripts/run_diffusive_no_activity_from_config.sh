@@ -20,6 +20,28 @@ CONFIG_PATH="$1"
 shift || true
 EXTRA_ARGS=("$@")
 
+config_performance_mode="$(awk '
+    /^[[:space:]]*#/ {next}
+    /^[[:space:]]*performance_mode:[[:space:]]*/ {
+        val=$0
+        sub(/^[[:space:]]*performance_mode:[[:space:]]*/, "", val)
+        gsub(/[[:space:]]+$/, "", val)
+        gsub(/^"/, "", val); gsub(/"$/, "", val)
+        print tolower(val)
+        exit
+    }
+    /^[[:space:]]*cluster_mode:[[:space:]]*/ {
+        val=$0
+        sub(/^[[:space:]]*cluster_mode:[[:space:]]*/, "", val)
+        gsub(/[[:space:]]+$/, "", val)
+        gsub(/^"/, "", val); gsub(/"$/, "", val)
+        print tolower(val)
+        exit
+    }' "${CONFIG_PATH}" || true)"
+if [[ "${config_performance_mode}" =~ ^(true|1|yes|on)$ ]]; then
+    export RUN_AND_TUMBLE_HEADLESS=1
+fi
+
 # Match cluster environment setup used by rtp_from_config.sh.
 JULIA_SETUP_SCRIPT="${JULIA_SETUP_SCRIPT:-/Local/ph_kafri/julia-1.7.2/bin/setup.sh}"
 if [[ -f "${JULIA_SETUP_SCRIPT}" ]]; then

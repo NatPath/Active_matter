@@ -11,16 +11,25 @@ Required:
 
 Aggregation options (forwarded to aggregate_two_force_d_saved_files.sh):
   --mode <auto|warmup|production|warmup_production>   default: auto
-  --num_files <int>                files per d (0 means all)
+  --num_files <int>                files per d (0 means all; default: 0)
   --state_dir <path>               override state_dir
   --config_dir <path>              override config_dir
+  --extra_raw_dir <path>           also include raw states from this top-level directory
+                                   (repeatable)
+  --only_extra_raw_inputs          do not scan top-level raw files in state_dir; aggregate only
+                                   files found under --extra_raw_dir paths
   --aggregated_subdir <name>       save aggregated outputs under <state_dir>/<name> (default: aggregated)
+  --exclude_aggregated_inputs      do not use existing aggregated files as discovery inputs
+  --incremental_from_existing_aggregate
+                                   use the current aggregate for each d as the base input and add
+                                   only raw files from --extra_raw_dir paths when available
   --archive_existing_aggregates    archive existing non-partial aggregates before replacing them
   --archive_subdir <name>          archive subdirectory under aggregated_subdir (default: archive)
   --archive_stamp <token>          archive stamp token (default: current timestamp in aggregation script)
   --d_min <int>                    override d_min
   --d_max <int>                    override d_max
   --d_step <int>                   override d_step
+  --d_values <csv>                 explicit comma-separated d list (for example: 96,128)
   --force                          re-aggregate existing outputs
   --dry_run                        dry run only
   --keep_going                     continue on per-d failures
@@ -58,16 +67,21 @@ sanitize_token() {
 
 run_id=""
 mode="auto"
-num_files=""
+num_files="0"
 state_dir=""
 config_dir=""
+extra_raw_dirs=()
+only_extra_raw_inputs="false"
 aggregated_subdir="aggregated"
+exclude_aggregated_inputs="false"
+incremental_from_existing_aggregate="false"
 archive_existing_aggregates="false"
 archive_subdir="archive"
 archive_stamp=""
 d_min=""
 d_max=""
 d_step=""
+d_values_csv=""
 force_reaggregate="false"
 dry_run="false"
 keep_going="false"
@@ -100,9 +114,25 @@ while [[ $# -gt 0 ]]; do
             config_dir="${2:-}"
             shift 2
             ;;
+        --extra_raw_dir)
+            extra_raw_dirs+=("${2:-}")
+            shift 2
+            ;;
+        --only_extra_raw_inputs)
+            only_extra_raw_inputs="true"
+            shift
+            ;;
         --aggregated_subdir)
             aggregated_subdir="${2:-}"
             shift 2
+            ;;
+        --exclude_aggregated_inputs)
+            exclude_aggregated_inputs="true"
+            shift
+            ;;
+        --incremental_from_existing_aggregate)
+            incremental_from_existing_aggregate="true"
+            shift
             ;;
         --archive_existing_aggregates)
             archive_existing_aggregates="true"
@@ -126,6 +156,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --d_step)
             d_step="${2:-}"
+            shift 2
+            ;;
+        --d_values)
+            d_values_csv="${2:-}"
             shift 2
             ;;
         --force)
@@ -215,6 +249,16 @@ if [[ -n "${num_files}" ]] && ! [[ "${num_files}" =~ ^[0-9]+$ ]]; then
     echo "--num_files must be a non-negative integer. Got '${num_files}'."
     exit 1
 fi
+for extra_dir in "${extra_raw_dirs[@]}"; do
+    if [[ -z "${extra_dir}" || ! -d "${extra_dir}" ]]; then
+        echo "--extra_raw_dir is invalid: ${extra_dir}"
+        exit 1
+    fi
+done
+if [[ "${only_extra_raw_inputs}" == "true" && ${#extra_raw_dirs[@]} -eq 0 ]]; then
+    echo "--only_extra_raw_inputs requires at least one --extra_raw_dir."
+    exit 1
+fi
 for numeric_name in d_min d_max d_step; do
     numeric_value="${!numeric_name}"
     if [[ -n "${numeric_value}" ]] && ! [[ "${numeric_value}" =~ ^[0-9]+$ ]]; then
@@ -222,6 +266,14 @@ for numeric_name in d_min d_max d_step; do
         exit 1
     fi
 done
+if [[ -n "${d_values_csv}" ]] && ! [[ "${d_values_csv}" =~ ^[0-9,]+$ ]]; then
+    echo "--d_values must be a comma-separated list of integers. Got '${d_values_csv}'."
+    exit 1
+fi
+if [[ -n "${d_values_csv}" && ( -n "${d_min}" || -n "${d_max}" || -n "${d_step}" ) ]]; then
+    echo "--d_values cannot be combined with --d_min/--d_max/--d_step."
+    exit 1
+fi
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
 safe_run_id="$(sanitize_token "${run_id}")"
@@ -261,6 +313,12 @@ fi
 if [[ -n "${config_dir}" ]]; then
     agg_args+=("--config_dir" "${config_dir}")
 fi
+for extra_raw_dir in "${extra_raw_dirs[@]}"; do
+    agg_args+=("--extra_raw_dir" "${extra_raw_dir}")
+done
+if [[ "${only_extra_raw_inputs}" == "true" ]]; then
+    agg_args+=("--only_extra_raw_inputs")
+fi
 if [[ -n "${d_min}" ]]; then
     agg_args+=("--d_min" "${d_min}")
 fi
@@ -270,8 +328,17 @@ fi
 if [[ -n "${d_step}" ]]; then
     agg_args+=("--d_step" "${d_step}")
 fi
+if [[ -n "${d_values_csv}" ]]; then
+    agg_args+=("--d_values" "${d_values_csv}")
+fi
 if [[ "${force_reaggregate}" == "true" ]]; then
     agg_args+=("--force")
+fi
+if [[ "${exclude_aggregated_inputs}" == "true" ]]; then
+    agg_args+=("--exclude_aggregated_inputs")
+fi
+if [[ "${incremental_from_existing_aggregate}" == "true" ]]; then
+    agg_args+=("--incremental_from_existing_aggregate")
 fi
 if [[ "${dry_run}" == "true" ]]; then
     agg_args+=("--dry_run")
@@ -323,13 +390,22 @@ EOF
     echo "num_files=${num_files:-}"
     echo "state_dir=${state_dir:-}"
     echo "config_dir=${config_dir:-}"
+    if (( ${#extra_raw_dirs[@]} > 0 )); then
+        echo "extra_raw_dirs=$(IFS=:; echo "${extra_raw_dirs[*]}")"
+    else
+        echo "extra_raw_dirs="
+    fi
+    echo "only_extra_raw_inputs=${only_extra_raw_inputs}"
     echo "aggregated_subdir=${aggregated_subdir}"
+    echo "exclude_aggregated_inputs=${exclude_aggregated_inputs}"
+    echo "incremental_from_existing_aggregate=${incremental_from_existing_aggregate}"
     echo "archive_existing_aggregates=${archive_existing_aggregates}"
     echo "archive_subdir=${archive_subdir}"
     echo "archive_stamp=${archive_stamp:-}"
     echo "d_min=${d_min:-}"
     echo "d_max=${d_max:-}"
     echo "d_step=${d_step:-}"
+    echo "d_values=${d_values_csv:-}"
     echo "force=${force_reaggregate}"
     echo "dry_run=${dry_run}"
     echo "keep_going=${keep_going}"
@@ -346,6 +422,12 @@ echo "  request_cpus=${request_cpus}"
 echo "  request_memory=${request_memory}"
 echo "  JULIA_NUM_PROCS_AGGREGATE=${julia_num_procs_aggregate}"
 echo "  aggregated_subdir=${aggregated_subdir}"
+if (( ${#extra_raw_dirs[@]} > 0 )); then
+    echo "  extra_raw_dirs=$(IFS=:; echo "${extra_raw_dirs[*]}")"
+fi
+echo "  only_extra_raw_inputs=${only_extra_raw_inputs}"
+echo "  exclude_aggregated_inputs=${exclude_aggregated_inputs}"
+echo "  incremental_from_existing_aggregate=${incremental_from_existing_aggregate}"
 echo "  archive_existing_aggregates=${archive_existing_aggregates}"
 echo "  archive_subdir=${archive_subdir}"
 if [[ -n "${archive_stamp}" ]]; then

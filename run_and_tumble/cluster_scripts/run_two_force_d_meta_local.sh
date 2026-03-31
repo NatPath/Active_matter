@@ -202,8 +202,13 @@ write_runtime_config() {
     local save_dir_line="save_dir: \"${save_dir}\""
 
     awk -v show_line="${show_line}" -v save_dir_line="${save_dir_line}" '
-    BEGIN {seen_cluster=0; seen_show=0; seen_save=0}
+    BEGIN {seen_performance=0; seen_cluster=0; seen_show=0; seen_save=0}
     {
+        if ($0 ~ /^performance_mode:[[:space:]]*/) {
+            print "performance_mode: false"
+            seen_performance=1
+            next
+        }
         if ($0 ~ /^cluster_mode:[[:space:]]*/) {
             print "cluster_mode: false"
             seen_cluster=1
@@ -222,6 +227,7 @@ write_runtime_config() {
         print
     }
     END {
+        if (!seen_performance) print "performance_mode: false"
         if (!seen_cluster) print "cluster_mode: false"
         if (!seen_save) print save_dir_line
         if (!seen_show) print show_line

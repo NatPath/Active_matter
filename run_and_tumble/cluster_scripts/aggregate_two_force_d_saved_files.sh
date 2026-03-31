@@ -17,6 +17,8 @@ Options:
   --config_dir <path>               Override config directory
   --extra_raw_dir <path>            Also include raw states from this top-level directory
                                     when building the aggregation input list
+  --only_extra_raw_inputs           Do not scan top-level raw files in --state_dir; aggregate only
+                                    files found under --extra_raw_dir paths
   --aggregated_subdir <name>        Save aggregated outputs under <state_dir>/<name>
                                     (default: save directly under state_dir)
   --exclude_aggregated_inputs       Do not use existing aggregated states as discovery inputs
@@ -31,6 +33,7 @@ Options:
   --d_min <int>                     Override d_min (requires --d_max and --d_step)
   --d_max <int>                     Override d_max (requires --d_min and --d_step)
   --d_step <int>                    Override d_step (requires --d_min and --d_max)
+  --d_values <csv>                  Explicit comma-separated d list (for example: 96,128)
   --force                           Re-aggregate even if output already exists
   --dry_run                         Print actions only
   --keep_going                      Continue on per-d errors
@@ -310,6 +313,7 @@ num_files=""
 state_dir=""
 config_dir=""
 extra_raw_dirs=()
+only_extra_raw_inputs="false"
 aggregated_subdir=""
 exclude_aggregated_inputs="false"
 incremental_from_existing_aggregate="false"
@@ -319,6 +323,7 @@ archive_stamp=""
 d_min=""
 d_max=""
 d_step=""
+d_values_csv=""
 force_reaggregate="false"
 dry_run="false"
 keep_going="false"
@@ -348,6 +353,10 @@ while [[ $# -gt 0 ]]; do
         --extra_raw_dir)
             extra_raw_dirs+=("${2:-}")
             shift 2
+            ;;
+        --only_extra_raw_inputs)
+            only_extra_raw_inputs="true"
+            shift
             ;;
         --aggregated_subdir)
             aggregated_subdir="${2:-}"
@@ -383,6 +392,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --d_step)
             d_step="${2:-}"
+            shift 2
+            ;;
+        --d_values)
+            d_values_csv="${2:-}"
             shift 2
             ;;
         --force)
@@ -434,6 +447,10 @@ for extra_dir in "${extra_raw_dirs[@]}"; do
         exit 1
     fi
 done
+if [[ "${only_extra_raw_inputs}" == "true" && ${#extra_raw_dirs[@]} -eq 0 ]]; then
+    echo "--only_extra_raw_inputs requires at least one --extra_raw_dir."
+    exit 1
+fi
 if [[ "${archive_existing_aggregates}" == "true" && -z "${aggregated_subdir}" ]]; then
     echo "--archive_existing_aggregates requires --aggregated_subdir."
     exit 1
@@ -445,6 +462,17 @@ fi
 if [[ -n "${archive_stamp}" ]] && ! [[ "${archive_stamp}" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "--archive_stamp must match [A-Za-z0-9._-]+ when provided. Got '${archive_stamp}'."
     exit 1
+fi
+if [[ -n "${d_values_csv}" ]]; then
+    declare -a _parsed_d_values=()
+    if ! two_force_d_csv_to_array "${d_values_csv}" _parsed_d_values; then
+        echo "--d_values must be a comma-separated list of integers. Got '${d_values_csv}'."
+        exit 1
+    fi
+    if (( ${#_parsed_d_values[@]} == 0 )); then
+        echo "--d_values resolved to an empty d list after validation."
+        exit 1
+    fi
 fi
 
 run_info_path="$(find_run_info_by_run_id "${run_id}" "${mode}" || true)"
@@ -528,7 +556,20 @@ effective_d_min="${d_min:-$(read_run_info_value "${target_run_info}" "d_min")}"
 effective_d_max="${d_max:-$(read_run_info_value "${target_run_info}" "d_max")}"
 effective_d_step="${d_step:-$(read_run_info_value "${target_run_info}" "d_step")}"
 declare -a D_VALUES=()
-if [[ -n "${d_min}" || -n "${d_max}" || -n "${d_step}" ]]; then
+if [[ -n "${d_values_csv}" ]]; then
+    if [[ -n "${d_min}" || -n "${d_max}" || -n "${d_step}" ]]; then
+        echo "--d_values cannot be combined with --d_min/--d_max/--d_step."
+        exit 1
+    fi
+    if ! two_force_d_csv_to_array "${d_values_csv}" D_VALUES; then
+        echo "--d_values must be a comma-separated list of integers. Got '${d_values_csv}'."
+        exit 1
+    fi
+    if (( ${#D_VALUES[@]} == 0 )); then
+        echo "--d_values resolved to an empty d list after validation."
+        exit 1
+    fi
+elif [[ -n "${d_min}" || -n "${d_max}" || -n "${d_step}" ]]; then
     if [[ -z "${d_min}" || -z "${d_max}" || -z "${d_step}" ]]; then
         echo "--d_min, --d_max, and --d_step must be provided together."
         exit 1
@@ -579,6 +620,7 @@ echo "  config_dir=${effective_config_dir}"
 if (( ${#extra_raw_dirs[@]} > 0 )); then
     echo "  extra_raw_dirs=$(IFS=:; echo "${extra_raw_dirs[*]}")"
 fi
+echo "  only_extra_raw_inputs=${only_extra_raw_inputs}"
 echo "  exclude_aggregated_inputs=${exclude_aggregated_inputs}"
 echo "  incremental_from_existing_aggregate=${incremental_from_existing_aggregate}"
 echo "  num_files_per_d=${effective_num_files} (0=all)"
@@ -641,14 +683,17 @@ for d in "${D_VALUES[@]}"; do
         continue
     fi
 
-    mapfile -t root_candidates < <(
-        find "${effective_state_dir}" -maxdepth 1 -type f \
-            -name "two_force_d${d}_${suffix}_*.jld2" \
-            ! -name "*_id-aggregated_*" \
-            ! -size 0 \
-            -printf '%T@ %p\n' 2>/dev/null \
-            | sort -nr | awk '{ $1=""; sub(/^ /,""); print }'
-    )
+    root_candidates=()
+    if [[ "${only_extra_raw_inputs}" != "true" ]]; then
+        mapfile -t root_candidates < <(
+            find "${effective_state_dir}" -maxdepth 1 -type f \
+                -name "two_force_d${d}_${suffix}_*.jld2" \
+                ! -name "*_id-aggregated_*" \
+                ! -size 0 \
+                -printf '%T@ %p\n' 2>/dev/null \
+                | sort -nr | awk '{ $1=""; sub(/^ /,""); print }'
+        )
+    fi
     extra_raw_candidates=()
     if (( ${#extra_raw_dirs[@]} > 0 )); then
         while IFS= read -r candidate_path; do
@@ -717,10 +762,27 @@ for d in "${D_VALUES[@]}"; do
         fi
     fi
 
+    selected_candidates=()
+    if [[ "${incremental_from_existing_aggregate}" == "true" && -n "${existing_agg}" ]]; then
+        selected_candidates+=("${existing_agg}")
+        for candidate_path in "${candidates[@]}"; do
+            [[ "${candidate_path}" == "${existing_agg}" ]] && continue
+            if (( effective_num_files > 0 )) && (( ${#selected_candidates[@]} >= effective_num_files )); then
+                break
+            fi
+            selected_candidates+=("${candidate_path}")
+        done
+    elif (( effective_num_files > 0 )); then
+        selected_candidates=("${candidates[@]:0:${selected_count}}")
+    else
+        selected_candidates=("${candidates[@]}")
+    fi
+    selected_count="${#selected_candidates[@]}"
+
     state_list_file="$(mktemp)"
     stage_map_file="$(mktemp)"
     trap 'rm -f "${state_list_file}" "${stage_map_file}"' EXIT
-    printf "%s\n" "${candidates[@]:0:${selected_count}}" > "${state_list_file}"
+    printf "%s\n" "${selected_candidates[@]}" > "${state_list_file}"
 
     base_aggregate_count=0
     if [[ "${incremental_from_existing_aggregate}" == "true" && -n "${existing_agg}" ]]; then

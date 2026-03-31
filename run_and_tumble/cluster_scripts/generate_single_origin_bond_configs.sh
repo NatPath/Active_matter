@@ -67,7 +67,7 @@ T: 1.0
 γ: 0.0
 n_sweeps: ${WARMUP_SWEEPS}
 warmup_sweeps: 0
-cluster_mode: true
+performance_mode: true
 description: "single_origin_bond_warmup"
 
 potential_type: "zero"
@@ -98,7 +98,7 @@ T: 1.0
 γ: 0.0
 n_sweeps: ${PRODUCTION_SWEEPS}
 warmup_sweeps: 0
-cluster_mode: true
+performance_mode: true
 description: "single_origin_bond_prod"
 
 potential_type: "zero"

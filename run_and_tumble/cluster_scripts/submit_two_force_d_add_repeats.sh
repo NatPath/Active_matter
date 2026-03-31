@@ -27,11 +27,18 @@ Options:
   --request_memory <value>           Condor request_memory for replica/aggregate nodes (default: "2 GB")
   --aggregate_request_cpus <int>     Condor request_cpus for aggregate nodes (default: 1)
   --julia_num_procs_aggregate <int>  JULIA_NUM_PROCS_AGGREGATE for aggregate nodes (default: 1)
+  --replica_retries <int>            DAG retry count for replica nodes on transient failures
+                                     (default: 2)
+  --estimate_runtime                 Enable runtime estimation prints inside replica jobs
+  --estimate_sample_size <int>       Sample sweeps used when --estimate_runtime is enabled
+                                     (default: 100)
   --segment_sweeps <int>             Split each replica into chained continuation segments of this size
                                      and save only the final segment into the raw repeat batch
   --aggregated_subdir <name>         Latest aggregate output dir under source state_dir (default: aggregated)
   --archive_subdir <name>            Archive dir under aggregated_subdir (default: archive)
   --raw_subdir <name>                Raw add-repeat output dir under source state_dir (default: repeat_batches)
+  --aggregate_only_new_raw           Aggregate only the current repeat-batch raw dir and any --extra_raw_dir
+                                     inputs, ignoring top-level raw states in target state_dir
   --extra_raw_dir <path>             Additional top-level raw state directory to include in aggregation
                                      (repeatable)
   --dag_maxjobs <int>                Forwarded to condor_submit_dag -maxjobs
@@ -211,12 +218,32 @@ rewrite_runtime_config() {
     local target_config="$2"
     local save_dir="$3"
     local n_sweeps_val="$4"
-    local save_dir_line n_sweeps_line
+    local performance_mode_val="$5"
+    local estimate_runtime_val="$6"
+    local estimate_sample_size_val="$7"
+    local save_dir_line n_sweeps_line performance_mode_line cluster_mode_line estimate_runtime_line estimate_sample_size_line
 
     save_dir_line="save_dir: \"${save_dir}\""
     n_sweeps_line="n_sweeps: ${n_sweeps_val}"
-    awk -v save_dir_line="${save_dir_line}" -v n_sweeps_line="${n_sweeps_line}" '
-    BEGIN {seen_save=0; seen_sweeps=0}
+    performance_mode_line="performance_mode: ${performance_mode_val}"
+    cluster_mode_line="cluster_mode: ${performance_mode_val}"
+    estimate_runtime_line="estimate_runtime: ${estimate_runtime_val}"
+    estimate_sample_size_line="estimate_sample_size: ${estimate_sample_size_val}"
+    awk \
+    -v save_dir_line="${save_dir_line}" \
+    -v n_sweeps_line="${n_sweeps_line}" \
+    -v performance_mode_line="${performance_mode_line}" \
+    -v cluster_mode_line="${cluster_mode_line}" \
+    -v estimate_runtime_line="${estimate_runtime_line}" \
+    -v estimate_sample_size_line="${estimate_sample_size_line}" '
+    BEGIN {
+        seen_save=0
+        seen_sweeps=0
+        seen_performance=0
+        seen_cluster=0
+        seen_estimate_runtime=0
+        seen_estimate_sample_size=0
+    }
     {
         if ($0 ~ /^n_sweeps:[[:space:]]*/) {
             print n_sweeps_line
@@ -228,11 +255,35 @@ rewrite_runtime_config() {
             seen_save=1
             next
         }
+        if ($0 ~ /^performance_mode:[[:space:]]*/) {
+            print performance_mode_line
+            seen_performance=1
+            next
+        }
+        if ($0 ~ /^cluster_mode:[[:space:]]*/) {
+            print cluster_mode_line
+            seen_cluster=1
+            next
+        }
+        if ($0 ~ /^estimate_runtime:[[:space:]]*/) {
+            print estimate_runtime_line
+            seen_estimate_runtime=1
+            next
+        }
+        if ($0 ~ /^estimate_sample_size:[[:space:]]*/) {
+            print estimate_sample_size_line
+            seen_estimate_sample_size=1
+            next
+        }
         print
     }
     END {
         if (!seen_sweeps) print n_sweeps_line
         if (!seen_save) print save_dir_line
+        if (!seen_performance) print performance_mode_line
+        if (!seen_cluster) print cluster_mode_line
+        if (!seen_estimate_runtime) print estimate_runtime_line
+        if (!seen_estimate_sample_size) print estimate_sample_size_line
     }' "${source_config}" > "${target_config}"
 }
 
@@ -394,10 +445,14 @@ request_cpus="1"
 request_memory="2 GB"
 aggregate_request_cpus="1"
 julia_num_procs_aggregate="1"
+replica_retries="2"
+estimate_runtime="false"
+estimate_sample_size="100"
 segment_sweeps=""
 aggregated_subdir="aggregated"
 archive_subdir="archive"
 raw_subdir="repeat_batches"
+aggregate_only_new_raw="false"
 extra_raw_dirs=()
 dag_maxjobs="0"
 dag_maxidle="0"
@@ -455,6 +510,18 @@ while [[ $# -gt 0 ]]; do
             julia_num_procs_aggregate="${2:-}"
             shift 2
             ;;
+        --replica_retries)
+            replica_retries="${2:-}"
+            shift 2
+            ;;
+        --estimate_runtime)
+            estimate_runtime="true"
+            shift
+            ;;
+        --estimate_sample_size)
+            estimate_sample_size="${2:-}"
+            shift 2
+            ;;
         --segment_sweeps)
             segment_sweeps="${2:-}"
             shift 2
@@ -470,6 +537,10 @@ while [[ $# -gt 0 ]]; do
         --raw_subdir)
             raw_subdir="${2:-}"
             shift 2
+            ;;
+        --aggregate_only_new_raw)
+            aggregate_only_new_raw="true"
+            shift
             ;;
         --extra_raw_dir)
             extra_raw_dirs+=("${2:-}")
@@ -531,13 +602,17 @@ case "${mode}" in
         ;;
 esac
 
-for numeric_name in n_sweeps num_repeats request_cpus aggregate_request_cpus julia_num_procs_aggregate; do
+for numeric_name in n_sweeps num_repeats request_cpus aggregate_request_cpus julia_num_procs_aggregate estimate_sample_size; do
     numeric_value="${!numeric_name}"
     if ! [[ "${numeric_value}" =~ ^[0-9]+$ ]] || (( numeric_value <= 0 )); then
         echo "--${numeric_name} must be a positive integer. Got '${numeric_value}'."
         exit 1
     fi
 done
+if ! [[ "${replica_retries}" =~ ^[0-9]+$ ]]; then
+    echo "--replica_retries must be a non-negative integer. Got '${replica_retries}'."
+    exit 1
+fi
 if [[ -n "${d_threshold}" ]]; then
     if ! [[ "${d_threshold}" =~ ^[0-9]+$ ]] || (( d_threshold <= 0 )); then
         echo "--d_threshold must be a positive integer. Got '${d_threshold}'."
@@ -711,6 +786,11 @@ echo "  request_cpus=${request_cpus}"
 echo "  aggregate_request_cpus=${aggregate_request_cpus}"
 echo "  request_memory=${request_memory}"
 echo "  JULIA_NUM_PROCS_AGGREGATE=${julia_num_procs_aggregate}"
+echo "  replica_retries=${replica_retries}"
+echo "  performance_mode=true"
+echo "  estimate_runtime=${estimate_runtime}"
+echo "  estimate_sample_size=${estimate_sample_size}"
+echo "  aggregate_only_new_raw=${aggregate_only_new_raw}"
 echo "  raw_state_dir=${raw_state_dir}"
 if (( ${#extra_raw_dirs[@]} > 0 )); then
     echo "  extra_raw_dirs=$(IFS=:; echo "${extra_raw_dirs[*]}")"
@@ -739,7 +819,7 @@ for d_val in "${selected_d_values[@]}"; do
     fi
 
     runtime_config="${config_dir}/d_${d_val}.yaml"
-    rewrite_runtime_config "${source_config}" "${runtime_config}" "${raw_state_dir}" "${n_sweeps}"
+    rewrite_runtime_config "${source_config}" "${runtime_config}" "${raw_state_dir}" "${n_sweeps}" "true" "${estimate_runtime}" "${estimate_sample_size}"
 
     warmup_state="$(latest_matching_state "${warmup_state_dir}" \
         "aggregated/two_force_d${d_val}_warmup_*.jld2" \
@@ -827,7 +907,7 @@ EOF
                     stage_job_id="D${d_val}R${replica_idx}S${segment_idx}"
                 fi
 
-                rewrite_runtime_config "${source_config}" "${stage_config}" "${stage_save_dir}" "${current_segment_sweeps}"
+                rewrite_runtime_config "${source_config}" "${stage_config}" "${stage_save_dir}" "${current_segment_sweeps}" "true" "${estimate_runtime}" "${estimate_sample_size}"
 
                 if (( segment_idx == 1 )); then
                     stage_runner_arguments="${RUNNER_SCRIPT} ${stage_config} --initial_state ${warmup_state} --save_tag ${stage_save_tag}"
@@ -877,6 +957,9 @@ EOF
         for extra_raw_dir in "${extra_raw_dirs[@]}"; do
             printf " --extra_raw_dir %q" "${extra_raw_dir}"
         done
+        if [[ "${aggregate_only_new_raw}" == "true" ]]; then
+            printf " --only_extra_raw_inputs"
+        fi
         printf " --aggregated_subdir %q --exclude_aggregated_inputs --incremental_from_existing_aggregate --archive_existing_aggregates --archive_subdir %q --archive_stamp %q --d_min %q --d_max %q --d_step 1 --num_files 0 --force\n" \
             "${aggregated_subdir}" \
             "${archive_subdir}" \
@@ -927,6 +1010,9 @@ for ((replica_idx = 1; replica_idx <= num_repeats; replica_idx++)); do
                     stage_submit_file="${submit_dir}/seg_d_${d_val}_r_${replica_idx}_s_${segment_idx}.sub"
                 fi
                 printf "JOB %s %s\n" "${stage_job_id}" "${stage_submit_file}" >> "${jobs_section_file}"
+                if (( replica_retries > 0 )); then
+                    printf "RETRY %s %s\n" "${stage_job_id}" "${replica_retries}" >> "${jobs_section_file}"
+                fi
                 if [[ -n "${previous_job_id}" ]]; then
                     printf "PARENT %s CHILD %s\n" "${previous_job_id}" "${stage_job_id}" >> "${deps_section_file}"
                 fi
@@ -936,6 +1022,9 @@ for ((replica_idx = 1; replica_idx <= num_repeats; replica_idx++)); do
         else
             replica_tag="replica_addrep_${run_hash}_${timestamp_compact}_d${d_val}_r${replica_idx}"
             printf "JOB %s %s\n" "${replica_job_id}" "${replica_template_submit_by_d[${d_val}]}" >> "${jobs_section_file}"
+            if (( replica_retries > 0 )); then
+                printf "RETRY %s %s\n" "${replica_job_id}" "${replica_retries}" >> "${jobs_section_file}"
+            fi
             printf 'VARS %s save_tag="%s" replica_idx="%s"\n' \
                 "${replica_job_id}" \
                 "$(dag_vars_escape "${replica_tag}")" \
@@ -980,6 +1069,11 @@ cat "${deps_section_file}" >> "${dag_file}"
     echo "aggregate_request_cpus=${aggregate_request_cpus}"
     echo "request_memory=${request_memory}"
     echo "julia_num_procs_aggregate=${julia_num_procs_aggregate}"
+    echo "replica_retries=${replica_retries}"
+    echo "performance_mode=true"
+    echo "estimate_runtime=${estimate_runtime}"
+    echo "estimate_sample_size=${estimate_sample_size}"
+    echo "aggregate_only_new_raw=${aggregate_only_new_raw}"
     echo "aggregated_subdir=${aggregated_subdir}"
     echo "archive_subdir=${archive_subdir}"
     echo "raw_subdir=${raw_subdir}"

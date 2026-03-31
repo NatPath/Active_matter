@@ -17,6 +17,7 @@ const BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY = :bond_pass_spatial_sample_count
 const SELECTED_SITE_CUTS_KEY = :selected_site_cuts
 const SELECTED_SITE_CUT_SITES_KEY = :selected_site_cut_sites
 const SELECTED_SITE_CUT_ORIGIN_SITE_KEY = :selected_site_cut_origin_site
+const AGG_CONNECTED_FULL_EXACT_KEY = :agg_connected_corr_full_exact
 
 # Exact (Float64) value of exp(-1)*(I0(1)+I1(1)), where I0/I1 are modified Bessel functions.
 const SINGLE_ORIGIN_VARJ_BASELINE_FACTOR = 0.6736700229433489
@@ -100,6 +101,9 @@ end
 end
 
 function connected_correlation_matrix_1d(state, param)
+    if haskey(state.ρ_matrix_avg_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
+        return Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY]) .+ connected_correlation_fix_term(param)
+    end
     rho_avg = Float64.(state.ρ_avg)
     return Float64.(state.ρ_matrix_avg_cuts[:full]) .- (rho_avg * transpose(rho_avg)) .+ connected_correlation_fix_term(param)
 end
@@ -198,6 +202,38 @@ function add_dimension_reference!(p, dim, x_vals, data_vals)
     scale = max_data / max_ref
     plot!(p, x_ref, y_ref .* scale; label="(x)/((x^2+1)^$(dim+1))", color=:gray, linestyle=:dashdot, lw=2)
     return true
+end
+
+function data_collapse_maximum(x_vals, y_vals)
+    finite_mask = isfinite.(x_vals) .& isfinite.(y_vals)
+    any(finite_mask) || return nothing
+    x_finite = Float64.(x_vals[finite_mask])
+    y_finite = Float64.(y_vals[finite_mask])
+    max_idx = argmax(y_finite)
+    return (
+        x = x_finite[max_idx],
+        y = y_finite[max_idx],
+        label = @sprintf("max(data) = %.6g at x/y = %.6g", y_finite[max_idx], x_finite[max_idx]),
+    )
+end
+
+function apply_data_collapse_max_note!(p, base_title::AbstractString, x_vals, y_vals; mark_point::Bool=false)
+    max_info = data_collapse_maximum(x_vals, y_vals)
+    if isnothing(max_info)
+        plot!(p; title=base_title)
+        return p
+    end
+
+    plot!(p; title=string(base_title, "\n", max_info.label))
+    if mark_point
+        scatter!(p, [max_info.x], [max_info.y];
+                 markershape=:star5,
+                 markersize=7,
+                 markercolor=:black,
+                 markerstrokecolor=:black,
+                 label=false)
+    end
+    return p
 end
 
 function antisymmetric_with_smoothing(matrix, center)
@@ -429,6 +465,130 @@ function selected_site_cut_metadata_for_plot(state, L::Int)
     return selected_sites, origin_site, pair_avgs
 end
 
+function smooth_periodic_cut_site!(cut::AbstractVector{<:Real}, site::Int)
+    L = length(cut)
+    ref_site = mod1(Int(site), L)
+    left_site = mod1(ref_site - 1, L)
+    right_site = mod1(ref_site + 1, L)
+    cut[ref_site] = 0.5 * (cut[left_site] + cut[right_site])
+    return cut
+end
+
+@inline function reflected_site_about_center_1d(site::Int, center_site::Int, L::Int)
+    return mod1(2 * center_site - site, L)
+end
+
+function connected_selected_site_cut_1d(
+    state,
+    param,
+    cut_site::Int,
+    pair_avg_row::AbstractVector{<:Real};
+    smooth_diagonal::Bool=true,
+)
+    L = length(pair_avg_row)
+    ref_site = mod1(Int(cut_site), L)
+    rho_avg = Float64.(state.ρ_avg)
+    cut = Float64.(pair_avg_row) .- rho_avg[ref_site] .* rho_avg .+ connected_correlation_fix_term(param)
+    smooth_diagonal && smooth_periodic_cut_site!(cut, ref_site)
+    return cut
+end
+
+function connected_correlation_cut_1d(
+    state,
+    param,
+    site::Int;
+    smooth_diagonal::Bool=true,
+)
+    L = param.dims[1]
+    ref_site = mod1(Int(site), L)
+    if has_selected_site_cuts_for_plot(state)
+        selected_sites, _, pair_avgs = selected_site_cut_metadata_for_plot(state, L)
+        selected_idx = findfirst(==(ref_site), selected_sites)
+        if isnothing(selected_idx)
+            available_sites = isempty(selected_sites) ? "none" : join(sort(selected_sites), ", ")
+            throw(ArgumentError("Selected-site cut data for site $ref_site is not available. Available cut sites: [$available_sites]."))
+        end
+        return connected_selected_site_cut_1d(
+            state,
+            param,
+            ref_site,
+            vec(pair_avgs[selected_idx, :]);
+            smooth_diagonal=smooth_diagonal,
+        )
+    end
+    corr_mat = connected_correlation_matrix_1d(state, param)
+    return site_cut_1d(corr_mat, ref_site; smooth_diagonal=smooth_diagonal)
+end
+
+function reflected_cut_1d_about_center(
+    cut::AbstractVector{<:Real},
+    center_site::Int,
+)
+    L = length(cut)
+    reflected = Vector{Float64}(undef, L)
+    @inbounds for site in 1:L
+        reflected[site] = Float64(cut[reflected_site_about_center_1d(site, center_site, L)])
+    end
+    return reflected
+end
+
+function reflection_pair_averaged_cut_1d(
+    state,
+    param,
+    site::Int;
+    origin_site::Union{Nothing,Int}=nothing,
+    smooth_diagonal::Bool=true,
+)
+    L = param.dims[1]
+    center_site = if isnothing(origin_site)
+        if has_selected_site_cuts_for_plot(state)
+            _, inferred_origin_site, _ = selected_site_cut_metadata_for_plot(state, L)
+            inferred_origin_site
+        else
+            max(1, div(L, 2))
+        end
+    else
+        mod1(Int(origin_site), L)
+    end
+
+    ref_site = mod1(Int(site), L)
+    cut = connected_correlation_cut_1d(state, param, ref_site; smooth_diagonal=false)
+    partner_site = reflected_site_about_center_1d(ref_site, center_site, L)
+    pair_used = false
+
+    if partner_site != ref_site
+        partner_available = true
+        if has_selected_site_cuts_for_plot(state)
+            selected_sites, _, _ = selected_site_cut_metadata_for_plot(state, L)
+            partner_available = partner_site in selected_sites
+        end
+
+        if partner_available
+            partner_cut = connected_correlation_cut_1d(state, param, partner_site; smooth_diagonal=false)
+            cut = 0.5 .* (cut .+ reflected_cut_1d_about_center(partner_cut, center_site))
+            pair_used = true
+        end
+    end
+
+    smooth_diagonal && smooth_periodic_cut_site!(cut, ref_site)
+    return cut, pair_used
+end
+
+function reflection_decomposed_cut_1d(
+    cut::AbstractVector{<:Real},
+    center_site::Int,
+)
+    L = length(cut)
+    cut_vals = Float64.(cut)
+    reflected = similar(cut_vals)
+    @inbounds for site in 1:L
+        reflected[site] = cut_vals[reflected_site_about_center_1d(site, center_site, L)]
+    end
+    sym = 0.5 .* (cut_vals .+ reflected)
+    antisym = 0.5 .* (cut_vals .- reflected)
+    return sym, antisym
+end
+
 function centered_selected_site_cut_1d(
     state,
     param,
@@ -438,15 +598,28 @@ function centered_selected_site_cut_1d(
     smooth_diagonal::Bool=true,
 )
     L = length(pair_avg_row)
-    rho_avg = Float64.(state.ρ_avg)
-    cut = Float64.(pair_avg_row) .- rho_avg[cut_site] .* rho_avg .+ connected_correlation_fix_term(param)
-    if smooth_diagonal
-        left_site = mod1(cut_site - 1, L)
-        right_site = mod1(cut_site + 1, L)
-        cut[cut_site] = 0.5 * (cut[left_site] + cut[right_site])
-    end
+    cut = connected_selected_site_cut_1d(state, param, cut_site, pair_avg_row; smooth_diagonal=smooth_diagonal)
     x_rel, perm = centered_periodic_axis(L, origin_site)
     return x_rel, cut[perm]
+end
+
+function centered_reflection_pair_averaged_cut_1d(
+    state,
+    param,
+    cut_site::Int,
+    origin_site::Int;
+    smooth_diagonal::Bool=true,
+)
+    L = param.dims[1]
+    cut, pair_used = reflection_pair_averaged_cut_1d(
+        state,
+        param,
+        cut_site;
+        origin_site=origin_site,
+        smooth_diagonal=smooth_diagonal,
+    )
+    x_rel, perm = centered_periodic_axis(L, origin_site)
+    return x_rel, cut[perm], pair_used
 end
 
 function plot_selected_site_cuts_1d(
@@ -520,10 +693,67 @@ function plot_selected_site_cuts_1d(
         end
     end
 
+    p_positive_raw = plot(title="Positive selected cuts",
+                          xlabel="x' - x_center",
+                          ylabel="C(x_ref,x')",
+                          framestyle=:box,
+                          grid=:y)
+    p_positive_avg = plot(title="Reflection-averaged ± cuts",
+                          xlabel="x' - x_center",
+                          ylabel="C_avg(x_ref,x')",
+                          framestyle=:box,
+                          grid=:y)
+    positive_raw_curves = Vector{Vector{Float64}}()
+    positive_avg_curves = Vector{Vector{Float64}}()
+    positive_pair_count = 0
+    for (cut_idx, cut_site) in enumerate(selected_sites)
+        relative_site = periodic_relative_coordinate(L, origin_site, cut_site)
+        relative_site > 0 || continue
+
+        raw_x_rel, raw_centered_cut = centered_selected_site_cut_1d(state, param, cut_site, pair_avgs[cut_idx, :], origin_site)
+        avg_x_rel, avg_centered_cut, pair_used = centered_reflection_pair_averaged_cut_1d(state, param, cut_site, origin_site)
+        pair_used || continue
+
+        color = colors[mod1(cut_idx, length(colors))]
+        raw_style = linestyles[mod1(cut_idx, length(linestyles))]
+        push!(positive_raw_curves, raw_centered_cut)
+        push!(positive_avg_curves, avg_centered_cut)
+        plot!(p_positive_raw, raw_x_rel, raw_centered_cut,
+              lw=2.0,
+              color=color,
+              linestyle=raw_style,
+              label=@sprintf("%+d", relative_site))
+        plot!(p_positive_avg, avg_x_rel, avg_centered_cut,
+              lw=2.6,
+              color=color,
+              linestyle=:solid,
+              label=@sprintf("avg ±%d", relative_site))
+        positive_pair_count += 1
+    end
+    if positive_pair_count == 0
+        annotate!(p_positive_raw, 0.5, 0.5, text("No positive cut pairs available", 10, :gray40, :center))
+        annotate!(p_positive_avg, 0.5, 0.5, text("No positive/reflected cut pairs available", 10, :gray40, :center))
+        plot!(p_positive_raw, legend=false)
+        plot!(p_positive_avg, legend=false)
+    else
+        if !isempty(positive_raw_curves)
+            raw_ylims = finite_curve_ylims(positive_raw_curves...; pad_fraction=0.12)
+            if raw_ylims !== nothing
+                ylims!(p_positive_raw, raw_ylims)
+            end
+        end
+        if !isempty(positive_avg_curves)
+            avg_ylims = finite_curve_ylims(positive_avg_curves...; pad_fraction=0.12)
+            if avg_ylims !== nothing
+                ylims!(p_positive_avg, avg_ylims)
+            end
+        end
+    end
+
     if include_instantaneous
-        return plot(p_avg_density, p_inst_density, p_force_averages, p_selected_cuts,
-                    layout=(2, 2),
-                    size=(1850, 980),
+        return plot(p_avg_density, p_inst_density, p_force_averages, p_selected_cuts, p_positive_raw, p_positive_avg,
+                    layout=(2, 3),
+                    size=(2400, 980),
                     plot_title=sweep_title_with_label("1D selected-cut sweep", sweep, label))
     end
     return plot(p_avg_density, p_force_averages, p_selected_cuts,
@@ -1680,17 +1910,17 @@ function plot_average_density_and_correlation(state, param; label="")
     throw(DomainError("Only 1D or 2D plotting supported"))
 end
 
-function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true; show_powerlaw=true)
+function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true;
+                           show_powerlaw=true, use_reflection_pair_average=true)
     n = Float64(power_n)
     extra_power_exp = 2.0  # reference slope -2
-    all_x = []
-    all_y = []
+    combined_title = "Combined Data Collapse f(x/y)=C(x,y)⋅y^$n"
+    all_x = Float64[]
+    all_y = Float64[]
 
-    p_combined = plot(title="Combined Data Collapse f(x/y)=C(x,y)⋅y^$n", legend=:outerright, size=(1200,800))
+    p_combined = plot(title=combined_title, legend=:outerright, size=(1200,800))
 
     for (idx, (state, param, label)) in enumerate(states_params_names)
-        α = param.α
-        γ′ = param.γ * param.N
         dim_num = length(param.dims)
 
         if dim_num == 1
@@ -1704,9 +1934,14 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             mkpath(antisym_dir)
             mkpath(sym_dir)
 
-            p_full_combined = plot(title="Full Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-            p_antisym_combined = plot(title="Antisymmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-            p_sym_combined = plot(title="Symmetric Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
+            full_title = "Full Data Collapse - C(x,y)⋅y^$n"
+            antisym_title = "Antisymmetric Data Collapse - C(x,y)⋅y^$n"
+            sym_title = "Symmetric Data Collapse - C(x,y)⋅y^$n"
+            p_full_combined = plot(title=full_title, legend=:outerright, size=(1000,600))
+            p_antisym_combined = plot(title=antisym_title, legend=:outerright, size=(1000,600))
+            p_sym_combined = plot(title=sym_title, legend=:outerright, size=(1000,600))
+            plot_x = Dict(:full => Float64[], :antisym => Float64[], :sym => Float64[])
+            plot_y = Dict(:full => Float64[], :antisym => Float64[], :sym => Float64[])
             ref_dim_added = Dict(:full=>false, :antisym=>false, :sym=>false, :combined=>false)
             if show_powerlaw
                 p_full_powerlaw = plot(title="Power law check (full cut)", legend=:outerright, size=(800,600),
@@ -1724,26 +1959,34 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             end
 
             for i in indices
-                corr_mat = connected_correlation_matrix_1d(state, param)
-                middle_spot = L ÷ 2
-                point_to_look_at = Int(middle_spot + i)
+                middle_spot = if has_selected_site_cuts_for_plot(state)
+                    _, selected_origin_site, _ = selected_site_cut_metadata_for_plot(state, L)
+                    selected_origin_site
+                else
+                    L ÷ 2
+                end
+                point_to_look_at = mod1(Int(middle_spot + i), L)
 
-                corr_mat_collapsed = corr_mat[:, point_to_look_at]
-                left_value = corr_mat_collapsed[point_to_look_at - 1]
-                right_value = corr_mat_collapsed[point_to_look_at + 1]
-                left_side = corr_mat_collapsed[1:point_to_look_at-1]
-                right_side = corr_mat_collapsed[point_to_look_at+1:end]
-                full_data = vcat(left_side, [(left_value + right_value)/2], right_side)
+                full_cut_raw = if use_reflection_pair_average
+                    reflection_pair_averaged_cut_1d(
+                        state,
+                        param,
+                        point_to_look_at;
+                        origin_site=middle_spot,
+                        smooth_diagonal=false,
+                    )[1]
+                else
+                    connected_correlation_cut_1d(state, param, point_to_look_at; smooth_diagonal=false)
+                end
+                full_data = copy(full_cut_raw)
+                smooth_periodic_cut_site!(full_data, point_to_look_at)
 
-                corr_mat_antisym = remove_symmetric_part_reflection(corr_mat, middle_spot)
-                corr_mat_antisym[point_to_look_at, point_to_look_at] = (corr_mat_antisym[point_to_look_at, point_to_look_at + 1] + corr_mat_antisym[point_to_look_at, point_to_look_at - 1]) / 2
-                corr_mat_antisym[point_to_look_at, L - point_to_look_at] = (corr_mat_antisym[point_to_look_at, L - (point_to_look_at + 1)] + corr_mat_antisym[point_to_look_at, L - (point_to_look_at - 1)]) / 2
-                antisym_data = corr_mat_antisym[point_to_look_at, 1:end]
-
-                corr_mat_sym = remove_antisymmetric_part_reflection(corr_mat, middle_spot)
-                corr_mat_sym[point_to_look_at, point_to_look_at] = (corr_mat_sym[point_to_look_at, point_to_look_at + 1] + corr_mat_sym[point_to_look_at, point_to_look_at - 1]) / 2
-                corr_mat_sym[point_to_look_at, L - point_to_look_at] = (corr_mat_sym[point_to_look_at, L - (point_to_look_at + 1)] + corr_mat_sym[point_to_look_at, L - (point_to_look_at - 1)]) / 2
-                sym_data = corr_mat_sym[point_to_look_at, 1:end]
+                sym_data, antisym_data = reflection_decomposed_cut_1d(full_cut_raw, middle_spot)
+                reflected_site = reflected_site_about_center_1d(point_to_look_at, middle_spot, L)
+                smooth_periodic_cut_site!(antisym_data, point_to_look_at)
+                smooth_periodic_cut_site!(antisym_data, reflected_site)
+                smooth_periodic_cut_site!(sym_data, point_to_look_at)
+                smooth_periodic_cut_site!(sym_data, reflected_site)
 
                 x_positions = 1:length(full_data)
                 x_scaled = (x_positions .- middle_spot) ./ (i)
@@ -1753,6 +1996,8 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                     mask = (-5 .<= x_scaled .<= 5)
                     x_filtered = x_scaled[mask]
                     y_filtered = y_scaled[mask]
+                    append!(plot_x[key], x_filtered)
+                    append!(plot_y[key], y_filtered)
                     plot!(p_combined_plot, x_filtered, y_filtered, label="y=$(i)", lw=2)
                     if !ref_dim_added[key]
                         ref_dim_added[key] = add_dimension_reference!(p_combined_plot, dim_num, x_filtered, y_filtered)
@@ -1780,6 +2025,9 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 end
             end
 
+            apply_data_collapse_max_note!(p_full_combined, full_title, plot_x[:full], plot_y[:full])
+            apply_data_collapse_max_note!(p_antisym_combined, antisym_title, plot_x[:antisym], plot_y[:antisym])
+            apply_data_collapse_max_note!(p_sym_combined, sym_title, plot_x[:sym], plot_y[:sym])
             savefig(p_full_combined, "$(full_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_antisym_combined, "$(antisym_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_sym_combined, "$(sym_dir)/data_collapse_$(n)_indices-$(indices).png")
@@ -1806,12 +2054,26 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             mkpath(x_axis_antisym_dir)
             mkpath(diag_antisym_dir)
 
-            p_x_combined = plot(title="X-axis Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-            p_diag_combined = plot(title="Diagonal Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
-            p_x_pos_combined = plot(title="X-axis Positive Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-            p_diag_pos_combined = plot(title="Diagonal Positive Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
-            p_x_antisym_combined = plot(title="X-axis Antisymmetric Cut Data Collapse - C(x,y)⋅y^$n", legend=:outerright, size=(1000,600))
-            p_diag_antisym_combined = plot(title="Diagonal Antisymmetric Cut Data Collapse - C(x,x)⋅y^$n", legend=:outerright, size=(1000,600))
+            x_title = "X-axis Cut Data Collapse - C(x,y)⋅y^$n"
+            diag_title = "Diagonal Cut Data Collapse - C(x,x)⋅y^$n"
+            x_pos_title = "X-axis Positive Cut Data Collapse - C(x,y)⋅y^$n"
+            diag_pos_title = "Diagonal Positive Cut Data Collapse - C(x,x)⋅y^$n"
+            x_antisym_title = "X-axis Antisymmetric Cut Data Collapse - C(x,y)⋅y^$n"
+            diag_antisym_title = "Diagonal Antisymmetric Cut Data Collapse - C(x,x)⋅y^$n"
+            p_x_combined = plot(title=x_title, legend=:outerright, size=(1000,600))
+            p_diag_combined = plot(title=diag_title, legend=:outerright, size=(1000,600))
+            p_x_pos_combined = plot(title=x_pos_title, legend=:outerright, size=(1000,600))
+            p_diag_pos_combined = plot(title=diag_pos_title, legend=:outerright, size=(1000,600))
+            p_x_antisym_combined = plot(title=x_antisym_title, legend=:outerright, size=(1000,600))
+            p_diag_antisym_combined = plot(title=diag_antisym_title, legend=:outerright, size=(1000,600))
+            plot_x = Dict(
+                :x => Float64[], :diag => Float64[], :x_pos => Float64[],
+                :diag_pos => Float64[], :x_antisym => Float64[], :diag_antisym => Float64[]
+            )
+            plot_y = Dict(
+                :x => Float64[], :diag => Float64[], :x_pos => Float64[],
+                :diag_pos => Float64[], :x_antisym => Float64[], :diag_antisym => Float64[]
+            )
             ref_dim_added = Dict(
                 :x => false, :diag => false, :x_pos => false, :diag_pos => false,
                 :x_antisym => false, :diag_antisym => false, :combined => false
@@ -1954,6 +2216,8 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                         # Additional outlier filtering based on reasonable y-range
                         y_max = maximum(abs.(y_filtered))
                         if y_max < 1e8  # Reasonable threshold
+                            append!(plot_x[key], x_filtered)
+                            append!(plot_y[key], y_filtered)
                             plot!(p_plot, x_filtered, y_filtered, label="$(label) y=$(i)", lw=2)
                             if !ref_dim_added[key]
                                 ref_dim_added[key] = add_dimension_reference!(p_plot, dim_num, x_filtered, y_filtered)
@@ -2007,6 +2271,12 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 end
             end
             
+            apply_data_collapse_max_note!(p_x_combined, x_title, plot_x[:x], plot_y[:x])
+            apply_data_collapse_max_note!(p_diag_combined, diag_title, plot_x[:diag], plot_y[:diag])
+            apply_data_collapse_max_note!(p_x_pos_combined, x_pos_title, plot_x[:x_pos], plot_y[:x_pos])
+            apply_data_collapse_max_note!(p_diag_pos_combined, diag_pos_title, plot_x[:diag_pos], plot_y[:diag_pos])
+            apply_data_collapse_max_note!(p_x_antisym_combined, x_antisym_title, plot_x[:x_antisym], plot_y[:x_antisym])
+            apply_data_collapse_max_note!(p_diag_antisym_combined, diag_antisym_title, plot_x[:diag_antisym], plot_y[:diag_antisym])
             savefig(p_x_combined, "$(x_axis_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_diag_combined, "$(diag_dir)/data_collapse_$(n)_indices-$(indices).png")
             savefig(p_x_pos_combined, "$(x_axis_pos_dir)/data_collapse_$(n)_indices-$(indices).png")
@@ -2032,6 +2302,8 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
         plot!(p_combined, x_theory, f(x_theory, fit_combined.param), 
               label="Theoretical Fit", color=:black, linewidth=3, linestyle=:dash)
     end
+
+    apply_data_collapse_max_note!(p_combined, combined_title, all_x, all_y; mark_point=true)
 
     savefig(p_combined, joinpath(results_dir, "data_collapse_combined_y^$(n).png"))
     display(p_combined)

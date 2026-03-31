@@ -1,8 +1,27 @@
 module Potentials
     import Random: AbstractRNG
-    using Plots
     export AbstractPotential ,Potential, MultiPotential, IndependentFluctuatingPoints, ProfileSwitchPotential, BondForce
     export potential_args, choose_potential, potential_update!, bondforce_update!
+
+    const _PLOTS_LOADED = Ref(false)
+
+    function ensure_plots_loaded!()
+        if !_PLOTS_LOADED[]
+            @eval using Plots
+            _PLOTS_LOADED[] = true
+        end
+        return nothing
+    end
+
+    function display_vector_plot(values)
+        ensure_plots_loaded!()
+        display(Plots.plot(values))
+    end
+
+    function display_heatmap_plot(values; kwargs...)
+        ensure_plots_loaded!()
+        display(Plots.heatmap(values; kwargs...))
+    end
 
     # Abstract type for polymorphism
     abstract type AbstractPotential end
@@ -251,8 +270,7 @@ module Potentials
             end
 
             if plot_flag
-                V_plot=plot(V)
-                display(V_plot)
+                display_vector_plot(V)
             end
 
             if fluctuation_type == "plus-minus"
@@ -446,8 +464,7 @@ module Potentials
             end
             
             if plot_flag
-                V_plot=heatmap(V, aspect_ratio=:equal, c=:viridis, xlabel="x", ylabel="y", title="2D Potential Map")
-                display(V_plot)
+                display_heatmap_plot(V; aspect_ratio=:equal, c=:viridis, xlabel="x", ylabel="y", title="2D Potential Map")
             end
             println(fluctuation_type)
             if fluctuation_type == "no-fluctuation"
@@ -484,7 +501,7 @@ module Potentials
     function plot_boltzman_distribution(V,T=1)
         exp_expression= exp.(-V/T)
         
-        display(plot(exp_expression/sum(exp_expression)))
+        display_vector_plot(exp_expression / sum(exp_expression))
     end
 
     function potential_args(v_string, dims; magnitude = 0.4, simple=false,displacement = 0,cut_at=10^4)

@@ -1,8 +1,6 @@
 using LinearAlgebra
 using Statistics
 using ProgressMeter
-include("plot_utils.jl")
-using .PlotUtils
 include("potentials.jl")
 
 module FPSSEP
@@ -11,7 +9,7 @@ module FPSSEP
     using Random: rand, randperm
 
     export Param, Particle, State, setParam, setState, setDummyState, reset_statistics!
-    export get_state_forcings!, averaged_sample_count, validate_exclusion_state
+    export get_state_forcings!, averaged_sample_count, validate_exclusion_state, sync_redundant_ssep_views!
 
     struct ExpLookupTable
         values::Vector{Float64}
@@ -108,6 +106,13 @@ module FPSSEP
         forcing::Union{BondForce,Vector{BondForce}}
         exp_table::ExpLookupTable
     end
+
+    mutable struct RedundantSSEPViewStatus
+        particles_stale::Bool
+        directional_densities_stale::Bool
+    end
+
+    const REDUNDANT_SSEP_VIEW_STATUS = WeakKeyDict{Any,RedundantSSEPViewStatus}()
 
     const BOND_PASS_FORWARD_AVG_KEY = :bond_pass_forward_avg
     const BOND_PASS_REVERSE_AVG_KEY = :bond_pass_reverse_avg
@@ -218,7 +223,7 @@ module FPSSEP
 
     function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t, bond_pass_stats=nothing)
         stats_to_use = isnothing(bond_pass_stats) ? Dict{Symbol,Vector{Float64}}() : bond_pass_stats
-        return State(
+        state = State(
             t,
             state_to_imitate.particles,
             state_to_imitate.ρ,
@@ -233,6 +238,8 @@ module FPSSEP
             state_to_imitate.forcing,
             state_to_imitate.exp_table,
         )
+        mark_redundant_ssep_views_stale!(state)
+        return state
     end
 
     function populate_densities!(
@@ -250,6 +257,86 @@ module FPSSEP
             ρ₊[idx] += 1
             ρ₋[idx] += 1
         end
+    end
+
+    @inline function redundant_ssep_view_status(state)
+        return get!(REDUNDANT_SSEP_VIEW_STATUS, state) do
+            RedundantSSEPViewStatus(false, false)
+        end
+    end
+
+    @inline function mark_redundant_ssep_views_stale!(state; particles::Bool=true, directional_densities::Bool=true)
+        status = redundant_ssep_view_status(state)
+        particles && (status.particles_stale = true)
+        directional_densities && (status.directional_densities_stale = true)
+        return nothing
+    end
+
+    @inline function clear_redundant_ssep_view_stale_flags!(state; particles::Bool=true, directional_densities::Bool=true)
+        status = redundant_ssep_view_status(state)
+        particles && (status.particles_stale = false)
+        directional_densities && (status.directional_densities_stale = false)
+        return nothing
+    end
+
+    @inline function cartesian_index_position(idx::CartesianIndex{D}) where {D}
+        return ntuple(d -> Int64(idx[d]), D)
+    end
+
+    function sync_directional_densities_from_occupancy!(state; force::Bool=false)
+        status = redundant_ssep_view_status(state)
+        if !force && !status.directional_densities_stale
+            return nothing
+        end
+        state.ρ₊ .= state.ρ
+        state.ρ₋ .= state.ρ
+        status.directional_densities_stale = false
+        return nothing
+    end
+
+    function sync_particles_from_occupancy!(state; force::Bool=false)
+        status = redundant_ssep_view_status(state)
+        if !force && !status.particles_stale
+            return nothing
+        end
+
+        D = ndims(state.ρ)
+        occupied_count = Int(sum(state.ρ))
+        positions = Vector{NTuple{D,Int64}}(undef, occupied_count)
+        position_idx = 1
+        @inbounds for idx in CartesianIndices(state.ρ)
+            occupancy = Int(state.ρ[idx])
+            for _ in 1:occupancy
+                positions[position_idx] = cartesian_index_position(idx)
+                position_idx += 1
+            end
+        end
+
+        if length(state.particles) != occupied_count
+            particles = Vector{Particle{D}}(undef, occupied_count)
+            @inbounds for particle_idx in 1:occupied_count
+                particles[particle_idx] = Particle{D}(positions[particle_idx])
+            end
+            state.particles = particles
+        else
+            @inbounds for particle_idx in 1:occupied_count
+                state.particles[particle_idx].position = positions[particle_idx]
+            end
+        end
+
+        status.particles_stale = false
+        return nothing
+    end
+
+    function sync_redundant_ssep_views!(
+        state;
+        sync_particles::Bool=true,
+        sync_directional_densities::Bool=true,
+        force::Bool=false,
+    )
+        sync_particles && sync_particles_from_occupancy!(state; force=force)
+        sync_directional_densities && sync_directional_densities_from_occupancy!(state; force=force)
+        return state
     end
 
     function outer_density_2D(ρ::AbstractMatrix{T}) where {T<:Number}
@@ -385,6 +472,7 @@ module FPSSEP
     end
 
     function reset_statistics!(state)
+        invalidate_ctmc_1d_workspace!(state)
         state.t = 0
         state.ρ_avg .= state.ρ
         state.max_site_occupancy = isempty(state.particles) ? 0 : 1
@@ -548,9 +636,16 @@ module FPSSEP
     mutable struct FenwickTree
         tree::Vector{Float64}
         values::Vector{Float64}
+        max_bit::Int
+        total::Float64
     end
 
-    FenwickTree(n::Int) = FenwickTree(zeros(Float64, n), zeros(Float64, n))
+    FenwickTree(n::Int) = FenwickTree(
+        zeros(Float64, n),
+        zeros(Float64, n),
+        largest_power_of_two_leq(max(n, 1)),
+        0.0,
+    )
 
     @inline function largest_power_of_two_leq(n::Int)
         bit = 1
@@ -563,6 +658,7 @@ module FPSSEP
     @inline function fenwick_set!(tree::FenwickTree, idx::Int, value::Float64)
         delta = value - tree.values[idx]
         tree.values[idx] = value
+        tree.total += delta
         i = idx
         n = length(tree.tree)
         while i <= n
@@ -573,19 +669,13 @@ module FPSSEP
     end
 
     @inline function fenwick_total(tree::FenwickTree)
-        total = 0.0
-        i = length(tree.tree)
-        while i > 0
-            total += tree.tree[i]
-            i -= i & -i
-        end
-        return total
+        return tree.total
     end
 
     @inline function fenwick_sample(tree::FenwickTree, target::Float64)
         idx = 0
         cumulative = 0.0
-        bit = largest_power_of_two_leq(length(tree.tree))
+        bit = tree.max_bit
         while bit != 0
             next_idx = idx + bit
             if next_idx <= length(tree.tree) && cumulative + tree.tree[next_idx] < target
@@ -596,6 +686,50 @@ module FPSSEP
         end
         return idx + 1
     end
+
+    @inline function fenwick_clear!(tree::FenwickTree)
+        fill!(tree.tree, 0.0)
+        fill!(tree.values, 0.0)
+        tree.total = 0.0
+        return nothing
+    end
+
+    mutable struct CTMC1DWorkspace
+        L::Int
+        force_signature::Vector{Tuple{Int,Int,Bool,Float64}}
+        tracked_force_indices::Vector{Int}
+        force_fluctuation_types::Vector{String}
+        selected_cut_sites::Vector{Int}
+        has_selected_site_cuts::Bool
+        has_potential_event::Bool
+        ffrs::Vector{Float64}
+        param_signature::Tuple{Float64,Float64,Bool,String,Float64}
+        left_neighbors::Vector{Int}
+        right_neighbors::Vector{Int}
+        force_bond_left_sites::Vector{Int}
+        force_orientation_signs::Vector{Int8}
+        tracked_forces_by_bond::Vector{Vector{Int}}
+        right_hop_is_forward::BitVector
+        fluctuating_force_indices::Vector{Int}
+        force_right_contributions::Vector{Float64}
+        bond_right_forcing::Vector{Float64}
+        event_tree::FenwickTree
+        site_to_particle::Vector{Int}
+        sweep_forward_counts::Vector{Int64}
+        sweep_reverse_counts::Vector{Int64}
+        sweep_spatial_forward_counts::Vector{Int64}
+        sweep_spatial_reverse_counts::Vector{Int64}
+        density_accum::Vector{Float64}
+        density_last_touch::Vector{Float64}
+        cut_accum::Matrix{Float64}
+        cut_last_touch::Matrix{Float64}
+        cut_current::Matrix{Float64}
+        corr_accum::Matrix{Float64}
+        corr_last_touch::Matrix{Float64}
+        corr_current::Matrix{Float64}
+    end
+
+    const CTMC_1D_WORKSPACES = WeakKeyDict{Any,CTMC1DWorkspace}()
 
     @inline function bond_left_site_and_orientation_1d(first_site::Int, second_site::Int, L::Int)
         if mod1(first_site + 1, L) == second_site
@@ -826,6 +960,278 @@ module FPSSEP
         return nothing
     end
 
+    @inline function resolve_force_fluctuation_types_1d(force_fluctuation_types::Vector{String}, n_forces::Int)
+        if isempty(force_fluctuation_types)
+            return fill("alternating_direction", n_forces)
+        elseif length(force_fluctuation_types) != n_forces
+            throw(ArgumentError("force_fluctuation_types must have length $n_forces, got $(length(force_fluctuation_types))."))
+        end
+        return copy(force_fluctuation_types)
+    end
+
+    @inline function force_signature_1d(force::BondForce, L::Int)
+        first_site = mod1(force.bond_indices[1][1], L)
+        second_site = mod1(force.bond_indices[2][1], L)
+        return (first_site, second_site, Bool(force.direction_flag), Float64(force.magnitude))
+    end
+
+    @inline function ctmc_param_signature_1d(param, rate_normalization::Float64)
+        return (
+            Float64(param.D),
+            Float64(param.γ),
+            is_static_zero_potential(param),
+            forcing_rate_scheme(param),
+            rate_normalization,
+        )
+    end
+
+    function refresh_all_selected_site_cut_values!(
+        cut_current::Matrix{Float64},
+        ρ::AbstractVector{<:Integer},
+        selected_sites::Vector{Int},
+    )
+        n_cuts, L = size(cut_current)
+        @inbounds for cut_idx in 1:n_cuts
+            cut_site = selected_sites[cut_idx]
+            occ_cut = Float64(ρ[cut_site])
+            for other_site in 1:L
+                cut_current[cut_idx, other_site] = occ_cut * Float64(ρ[other_site])
+            end
+        end
+        return nothing
+    end
+
+    function refresh_all_ctmc_correlations!(
+        corr_current::Matrix{Float64},
+        ρ::AbstractVector{<:Integer},
+    )
+        L = length(ρ)
+        @inbounds for site_i in 1:L
+            occ_i = Float64(ρ[site_i])
+            for site_j in 1:L
+                corr_current[site_i, site_j] = occ_i * Float64(ρ[site_j])
+            end
+        end
+        return nothing
+    end
+
+    function rebuild_site_to_particle_map_from_occupancy!(
+        site_to_particle::Vector{Int},
+        ρ::AbstractVector{<:Integer},
+    )
+        fill!(site_to_particle, 0)
+        particle_idx = 1
+        @inbounds for site_idx in eachindex(ρ)
+            if ρ[site_idx] != 0
+                site_to_particle[site_idx] = particle_idx
+                particle_idx += 1
+            end
+        end
+        return nothing
+    end
+
+    function reset_ctmc_sweep_counters!(workspace::CTMC1DWorkspace)
+        fill!(workspace.sweep_forward_counts, 0)
+        fill!(workspace.sweep_reverse_counts, 0)
+        fill!(workspace.sweep_spatial_forward_counts, 0)
+        fill!(workspace.sweep_spatial_reverse_counts, 0)
+        return nothing
+    end
+
+    function prepare_ctmc_measurement_buffers!(workspace::CTMC1DWorkspace, state)
+        fill!(workspace.density_accum, 0.0)
+        fill!(workspace.density_last_touch, 0.0)
+        if workspace.has_selected_site_cuts
+            fill!(workspace.cut_accum, 0.0)
+            fill!(workspace.cut_last_touch, 0.0)
+            refresh_all_selected_site_cut_values!(workspace.cut_current, state.ρ, workspace.selected_cut_sites)
+        else
+            fill!(workspace.corr_accum, 0.0)
+            fill!(workspace.corr_last_touch, 0.0)
+            refresh_all_ctmc_correlations!(workspace.corr_current, state.ρ)
+        end
+        return nothing
+    end
+
+    function initialize_ctmc_1d_workspace_dynamic!(
+        workspace::CTMC1DWorkspace,
+        state,
+        param,
+        forcings::Vector{BondForce},
+    )
+        ffrs = workspace.ffrs
+        static_zero_potential = is_static_zero_potential(param)
+        scheme = forcing_rate_scheme(param)
+        rate_normalization = workspace.param_signature[5]
+
+        rebuild_site_to_particle_map_from_occupancy!(workspace.site_to_particle, state.ρ)
+        fill!(workspace.bond_right_forcing, 0.0)
+        fenwick_clear!(workspace.event_tree)
+
+        @inbounds for force_idx in eachindex(forcings)
+            contribution = force_right_contribution(forcings[force_idx], workspace.force_orientation_signs[force_idx])
+            workspace.force_right_contributions[force_idx] = contribution
+            workspace.bond_right_forcing[workspace.force_bond_left_sites[force_idx]] += contribution
+        end
+
+        @inbounds for bond_left_site in 1:workspace.L
+            recompute_ctmc_bond_rates_1d!(
+                workspace.event_tree,
+                state,
+                param,
+                bond_left_site,
+                workspace.right_neighbors,
+                workspace.bond_right_forcing,
+                static_zero_potential,
+                rate_normalization,
+                scheme,
+            )
+        end
+
+        @inbounds for (event_offset, force_idx) in enumerate(workspace.fluctuating_force_indices)
+            fenwick_set!(workspace.event_tree, 2 * workspace.L + event_offset, max(forcing_rate(ffrs, force_idx), 0.0))
+        end
+        if workspace.has_potential_event
+            fenwick_set!(workspace.event_tree, length(workspace.event_tree.tree), max(Float64(param.γ), 0.0))
+        end
+        return nothing
+    end
+
+    function workspace_matches_ctmc_1d(
+        workspace::CTMC1DWorkspace,
+        state,
+        param,
+        forcings::Vector{BondForce},
+        tracked_force_indices::Vector{Int},
+        force_fluctuation_types::Vector{String},
+        ffrs::Vector{Float64},
+        rate_normalization::Float64,
+    )
+        workspace.L == length(state.ρ) || return false
+        workspace.tracked_force_indices == tracked_force_indices || return false
+        workspace.force_fluctuation_types == force_fluctuation_types || return false
+        workspace.ffrs == ffrs || return false
+        workspace.has_selected_site_cuts == has_selected_site_cuts(state) || return false
+        workspace.selected_cut_sites == (workspace.has_selected_site_cuts ? selected_site_cut_sites_from_state(state) : Int[]) || return false
+        workspace.has_potential_event == (Float64(param.γ) > 0.0) || return false
+        workspace.param_signature == ctmc_param_signature_1d(param, rate_normalization) || return false
+        length(workspace.force_signature) == length(forcings) || return false
+        @inbounds for force_idx in eachindex(forcings)
+            workspace.force_signature[force_idx] == force_signature_1d(forcings[force_idx], workspace.L) || return false
+        end
+        return true
+    end
+
+    function build_ctmc_1d_workspace(
+        state,
+        param,
+        forcings::Vector{BondForce},
+        tracked_force_indices::Vector{Int},
+        force_fluctuation_types::Vector{String},
+        ffrs::Vector{Float64},
+        rate_normalization::Float64,
+    )
+        L = param.dims[1]
+        left_neighbors, right_neighbors = precompute_periodic_neighbors_1d(L)
+        n_forces = length(forcings)
+        tracked_mask = falses(n_forces)
+        @inbounds for force_idx in tracked_force_indices
+            tracked_mask[force_idx] = true
+        end
+
+        force_signature = Vector{Tuple{Int,Int,Bool,Float64}}(undef, n_forces)
+        force_bond_left_sites = zeros(Int, n_forces)
+        force_orientation_signs = zeros(Int8, n_forces)
+        tracked_forces_by_bond = [Int[] for _ in 1:L]
+        right_hop_is_forward = falses(n_forces)
+        fluctuating_force_indices = Int[]
+
+        @inbounds for force_idx in 1:n_forces
+            force = forcings[force_idx]
+            force_signature[force_idx] = force_signature_1d(force, L)
+            first_site, second_site, _, _ = force_signature[force_idx]
+            bond_left_site, orientation_sign = bond_left_site_and_orientation_1d(first_site, second_site, L)
+            force_bond_left_sites[force_idx] = bond_left_site
+            force_orientation_signs[force_idx] = orientation_sign
+            right_hop_is_forward[force_idx] = orientation_sign == 1
+
+            tracked_mask[force_idx] && push!(tracked_forces_by_bond[bond_left_site], force_idx)
+
+            fluctuation_type = force_fluctuation_types[force_idx]
+            if fluctuation_type == "alternating_direction"
+                if forcing_rate(ffrs, force_idx) > 0.0
+                    push!(fluctuating_force_indices, force_idx)
+                end
+            elseif fluctuation_type != "static"
+                throw(ArgumentError("Unsupported force fluctuation type for CTMC: $fluctuation_type"))
+            end
+        end
+
+        selected_cut_sites = has_selected_site_cuts(state) ? selected_site_cut_sites_from_state(state) : Int[]
+        has_selected = !isempty(selected_cut_sites)
+        n_cut_sites = length(selected_cut_sites)
+        event_count = 2 * L + length(fluctuating_force_indices) + (Float64(param.γ) > 0.0 ? 1 : 0)
+
+        workspace = CTMC1DWorkspace(
+            L,
+            force_signature,
+            copy(tracked_force_indices),
+            copy(force_fluctuation_types),
+            copy(selected_cut_sites),
+            has_selected,
+            Float64(param.γ) > 0.0,
+            copy(ffrs),
+            ctmc_param_signature_1d(param, rate_normalization),
+            left_neighbors,
+            right_neighbors,
+            force_bond_left_sites,
+            force_orientation_signs,
+            tracked_forces_by_bond,
+            right_hop_is_forward,
+            fluctuating_force_indices,
+            zeros(Float64, n_forces),
+            zeros(Float64, L),
+            FenwickTree(event_count),
+            zeros(Int, L),
+            zeros(Int64, n_forces),
+            zeros(Int64, n_forces),
+            zeros(Int64, L),
+            zeros(Int64, L),
+            zeros(Float64, L),
+            zeros(Float64, L),
+            zeros(Float64, n_cut_sites, L),
+            zeros(Float64, n_cut_sites, L),
+            zeros(Float64, n_cut_sites, L),
+            has_selected ? zeros(Float64, 0, 0) : zeros(Float64, L, L),
+            has_selected ? zeros(Float64, 0, 0) : zeros(Float64, L, L),
+            has_selected ? zeros(Float64, 0, 0) : zeros(Float64, L, L),
+        )
+        initialize_ctmc_1d_workspace_dynamic!(workspace, state, param, forcings)
+        return workspace
+    end
+
+    function get_ctmc_1d_workspace!(
+        state,
+        param,
+        forcings::Vector{BondForce},
+        tracked_force_indices::Vector{Int},
+        force_fluctuation_types::Vector{String},
+        ffrs::Vector{Float64},
+        rate_normalization::Float64,
+    )
+        workspace = get(CTMC_1D_WORKSPACES, state, nothing)
+        if workspace === nothing || !workspace_matches_ctmc_1d(workspace, state, param, forcings, tracked_force_indices, force_fluctuation_types, ffrs, rate_normalization)
+            workspace = build_ctmc_1d_workspace(state, param, forcings, tracked_force_indices, force_fluctuation_types, ffrs, rate_normalization)
+            CTMC_1D_WORKSPACES[state] = workspace
+        end
+        return workspace
+    end
+
+    function invalidate_ctmc_1d_workspace!(state)
+        delete!(CTMC_1D_WORKSPACES, state)
+        return nothing
+    end
+
     function update_ctmc_1d!(
         param,
         state,
@@ -839,7 +1245,6 @@ module FPSSEP
         L = param.dims[1]
         L >= 2 || throw(ArgumentError("CTMC SSEP requires L >= 2."))
 
-        left_neighbors, right_neighbors = precompute_periodic_neighbors_1d(L)
         static_zero_potential = is_static_zero_potential(param)
         ffrs = param_ffrs(param)
         forcings = get_state_forcings!(state)
@@ -847,89 +1252,53 @@ module FPSSEP
         scheme = forcing_rate_scheme(param)
         rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
 
-        if isempty(force_fluctuation_types)
-            force_fluctuation_types = fill("alternating_direction", n_forces)
-        elseif length(force_fluctuation_types) != n_forces
-            throw(ArgumentError("force_fluctuation_types must have length $n_forces, got $(length(force_fluctuation_types))."))
-        end
-
-        force_bond_left_sites = zeros(Int, n_forces)
-        force_orientation_signs = zeros(Int8, n_forces)
-        force_right_contributions = zeros(Float64, n_forces)
-        tracked_forces_by_bond = [Int[] for _ in 1:L]
-        right_hop_is_forward = falses(n_forces)
-        fluctuating_force_indices = Int[]
+        force_fluctuation_types = resolve_force_fluctuation_types_1d(force_fluctuation_types, n_forces)
 
         ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
         tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-        tracked_force_set = Set(tracked_force_indices)
+        workspace = get_ctmc_1d_workspace!(
+            state,
+            param,
+            forcings,
+            tracked_force_indices,
+            force_fluctuation_types,
+            ffrs,
+            rate_normalization,
+        )
 
-        for force_idx in 1:n_forces
-            force = forcings[force_idx]
-            first_site = mod1(force.bond_indices[1][1], L)
-            second_site = mod1(force.bond_indices[2][1], L)
-            bond_left_site, orientation_sign = bond_left_site_and_orientation_1d(first_site, second_site, L)
-            force_bond_left_sites[force_idx] = bond_left_site
-            force_orientation_signs[force_idx] = orientation_sign
-            force_right_contributions[force_idx] = force_right_contribution(force, orientation_sign)
-            right_hop_is_forward[force_idx] = orientation_sign == 1
+        left_neighbors = workspace.left_neighbors
+        right_neighbors = workspace.right_neighbors
+        force_bond_left_sites = workspace.force_bond_left_sites
+        force_orientation_signs = workspace.force_orientation_signs
+        force_right_contributions = workspace.force_right_contributions
+        tracked_forces_by_bond = workspace.tracked_forces_by_bond
+        right_hop_is_forward = workspace.right_hop_is_forward
+        fluctuating_force_indices = workspace.fluctuating_force_indices
+        bond_right_forcing = workspace.bond_right_forcing
+        event_tree = workspace.event_tree
+        site_to_particle = workspace.site_to_particle
+        sweep_forward_counts = workspace.sweep_forward_counts
+        sweep_reverse_counts = workspace.sweep_reverse_counts
+        sweep_spatial_forward_counts = workspace.sweep_spatial_forward_counts
+        sweep_spatial_reverse_counts = workspace.sweep_spatial_reverse_counts
+        reset_ctmc_sweep_counters!(workspace)
 
-            if force_idx in tracked_force_set
-                push!(tracked_forces_by_bond[bond_left_site], force_idx)
-            end
-
-            fluctuation_type = force_fluctuation_types[force_idx]
-            if fluctuation_type == "alternating_direction"
-                if forcing_rate(ffrs, force_idx) > 0.0
-                    push!(fluctuating_force_indices, force_idx)
-                end
-            elseif fluctuation_type != "static"
-                throw(ArgumentError("Unsupported force fluctuation type for CTMC: $fluctuation_type"))
-            end
-        end
-
-        bond_right_forcing = zeros(Float64, L)
-        for force_idx in 1:n_forces
-            bond_right_forcing[force_bond_left_sites[force_idx]] += force_right_contributions[force_idx]
-        end
-
-        potential_event_count = param.γ > 0.0 ? 1 : 0
-        event_tree = FenwickTree(2 * L + length(fluctuating_force_indices) + potential_event_count)
-
-        for bond_left_site in 1:L
-            recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_left_site, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
-        end
-
-        for (event_offset, force_idx) in enumerate(fluctuating_force_indices)
-            fenwick_set!(event_tree, 2 * L + event_offset, max(forcing_rate(ffrs, force_idx), 0.0))
-        end
         flip_event_upper = 2 * L + length(fluctuating_force_indices)
-        if potential_event_count == 1
-            fenwick_set!(event_tree, length(event_tree.tree), max(param.γ, 0.0))
-        end
 
-        site_to_particle = zeros(Int, L)
-        for (particle_idx, particle) in enumerate(state.particles)
-            site_to_particle[particle.position[1]] = particle_idx
-        end
-
-        sweep_forward_counts = zeros(Int64, n_forces)
-        sweep_reverse_counts = zeros(Int64, n_forces)
-        sweep_spatial_forward_counts = zeros(Int64, L)
-        sweep_spatial_reverse_counts = zeros(Int64, L)
-
-        density_accum = collect_statistics ? zeros(Float64, L) : nothing
-        density_last_touch = collect_statistics ? zeros(Float64, L) : nothing
-        use_selected_site_cuts = collect_statistics && has_selected_site_cuts(state)
-        selected_cut_sites = use_selected_site_cuts ? selected_site_cut_sites_from_state(state) : Int[]
-        cut_accum = use_selected_site_cuts ? zeros(Float64, length(selected_cut_sites), L) : nothing
-        cut_last_touch = use_selected_site_cuts ? zeros(Float64, length(selected_cut_sites), L) : nothing
-        cut_current = use_selected_site_cuts ? selected_site_cut_pair_matrix(state.ρ, selected_cut_sites) : nothing
-        corr_accum = collect_statistics && !use_selected_site_cuts ? zeros(Float64, L, L) : nothing
-        corr_last_touch = collect_statistics && !use_selected_site_cuts ? zeros(Float64, L, L) : nothing
-        corr_current = collect_statistics && !use_selected_site_cuts ? Float64.(state.ρ) * transpose(Float64.(state.ρ)) : nothing
+        use_selected_site_cuts = collect_statistics && workspace.has_selected_site_cuts
+        selected_cut_sites = workspace.selected_cut_sites
+        density_accum = collect_statistics ? workspace.density_accum : nothing
+        density_last_touch = collect_statistics ? workspace.density_last_touch : nothing
+        cut_accum = use_selected_site_cuts ? workspace.cut_accum : nothing
+        cut_last_touch = use_selected_site_cuts ? workspace.cut_last_touch : nothing
+        cut_current = use_selected_site_cuts ? workspace.cut_current : nothing
+        corr_accum = collect_statistics && !use_selected_site_cuts ? workspace.corr_accum : nothing
+        corr_last_touch = collect_statistics && !use_selected_site_cuts ? workspace.corr_last_touch : nothing
+        corr_current = collect_statistics && !use_selected_site_cuts ? workspace.corr_current : nothing
+        collect_statistics && prepare_ctmc_measurement_buffers!(workspace, state)
 
         t_local = 0.0
+        occupancy_changed = false
         while t_local < 1.0
             total_rate = fenwick_total(event_tree)
             total_rate <= 0.0 && break
@@ -966,13 +1335,9 @@ module FPSSEP
 
                 site_to_particle[from_site] = 0
                 site_to_particle[to_site] = particle_idx
-                state.particles[particle_idx].position = (to_site,)
                 state.ρ[from_site] = 0
                 state.ρ[to_site] = 1
-                state.ρ₊[from_site] = 0
-                state.ρ₊[to_site] = 1
-                state.ρ₋[from_site] = 0
-                state.ρ₋[to_site] = 1
+                occupancy_changed = true
 
                 if collect_statistics
                     if use_selected_site_cuts
@@ -1009,13 +1374,9 @@ module FPSSEP
 
                 site_to_particle[from_site] = 0
                 site_to_particle[to_site] = particle_idx
-                state.particles[particle_idx].position = (to_site,)
                 state.ρ[from_site] = 0
                 state.ρ[to_site] = 1
-                state.ρ₊[from_site] = 0
-                state.ρ₊[to_site] = 1
-                state.ρ₋[from_site] = 0
-                state.ρ₋[to_site] = 1
+                occupancy_changed = true
 
                 if collect_statistics
                     if use_selected_site_cuts
@@ -1036,6 +1397,7 @@ module FPSSEP
 
                 bond_right_forcing[bond_left_site] -= force_right_contributions[force_idx]
                 bondforce_update!(forcings[force_idx])
+                workspace.force_signature[force_idx] = force_signature_1d(forcings[force_idx], L)
                 force_right_contributions[force_idx] = force_right_contribution(forcings[force_idx], force_orientation_signs[force_idx])
                 bond_right_forcing[bond_left_site] += force_right_contributions[force_idx]
                 recompute_ctmc_bond_rates_1d!(event_tree, state, param, bond_left_site, right_neighbors, bond_right_forcing, static_zero_potential, rate_normalization, scheme)
@@ -1046,6 +1408,8 @@ module FPSSEP
                 end
             end
         end
+
+        occupancy_changed && mark_redundant_ssep_views_stale!(state)
 
         interval_density = nothing
         interval_corr = nothing
@@ -1165,6 +1529,8 @@ module FPSSEP
 
     function update!(param, state, rng; collect_statistics::Bool=true)
         validate_exclusion_state(state)
+        invalidate_ctmc_1d_workspace!(state)
+        sync_redundant_ssep_views!(state; sync_particles=true, sync_directional_densities=false)
 
         if length(param.dims) == 1
             V = state.potential.V
@@ -1189,6 +1555,7 @@ module FPSSEP
             micro_steps = max(param.N, 1)
             t = state.t
             t_end = state.t + 1
+            occupancy_changed = false
             while t < t_end
                 n_and_a = rand(rng, 1:2 * (param.N + 1))
                 action_index = mod1(n_and_a, 2)
@@ -1224,10 +1591,7 @@ module FPSSEP
                         particle.position = (candidate_spot_index,)
                         state.ρ[spot_index] = 0
                         state.ρ[candidate_spot_index] = 1
-                        state.ρ₊[spot_index] = 0
-                        state.ρ₊[candidate_spot_index] = 1
-                        state.ρ₋[spot_index] = 0
-                        state.ρ₋[candidate_spot_index] = 1
+                        occupancy_changed = true
                     end
                 else
                     accepted = rand(rng) < clamp(γ, 0.0, 1.0)
@@ -1248,6 +1612,7 @@ module FPSSEP
                 update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
                 update_spatial_bond_passage_averages!(state, sweep_spatial_forward_counts, sweep_spatial_reverse_counts)
             end
+            occupancy_changed && mark_redundant_ssep_views_stale!(state; particles=false, directional_densities=true)
         elseif length(param.dims) == 2
             V = state.potential.V
             T = state.T
@@ -1268,6 +1633,7 @@ module FPSSEP
             micro_steps = max(param.N, 1)
             t = state.t
             t_end = state.t + 1
+            occupancy_changed = false
             while t < t_end
                 n_and_a = rand(rng, 1:4 * (param.N + 1))
                 action_index = mod1(n_and_a, 4)
@@ -1303,10 +1669,7 @@ module FPSSEP
                             particle.position = cand
                             state.ρ[i, j] = 0
                             state.ρ[cand...] = 1
-                            state.ρ₊[i, j] = 0
-                            state.ρ₊[cand...] = 1
-                            state.ρ₋[i, j] = 0
-                            state.ρ₋[cand...] = 1
+                            occupancy_changed = true
                         end
                     end
                 else
@@ -1326,6 +1689,7 @@ module FPSSEP
             if collect_statistics
                 update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
             end
+            occupancy_changed && mark_redundant_ssep_views_stale!(state; particles=false, directional_densities=true)
         else
             throw(DomainError("Only 1D or 2D SSEP is supported"))
         end
@@ -1413,6 +1777,7 @@ function run_simulation!(
     save_times=Int[],
     save_dir="saved_states",
     plot_flag=false,
+    plotter=nothing,
     plot_label="",
     save_description=nothing,
     warmup_sweeps::Int=0,
@@ -1444,12 +1809,14 @@ function run_simulation!(
         )
 
         if sweep in save_times
+            FPSSEP.sync_redundant_ssep_views!(state; force=true)
             save_state(state, param, save_dir; relaxed_ic=relaxed_ic, description=save_description)
             println("State saved at sweep $sweep")
         end
 
-        if plot_flag && (sweep in show_times)
-            PlotUtils.plot_sweep(
+        if plot_flag && !isnothing(plotter) && (sweep in show_times)
+            FPSSEP.sync_redundant_ssep_views!(state; force=true)
+            plotter(
                 sweep,
                 state,
                 param;

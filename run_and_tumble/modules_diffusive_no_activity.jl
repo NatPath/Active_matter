@@ -1,9 +1,5 @@
 using Statistics
-using FFTW
-using LsqFit
 # using BenchmarkTools
-include("plot_utils.jl") 
-using .PlotUtils
 include("potentials.jl")
 
 #Wrap everything with a module to allow redefinition of type
@@ -11,7 +7,9 @@ module FPDiffusive
     # using ..PlotUtils: plot_sweep 
     using ..Potentials: AbstractPotential, potential_update!, Potential, MultiPotential, IndependentFluctuatingPoints, BondForce, bondforce_update!
     using LinearAlgebra
-    export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics, reset_statistics!
+    export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics, reset_statistics!, configure_bond_passage_tracking!, latest_bond_passage_counts
+
+    const STATE_RUNTIME_SCRATCH = IdDict{Any, Dict{Symbol,Any}}()
     
     # Add exponential look-up table structure
     struct ExpLookupTable
@@ -388,6 +386,84 @@ module FPDiffusive
         return state
     end
 
+    function configure_bond_passage_tracking!(state, mode::AbstractString="nonzero_magnitude")
+        forcings = get_state_forcings!(state)
+        track_mask = bond_pass_track_mask_for_forcings(forcings, String(mode))
+        initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings); track_mask=track_mask)
+        if ndims(state.ρ) == 1
+            initialize_spatial_bond_passage_stats!(state.bond_pass_stats, size(state.ρ, 1))
+        end
+        return state
+    end
+
+    @inline function runtime_scratch!(state)
+        return get!(STATE_RUNTIME_SCRATCH, state) do
+            Dict{Symbol,Any}()
+        end
+    end
+
+    @inline function cached_int_buffer!(scratch::Dict{Symbol,Any}, key::Symbol, len::Int)
+        buffer = get(scratch, key, nothing)
+        if !(buffer isa Vector{Int64}) || length(buffer) != len
+            buffer = zeros(Int64, len)
+            scratch[key] = buffer
+        else
+            fill!(buffer, 0)
+        end
+        return buffer
+    end
+
+    function latest_bond_passage_counts(state)
+        scratch = runtime_scratch!(state)
+        n_forces = length(get_state_forcings!(state))
+        n_forces == 0 && return Int64[], Int64[]
+
+        if ndims(state.ρ) == 1
+            forward_key = :bond_forward_counts_1d
+            reverse_key = :bond_reverse_counts_1d
+        else
+            forward_key = :bond_forward_counts_2d
+            reverse_key = :bond_reverse_counts_2d
+        end
+
+        forward = get(scratch, forward_key, nothing)
+        reverse = get(scratch, reverse_key, nothing)
+        if !(forward isa Vector{Int64}) || length(forward) != n_forces ||
+           !(reverse isa Vector{Int64}) || length(reverse) != n_forces
+            return zeros(Int64, n_forces), zeros(Int64, n_forces)
+        end
+        return forward, reverse
+    end
+
+    @inline function periodic_neighbors_1d!(state, L::Int)
+        scratch = runtime_scratch!(state)
+        left = get(scratch, :neighbors_1d_left, nothing)
+        right = get(scratch, :neighbors_1d_right, nothing)
+        if !(left isa Vector{Int}) || !(right isa Vector{Int}) || length(left) != L || length(right) != L
+            left, right = precompute_periodic_neighbors_1d(L)
+            scratch[:neighbors_1d_left] = left
+            scratch[:neighbors_1d_right] = right
+        end
+        return left, right
+    end
+
+    @inline function periodic_neighbors_2d!(state, Lx::Int, Ly::Int)
+        scratch = runtime_scratch!(state)
+        left_x = get(scratch, :neighbors_2d_left_x, nothing)
+        right_x = get(scratch, :neighbors_2d_right_x, nothing)
+        down_y = get(scratch, :neighbors_2d_down_y, nothing)
+        up_y = get(scratch, :neighbors_2d_up_y, nothing)
+        if !(left_x isa Vector{Int}) || !(right_x isa Vector{Int}) || !(down_y isa Vector{Int}) || !(up_y isa Vector{Int}) ||
+           length(left_x) != Lx || length(right_x) != Lx || length(down_y) != Ly || length(up_y) != Ly
+            left_x, right_x, down_y, up_y = precompute_periodic_neighbors_2d(Lx, Ly)
+            scratch[:neighbors_2d_left_x] = left_x
+            scratch[:neighbors_2d_right_x] = right_x
+            scratch[:neighbors_2d_down_y] = down_y
+            scratch[:neighbors_2d_up_y] = up_y
+        end
+        return left_x, right_x, down_y, up_y
+    end
+
     dot_like(a::Number, b::Number) = a * b
     dot_like(a, b) = sum(x * y for (x, y) in zip(a, b))
 
@@ -720,14 +796,15 @@ module FPDiffusive
             scheme = forcing_rate_scheme(param)
             rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
             L = param.dims[1]
-            left_neighbors, right_neighbors = precompute_periodic_neighbors_1d(L)
+            scratch = runtime_scratch!(state)
+            left_neighbors, right_neighbors = periodic_neighbors_1d!(state, L)
             ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
             tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-            sweep_forward_counts = zeros(Int64, n_forces)
-            sweep_reverse_counts = zeros(Int64, n_forces)
+            sweep_forward_counts = cached_int_buffer!(scratch, :bond_forward_counts_1d, n_forces)
+            sweep_reverse_counts = cached_int_buffer!(scratch, :bond_reverse_counts_1d, n_forces)
             ensure_spatial_bond_passage_stats!(state, L)
-            sweep_spatial_forward_counts = zeros(Int64, L)
-            sweep_spatial_reverse_counts = zeros(Int64, L)
+            sweep_spatial_forward_counts = cached_int_buffer!(scratch, :spatial_forward_counts_1d, L)
+            sweep_spatial_reverse_counts = cached_int_buffer!(scratch, :spatial_reverse_counts_1d, L)
             Δt=1
             t_end = state.t + Δt
             t= state.t
@@ -878,11 +955,12 @@ module FPDiffusive
             scheme = forcing_rate_scheme(param)
             rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
             Lx, Ly = param.dims
-            left_x, right_x, down_y, up_y = precompute_periodic_neighbors_2d(Lx, Ly)
+            scratch = runtime_scratch!(state)
+            left_x, right_x, down_y, up_y = periodic_neighbors_2d!(state, Lx, Ly)
             ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
             tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-            sweep_forward_counts = zeros(Int64, n_forces)
-            sweep_reverse_counts = zeros(Int64, n_forces)
+            sweep_forward_counts = cached_int_buffer!(scratch, :bond_forward_counts_2d, n_forces)
+            sweep_reverse_counts = cached_int_buffer!(scratch, :bond_reverse_counts_2d, n_forces)
             Δt = 1
             t_end = state.t + Δt
             t = state.t
@@ -1058,7 +1136,7 @@ end
 function fit_exponential(t, y)
     model(t, p) = p[1] .* exp.(-t ./ p[2]) .+ p[3]  
     p0 = [1.0, 1.0, 0.0]  # Initial guess for [amplitude, decay time, offset]
-    fit = curve_fit(model, t, y, p0)
+    fit = Main.LsqFit.curve_fit(model, t, y, p0)
     return fit.param
 end
 
@@ -1072,10 +1150,10 @@ function calculate_time_averaged_density_field(density_field_history)
 end
 
 function compute_spatial_correlation(ρ)
-    F = fft(ρ)
+    F = Main.FFTW.fft(ρ)
     power_spectrum = F .* conj(F)
-    corr = real(ifft(power_spectrum))
-    return fftshift(corr) / prod(size(ρ))
+    corr = real(Main.FFTW.ifft(power_spectrum))
+    return Main.FFTW.fftshift(corr) / prod(size(ρ))
 end
 
 function compute_time_correlation(ρ_history)
@@ -1180,9 +1258,15 @@ function initialize_simulation(state, param, n_frame, calc_correlations; show_pr
         ρ_history = zeros((param.dims..., n_frame))
         return prg, ρ_history, decay_times
     else
-        ρ_history = zeros((param.dims..., 1))
-        return prg, ρ_history, decay_times
+        return prg, nothing, decay_times
     end
+end
+
+@inline function normalize_time_lookup(times)
+    if isempty(times)
+        return nothing
+    end
+    return Set{Int}(Int.(times))
 end
 
 function calculate_statistics(state)
@@ -1238,6 +1322,7 @@ function run_simulation!(state, param, n_sweeps, rng;
                         save_times = [],
                         save_dir = "saved_states",
                         plot_flag = false,
+                        plotter = nothing,
                         plot_label = "",
                         save_description = nothing,
                         benchmark_frequency = 0,
@@ -1260,6 +1345,8 @@ function run_simulation!(state, param, n_sweeps, rng;
     progress_interval = max(progress_interval, 1)
     progress_file_path = isnothing(progress_file) ? "" : strip(String(progress_file))
     snapshot_request_path = isnothing(snapshot_request_file) ? "" : strip(String(snapshot_request_file))
+    save_time_lookup = normalize_time_lookup(save_times)
+    show_time_lookup = normalize_time_lookup(show_times)
     run_start_epoch = time()
     write_progress_update(progress_file_path, t_init - 1, t_init, t_end, run_start_epoch)
     if warmup_sweeps > 0
@@ -1303,14 +1390,14 @@ function run_simulation!(state, param, n_sweeps, rng;
         end
 
         # Save state at specified times
-        if sweep in save_times
+        if !isnothing(save_time_lookup) && in(sweep, save_time_lookup)
             save_state(state,param,save_dir; relaxed_ic=relaxed_ic, description=save_description)
             println("State saved at sweep $sweep")
         end
 
         # Your existing show_times code
-        if (sweep in show_times ) && plot_flag
-            PlotUtils.plot_sweep(sweep, state, param; label=plot_label)
+        if !isnothing(show_time_lookup) && in(sweep, show_time_lookup) && plot_flag && !isnothing(plotter)
+            plotter(sweep, state, param; label=plot_label)
         end
         
         if show_progress && !isnothing(prg)
