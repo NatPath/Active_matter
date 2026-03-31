@@ -12,7 +12,7 @@ Core options:
   --latest                                Fetch latest run_id in selected run family (can combine with filters)
   --list                                  List run registry entries and exit
   --tail <N>                              Number of listed entries (default: 30)
-  --run_family <two_force_d|single_origin_bond|ssep|auto>
+  --run_family <two_force_d|single_origin_bond|ssep|active_objects|auto>
                                           Registry family for --list/--latest (default: two_force_d)
 
 Run filters for --list / --latest:
@@ -57,6 +57,7 @@ Examples:
   bash copy_data_from_cluster.sh --run_id single_production_L128_rho100_ns1000000_f1.0_ffr1.0_20260225-152138 --plot
   bash copy_data_from_cluster.sh --run_id two_force_production_L128_rho100_ns1000000_d2-32-s2_nr8_dag_20260225-180000 --sync_scope aggregation
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
+  bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
   bash copy_data_from_cluster.sh --run_id two_force_warmup_production_L256_rho100_..._production_20260226-032016 --aggregated_saved_only --plot
 USAGE_EOF
 }
@@ -111,10 +112,12 @@ declare -A RUN_ROOT_REL_MAP
 REGISTRY_REL_MAP["two_force_d"]="runs/two_force_d/run_registry.csv"
 REGISTRY_REL_MAP["single_origin_bond"]="runs/single_origin_bond/run_registry.csv"
 REGISTRY_REL_MAP["ssep"]="runs/ssep/single_center_bond/run_registry.csv"
+REGISTRY_REL_MAP["active_objects"]="runs/active_objects/steady_state_histograms/run_registry.csv"
 RUN_ROOT_REL_MAP["two_force_d"]="runs/two_force_d"
 RUN_ROOT_REL_MAP["single_origin_bond"]="runs/single_origin_bond"
 RUN_ROOT_REL_MAP["ssep"]="runs/ssep/single_center_bond"
-ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep")
+RUN_ROOT_REL_MAP["active_objects"]="runs/active_objects/steady_state_histograms"
+ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects")
 
 cleanup_ssh_master() {
     if [[ -n "${ssh_control_path}" ]]; then
@@ -282,8 +285,8 @@ if ! [[ "${tail_n}" =~ ^[0-9]+$ ]] || (( tail_n <= 0 )); then
     echo "--tail must be a positive integer. Got '${tail_n}'."
     exit 1
 fi
-if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "auto" ]]; then
-    echo "--run_family must be two_force_d, single_origin_bond, ssep, or auto. Got '${run_family}'."
+if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "auto" ]]; then
+    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, or auto. Got '${run_family}'."
     exit 1
 fi
 if [[ "${sync_scope}" != "auto" && "${sync_scope}" != "aggregation" && "${sync_scope}" != "full" ]]; then
@@ -613,10 +616,12 @@ else
         two_force_registry="${local_root}/${REGISTRY_REL_MAP[two_force_d]}"
         single_registry="${local_root}/${REGISTRY_REL_MAP[single_origin_bond]}"
         ssep_registry="${local_root}/${REGISTRY_REL_MAP[ssep]}"
+        active_objects_registry="${local_root}/${REGISTRY_REL_MAP[active_objects]}"
         echo "run_id '${run_id}' not found in available registries:"
         echo "  ${two_force_registry}"
         echo "  ${single_registry}"
         echo "  ${ssep_registry}"
+        echo "  ${active_objects_registry}"
         exit 1
     fi
 
@@ -639,6 +644,8 @@ if [[ "${resolved_family}" == "two_force_d" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_dmin reg_dmax reg_dstep reg_cpus reg_mem reg_run_root reg_log_dir reg_state_dir reg_warmup_state_dir <<< "${registry_row}"
 elif [[ "${resolved_family}" == "ssep" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
+elif [[ "${resolved_family}" == "active_objects" ]]; then
+    IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_histogram_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
 else
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_cpus reg_mem reg_run_root reg_log_dir reg_state_dir reg_warmup_state_dir reg_ffr reg_force_strength <<< "${registry_row}"
 fi
@@ -679,6 +686,8 @@ fi
 aggregation_glob="*id-aggregated_*.jld2"
 if [[ "${state_glob_explicit}" == "true" ]]; then
     aggregation_glob="${state_glob}"
+elif [[ "${resolved_family}" == "active_objects" && -n "${reg_aggregate_run_id:-}" ]]; then
+    aggregation_glob="${reg_aggregate_run_id}_steady_state_hist.jld2"
 elif [[ "${resolved_family}" == "ssep" && -n "${reg_aggregate_run_id:-}" ]]; then
     aggregation_glob="*id-${reg_aggregate_run_id}.jld2"
 elif [[ -n "${state_glob}" ]]; then
@@ -691,7 +700,7 @@ if (( sample_count > 0 )); then
     echo "  sample_count=${sample_count}"
 fi
 
-if [[ "${sync_scope_effective}" == "aggregation" && "${aggregated_saved_only}" == "true" ]]; then
+if [[ "${sync_scope_effective}" == "aggregation" && "${aggregated_saved_only}" == "true" && "${resolved_family}" != "active_objects" ]]; then
     prune_local_aggregation_matches "${local_run_dir}" "${aggregation_glob}"
 fi
 
@@ -756,14 +765,20 @@ EOF
             --include='run_info.txt'
             --include='manifest.csv'
             --include='reports/***')
-        if [[ -n "${state_subdir}" ]]; then
+        if [[ "${resolved_family}" == "active_objects" ]]; then
+            rsync_args+=(
+                --include='histograms/'
+                --include='histograms/aggregated/'
+                --include="histograms/aggregated/${aggregation_glob}"
+            )
+        elif [[ -n "${state_subdir}" ]]; then
             rsync_args+=(--include="states/${state_subdir}/${aggregation_glob}")
         elif [[ "${aggregated_saved_only}" == "true" ]]; then
             rsync_args+=(--include="aggregated/${aggregation_glob}" --include="states/aggregated/${aggregation_glob}")
         elif [[ "${resolved_family}" == "ssep" ]]; then
             rsync_args+=(--include="aggregated/${aggregation_glob}")
         fi
-        if [[ "${aggregated_saved_only}" != "true" ]]; then
+        if [[ "${aggregated_saved_only}" != "true" && "${resolved_family}" != "active_objects" ]]; then
             rsync_args+=(
                 --include="aggregated/${aggregation_glob}"
                 --include="states/aggregated/${aggregation_glob}"
@@ -786,6 +801,43 @@ else
 fi
 
 if [[ "${plot_after_sync}" == "true" ]]; then
+    julia_setup="${JULIA_SETUP_SCRIPT:-/Local/ph_kafri/julia-1.7.2/bin/setup.sh}"
+    if [[ -f "${julia_setup}" ]]; then
+        # shellcheck disable=SC1090
+        source "${julia_setup}"
+    fi
+    julia_bin="${JULIA_BIN:-julia}"
+    if ! command -v "${julia_bin}" >/dev/null 2>&1; then
+        echo "Julia executable '${julia_bin}' not found. Skipping plot."
+        exit 0
+    fi
+
+    if [[ "${resolved_family}" == "active_objects" ]]; then
+        hist_dir="${local_run_dir}/histograms/aggregated"
+        if [[ ! -d "${hist_dir}" ]]; then
+            echo "No aggregated histogram directory found at ${hist_dir}; skipping plot."
+            exit 0
+        fi
+
+        mapfile -t histogram_files < <(find "${hist_dir}" -maxdepth 1 -type f -name "${aggregation_glob}" | sort)
+        if (( ${#histogram_files[@]} == 0 )); then
+            echo "No aggregated histogram files found in ${hist_dir} (pattern: ${aggregation_glob}); skipping plot."
+            exit 0
+        fi
+
+        out_dir="${local_run_dir}/reports/active_object_histograms_$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "${out_dir}"
+        cmd=("${julia_bin}" "${REPO_ROOT}/utility_scripts/plot_active_object_steady_state_histograms.jl")
+        cmd+=("${histogram_files[@]}")
+        cmd+=("--out_dir" "${out_dir}")
+
+        echo "Running active-object histogram plotter on ${#histogram_files[@]} file(s)..."
+        "${cmd[@]}"
+        echo "Plots saved to: ${out_dir}"
+        echo "Done. Local run folder: ${local_run_dir}"
+        exit 0
+    fi
+
     if [[ "${plot_mode_explicit}" != "true" ]]; then
         if [[ "${resolved_family}" == "two_force_d" ]]; then
             plot_mode="two_force_d"
@@ -862,17 +914,6 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     fi
     if (( ${#state_files[@]} == 0 )); then
         echo "No matching states found in ${states_dir} (pattern: ${plot_glob}); skipping plot."
-        exit 0
-    fi
-
-    julia_setup="${JULIA_SETUP_SCRIPT:-/Local/ph_kafri/julia-1.7.2/bin/setup.sh}"
-    if [[ -f "${julia_setup}" ]]; then
-        # shellcheck disable=SC1090
-        source "${julia_setup}"
-    fi
-    julia_bin="${JULIA_BIN:-julia}"
-    if ! command -v "${julia_bin}" >/dev/null 2>&1; then
-        echo "Julia executable '${julia_bin}' not found. Skipping plot."
         exit 0
     fi
 

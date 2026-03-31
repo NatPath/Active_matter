@@ -7,17 +7,19 @@ Usage:
   bash aggregate_active_object_histograms_from_tags.sh \
       --state_dir <path> \
       --output_dir <path> \
-      --num_replicas <int> \
-      --replica_tag_prefix <prefix> \
       --save_tag <tag> \
+      [--num_replicas <int> --replica_tag_prefix <prefix>] \
+      [--all_states_recursive] \
       [--min_sweep <int>] \
       [--max_sweep <int>] \
       [--plot_per_run] \
       [--no_plot]
 
 Behavior:
-  - resolves one saved state per replica using expected IDs:
+  - default mode resolves one saved state per replica using expected IDs:
       *_id-${replica_tag_prefix}<replica_index>.jld2
+  - with --all_states_recursive, resolves the latest state for every unique id tag
+    under <state_dir> recursively
   - writes a temporary state list file
   - runs utility_scripts/active_object_steady_state_histograms.jl in multi-state mode
   - writes one per-run histogram artifact under <output_dir>/per_run/
@@ -43,6 +45,7 @@ min_sweep="0"
 max_sweep=""
 plot_per_run="false"
 no_plot="false"
+all_states_recursive="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -65,6 +68,10 @@ while [[ $# -gt 0 ]]; do
         --save_tag)
             save_tag="${2:-}"
             shift 2
+            ;;
+        --all_states_recursive)
+            all_states_recursive="true"
+            shift
             ;;
         --min_sweep)
             min_sweep="${2:-}"
@@ -94,7 +101,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "${state_dir}" || -z "${output_dir}" || -z "${num_replicas}" || -z "${replica_tag_prefix}" || -z "${save_tag}" ]]; then
+if [[ -z "${state_dir}" || -z "${output_dir}" || -z "${save_tag}" ]]; then
     echo "Missing required arguments."
     usage
     exit 1
@@ -104,9 +111,15 @@ if [[ ! -d "${state_dir}" ]]; then
     echo "State directory not found: ${state_dir}"
     exit 1
 fi
-if ! [[ "${num_replicas}" =~ ^[0-9]+$ ]] || (( num_replicas <= 0 )); then
-    echo "--num_replicas must be a positive integer. Got '${num_replicas}'."
-    exit 1
+if [[ "${all_states_recursive}" != "true" ]]; then
+    if [[ -z "${num_replicas}" || -z "${replica_tag_prefix}" ]]; then
+        echo "Default mode requires --num_replicas and --replica_tag_prefix."
+        exit 1
+    fi
+    if ! [[ "${num_replicas}" =~ ^[0-9]+$ ]] || (( num_replicas <= 0 )); then
+        echo "--num_replicas must be a positive integer. Got '${num_replicas}'."
+        exit 1
+    fi
 fi
 if ! [[ "${min_sweep}" =~ ^-?[0-9]+$ ]]; then
     echo "--min_sweep must be an integer. Got '${min_sweep}'."
@@ -138,15 +151,43 @@ latest_state_for_id_tag() {
 state_list_file="$(mktemp)"
 trap 'rm -f "${state_list_file}"' EXIT
 
-for ((replica_idx = 1; replica_idx <= num_replicas; replica_idx++)); do
-    replica_tag="${replica_tag_prefix}${replica_idx}"
-    matched_state="$(latest_state_for_id_tag "${state_dir}" "${replica_tag}")"
-    if [[ -z "${matched_state}" ]]; then
-        echo "Missing replica state for replica ${replica_idx} (tag=${replica_tag}) in ${state_dir}"
+if [[ "${all_states_recursive}" == "true" ]]; then
+    declare -A best_path_by_id=()
+    declare -A best_mtime_by_id=()
+    while IFS= read -r -d '' candidate; do
+        base_name="$(basename "${candidate}")"
+        if [[ "${base_name}" =~ _id-([^.]+)\.jld2$ ]]; then
+            id_tag="${BASH_REMATCH[1]}"
+        else
+            id_tag="${base_name%.jld2}"
+        fi
+        mtime="$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)"
+        if [[ -z "${best_mtime_by_id[${id_tag}]:-}" ]] || (( mtime >= best_mtime_by_id[${id_tag}] )); then
+            best_mtime_by_id["${id_tag}"]="${mtime}"
+            best_path_by_id["${id_tag}"]="${candidate}"
+        fi
+    done < <(find -L "${state_dir}" -type f -name "*.jld2" -print0 2>/dev/null)
+
+    if (( ${#best_path_by_id[@]} == 0 )); then
+        echo "No saved active-object states found under ${state_dir}"
         exit 1
     fi
-    echo "${matched_state}" >> "${state_list_file}"
-done
+
+    printf "%s\n" "${!best_path_by_id[@]}" | sort | while IFS= read -r id_tag; do
+        [[ -n "${id_tag}" ]] || continue
+        echo "${best_path_by_id[${id_tag}]}" >> "${state_list_file}"
+    done
+else
+    for ((replica_idx = 1; replica_idx <= num_replicas; replica_idx++)); do
+        replica_tag="${replica_tag_prefix}${replica_idx}"
+        matched_state="$(latest_state_for_id_tag "${state_dir}" "${replica_tag}")"
+        if [[ -z "${matched_state}" ]]; then
+            echo "Missing replica state for replica ${replica_idx} (tag=${replica_tag}) in ${state_dir}"
+            exit 1
+        fi
+        echo "${matched_state}" >> "${state_list_file}"
+    done
+fi
 
 cmd=(julia --startup-file=no "${HISTOGRAM_SCRIPT}"
     --state_list "${state_list_file}"
@@ -164,7 +205,11 @@ if [[ "${no_plot}" == "true" ]]; then
     cmd+=(--no_plot)
 fi
 
-echo "Aggregating ${num_replicas} active-object steady-state histograms from ${state_dir}"
+if [[ "${all_states_recursive}" == "true" ]]; then
+    echo "Aggregating all unique active-object states under ${state_dir}"
+else
+    echo "Aggregating ${num_replicas} active-object steady-state histograms from ${state_dir}"
+fi
 echo "Output dir: ${output_dir}"
 echo "Save tag: ${save_tag}"
 "${cmd[@]}"

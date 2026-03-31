@@ -7,24 +7,25 @@ Usage:
   bash cluster_scripts/submit_active_objects_histogram_dag.sh \
       --config <path> \
       --num_replicas <int> \
+      --n_sweeps <int> \
+      --tr <int> \
       [--run_id <token>] \
       [--request_cpus <int>] \
       [--request_memory <value>] \
       [--aggregate_request_cpus <int>] \
-      [--min_sweep <int>] \
       [--max_sweep <int>] \
-      [--plot_per_run] \
-      [--no_plot] \
       [--no_submit]
 
 Behavior:
-  - Creates a run root under runs/active_objects/steady_state_histograms/<run_id>/
+  - Creates a run folder under runs/active_objects/steady_state_histograms/<run_id>/
   - Copies the config into a cluster/runtime variant that writes states into run_root/states/
   - Launches one active-object replica per DAG node with save tags:
       replica_<run_id>_r<idx>
   - Launches one child aggregation node that exports:
       P_object1_ss(x), P_object2_ss(x), and P_distance_ss(d)
     into run_root/histograms/
+  - Plotting is always disabled on the cluster path. Generate plots locally from
+    the saved histogram artifacts if needed.
 EOF
 }
 
@@ -44,15 +45,16 @@ fi
 
 config_path=""
 num_replicas=""
+n_sweeps_override=""
 run_id=""
 request_cpus="1"
 request_memory="2 GB"
 aggregate_request_cpus="1"
-min_sweep=""
+tr_sweeps=""
 max_sweep=""
-plot_per_run="false"
-no_plot="false"
+no_plot="true"
 no_submit="false"
+registry_file="${REPO_ROOT}/runs/active_objects/steady_state_histograms/run_registry.csv"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -62,6 +64,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --num_replicas)
             num_replicas="${2:-}"
+            shift 2
+            ;;
+        --n_sweeps)
+            n_sweeps_override="${2:-}"
             shift 2
             ;;
         --run_id)
@@ -80,8 +86,8 @@ while [[ $# -gt 0 ]]; do
             aggregate_request_cpus="${2:-}"
             shift 2
             ;;
-        --min_sweep)
-            min_sweep="${2:-}"
+        --tr|--min_sweep)
+            tr_sweeps="${2:-}"
             shift 2
             ;;
         --max_sweep)
@@ -89,8 +95,8 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --plot_per_run)
-            plot_per_run="true"
-            shift
+            echo "--plot_per_run is not supported in the cluster DAG. Plot locally from saved histogram artifacts."
+            exit 1
             ;;
         --no_plot)
             no_plot="true"
@@ -117,6 +123,16 @@ if [[ -z "${config_path}" || -z "${num_replicas}" ]]; then
     usage
     exit 1
 fi
+if [[ -z "${n_sweeps_override}" ]]; then
+    echo "--n_sweeps is required."
+    usage
+    exit 1
+fi
+if [[ -z "${tr_sweeps}" ]]; then
+    echo "--tr is required."
+    usage
+    exit 1
+fi
 
 config_path="$(realpath "${config_path}")"
 if [[ ! -f "${config_path}" ]]; then
@@ -127,6 +143,10 @@ if ! [[ "${num_replicas}" =~ ^[0-9]+$ ]] || (( num_replicas <= 0 )); then
     echo "--num_replicas must be a positive integer. Got '${num_replicas}'."
     exit 1
 fi
+if [[ -n "${n_sweeps_override}" ]] && { ! [[ "${n_sweeps_override}" =~ ^[0-9]+$ ]] || (( n_sweeps_override <= 0 )); }; then
+    echo "--n_sweeps must be a positive integer when provided. Got '${n_sweeps_override}'."
+    exit 1
+fi
 for numeric_name in request_cpus aggregate_request_cpus; do
     numeric_value="${!numeric_name}"
     if ! [[ "${numeric_value}" =~ ^[0-9]+$ ]] || (( numeric_value <= 0 )); then
@@ -134,8 +154,8 @@ for numeric_name in request_cpus aggregate_request_cpus; do
         exit 1
     fi
 done
-if [[ -n "${min_sweep}" ]] && ! [[ "${min_sweep}" =~ ^-?[0-9]+$ ]]; then
-    echo "--min_sweep must be an integer. Got '${min_sweep}'."
+if [[ -n "${tr_sweeps}" ]] && ! [[ "${tr_sweeps}" =~ ^-?[0-9]+$ ]]; then
+    echo "--tr must be an integer. Got '${tr_sweeps}'."
     exit 1
 fi
 if [[ -n "${max_sweep}" ]] && ! [[ "${max_sweep}" =~ ^-?[0-9]+$ ]]; then
@@ -168,12 +188,14 @@ read_config_value() {
         }' "${file_path}" || true
 }
 
-if [[ -z "${min_sweep}" ]]; then
-    min_sweep="$(read_config_value "${config_path}" "warmup_sweeps")"
-    [[ -n "${min_sweep}" ]] || min_sweep="0"
-fi
-
 run_root="${REPO_ROOT}/runs/active_objects/steady_state_histograms/${run_id}"
+effective_n_sweeps="${n_sweeps_override}"
+if [[ -n "${effective_n_sweeps}" && "${effective_n_sweeps}" =~ ^[0-9]+$ && "${tr_sweeps}" =~ ^-?[0-9]+$ ]]; then
+    if (( tr_sweeps >= effective_n_sweeps )); then
+        echo "--tr (${tr_sweeps}) must be smaller than --n_sweeps (${effective_n_sweeps})."
+        exit 1
+    fi
+fi
 config_dir="${run_root}/configs"
 submit_dir="${run_root}/submit"
 log_dir="${run_root}/logs"
@@ -187,6 +209,7 @@ aggregate_submit_file="${submit_dir}/active_objects_histograms_aggregate.sub"
 aggregate_output_file="${log_dir}/active_objects_histograms_aggregate.out"
 aggregate_error_file="${log_dir}/active_objects_histograms_aggregate.err"
 aggregate_log_file="${log_dir}/active_objects_histograms_aggregate.log"
+aggregate_save_tag="aggregated_${run_id}"
 job_batch_name="${run_id}"
 
 mkdir -p "${config_dir}" "${submit_dir}" "${log_dir}" "${state_dir}" "${hist_dir}"
@@ -195,10 +218,15 @@ prepare_runtime_config() {
     local src="$1"
     local dest="$2"
     local forced_save_dir="$3"
+    local forced_n_sweeps="${4:-}"
 
-    local save_dir_line performance_mode_line cluster_mode_line plot_final_line
+    local save_dir_line n_sweeps_line performance_mode_line cluster_mode_line plot_final_line
     local save_final_plot_line live_plot_line save_live_plot_line
     save_dir_line="save_dir: \"${forced_save_dir}\""
+    n_sweeps_line=""
+    if [[ -n "${forced_n_sweeps}" ]]; then
+        n_sweeps_line="n_sweeps: ${forced_n_sweeps}"
+    fi
     performance_mode_line="performance_mode: true"
     cluster_mode_line="cluster_mode: true"
     plot_final_line="plot_final: false"
@@ -208,6 +236,7 @@ prepare_runtime_config() {
 
     awk \
         -v save_dir_line="${save_dir_line}" \
+        -v n_sweeps_line="${n_sweeps_line}" \
         -v performance_mode_line="${performance_mode_line}" \
         -v cluster_mode_line="${cluster_mode_line}" \
         -v plot_final_line="${plot_final_line}" \
@@ -216,12 +245,18 @@ prepare_runtime_config() {
         -v save_live_plot_line="${save_live_plot_line}" '
         BEGIN {
             seen_save = seen_perf = seen_cluster = 0
+            seen_n_sweeps = 0
             seen_plot_final = seen_save_plot = seen_live_plot = seen_save_live_plot = 0
         }
         {
             if ($0 ~ /^[[:space:]]*save_dir:[[:space:]]*/) {
                 print save_dir_line
                 seen_save = 1
+                next
+            }
+            if (n_sweeps_line != "" && $0 ~ /^[[:space:]]*n_sweeps:[[:space:]]*/) {
+                print n_sweeps_line
+                seen_n_sweeps = 1
                 next
             }
             if ($0 ~ /^[[:space:]]*performance_mode:[[:space:]]*/) {
@@ -258,6 +293,7 @@ prepare_runtime_config() {
         }
         END {
             if (!seen_save) print save_dir_line
+            if (n_sweeps_line != "" && !seen_n_sweeps) print n_sweeps_line
             if (!seen_perf) print performance_mode_line
             if (!seen_cluster) print cluster_mode_line
             if (!seen_plot_final) print plot_final_line
@@ -267,7 +303,7 @@ prepare_runtime_config() {
         }' "${src}" > "${dest}"
 }
 
-prepare_runtime_config "${config_path}" "${runtime_config}" "${state_dir}"
+prepare_runtime_config "${config_path}" "${runtime_config}" "${state_dir}" "${n_sweeps_override}"
 
 : > "${dag_file}"
 echo "job_type,job_name,submit_file,output_file,error_file,log_file,save_tag" > "${manifest}"
@@ -304,16 +340,11 @@ EOF
         >> "${manifest}"
 done
 
-aggregate_arguments="${AGGREGATE_SCRIPT} --state_dir ${state_dir} --output_dir ${hist_dir} --num_replicas ${num_replicas} --replica_tag_prefix ${replica_tag_prefix} --save_tag aggregated_${run_id} --min_sweep ${min_sweep}"
+aggregate_arguments="${AGGREGATE_SCRIPT} --state_dir ${state_dir} --output_dir ${hist_dir} --num_replicas ${num_replicas} --replica_tag_prefix ${replica_tag_prefix} --save_tag aggregated_${run_id} --min_sweep ${tr_sweeps}"
 if [[ -n "${max_sweep}" ]]; then
     aggregate_arguments="${aggregate_arguments} --max_sweep ${max_sweep}"
 fi
-if [[ "${plot_per_run}" == "true" ]]; then
-    aggregate_arguments="${aggregate_arguments} --plot_per_run"
-fi
-if [[ "${no_plot}" == "true" ]]; then
-    aggregate_arguments="${aggregate_arguments} --no_plot"
-fi
+aggregate_arguments="${aggregate_arguments} --no_plot"
 
 cat > "${aggregate_submit_file}" <<EOF
 Universe   = vanilla
@@ -333,11 +364,13 @@ EOF
 printf "JOB AGG %s\n" "${aggregate_submit_file}" >> "${dag_file}"
 printf "PARENT %s CHILD AGG\n" "${replica_job_ids[*]}" >> "${dag_file}"
 printf "aggregate,AGG,%s,%s,%s,%s,%s\n" \
-    "${aggregate_submit_file}" "${aggregate_output_file}" "${aggregate_error_file}" "${aggregate_log_file}" "aggregated_${run_id}" \
+    "${aggregate_submit_file}" "${aggregate_output_file}" "${aggregate_error_file}" "${aggregate_log_file}" "${aggregate_save_tag}" \
     >> "${manifest}"
 
 cat > "${run_info}" <<EOF
 run_id=${run_id}
+timestamp=${timestamp}
+mode=production
 config_path=${config_path}
 runtime_config=${runtime_config}
 run_root=${run_root}
@@ -350,12 +383,55 @@ num_replicas=${num_replicas}
 request_cpus=${request_cpus}
 request_memory=${request_memory}
 aggregate_request_cpus=${aggregate_request_cpus}
-min_sweep=${min_sweep}
+effective_n_sweeps=${effective_n_sweeps}
+tr_sweeps=${tr_sweeps}
 max_sweep=${max_sweep}
-plot_per_run=${plot_per_run}
 no_plot=${no_plot}
 dag_file=${dag_file}
+aggregate_save_tag=${aggregate_save_tag}
 EOF
+
+cluster_id=""
+submit_output=""
+if [[ "${no_submit}" == "true" ]]; then
+    echo "NO_SUBMIT=true; generated DAG but not submitting: ${dag_file}"
+    cluster_id="NO_SUBMIT"
+else
+    submit_output="$(condor_submit_dag "${dag_file}")"
+    cluster_id="$(printf '%s\n' "${submit_output}" | sed -nE 's/.*submitted to cluster ([0-9]+).*/\1/p' | tail -n 1)"
+    cluster_id="${cluster_id:-NA}"
+fi
+
+if [[ -n "${cluster_id}" ]]; then
+    {
+        echo "cluster_id=${cluster_id}"
+        echo "submit_time=$(date +%Y-%m-%dT%H:%M:%S)"
+    } >> "${run_info}"
+fi
+
+mkdir -p "$(dirname "${registry_file}")"
+if [[ ! -f "${registry_file}" ]]; then
+    echo "timestamp,run_id,mode,L,rho0,n_sweeps,tr_sweeps,num_replicas,request_cpus,request_memory,run_root,submit_dir,log_dir,state_dir,histogram_dir,config_path,aggregate_save_tag" > "${registry_file}"
+fi
+printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+    "${timestamp}" \
+    "${run_id}" \
+    "production" \
+    "$(read_config_value "${config_path}" "L")" \
+    "$(read_config_value "${config_path}" "ρ₀")" \
+    "${effective_n_sweeps}" \
+    "${tr_sweeps}" \
+    "${num_replicas}" \
+    "${request_cpus}" \
+    "${request_memory}" \
+    "${run_root}" \
+    "${submit_dir}" \
+    "${log_dir}" \
+    "${state_dir}" \
+    "${hist_dir}" \
+    "${runtime_config}" \
+    "${aggregate_save_tag}" \
+    >> "${registry_file}"
 
 echo "Prepared active-object steady-state histogram DAG:"
 echo "  run_id=${run_id}"
@@ -364,11 +440,8 @@ echo "  runtime_config=${runtime_config}"
 echo "  state_dir=${state_dir}"
 echo "  histogram_dir=${hist_dir}"
 echo "  dag_file=${dag_file}"
-
-if [[ "${no_submit}" == "true" ]]; then
-    echo "NO_SUBMIT=true; generated DAG but not submitting: ${dag_file}"
-    exit 0
+echo "  aggregate_save_tag=${aggregate_save_tag}"
+echo "  cluster_id=${cluster_id}"
+if [[ -n "${submit_output}" ]]; then
+    echo "${submit_output}"
 fi
-
-submit_output="$(condor_submit_dag "${dag_file}")"
-echo "${submit_output}"

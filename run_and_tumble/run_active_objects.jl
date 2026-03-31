@@ -106,6 +106,16 @@ function parse_commandline()
         "--performance_mode"
             help = "Disable plotting and progress bars for lean runtime"
             action = :store_true
+        "--estimate_only"
+            help = "Estimate runtime and exit without running the simulation"
+            action = :store_true
+        "--estimate_runtime"
+            help = "Estimate runtime before running the simulation"
+            action = :store_true
+        "--estimate_sample_size"
+            help = "Number of sample sweeps to use for runtime estimation"
+            arg_type = Int
+            required = false
     end
     return parse_args(settings)
 end
@@ -124,6 +134,8 @@ function get_default_params()
         "show_on_object_move" => false,
         "performance_mode" => false,
         "cluster_mode" => false,
+        "estimate_runtime" => false,
+        "estimate_sample_size" => 100,
         "description" => "",
         "potential_type" => "zero",
         "fluctuation_type" => "no-fluctuation",
@@ -353,6 +365,49 @@ function load_params(args)
         deepcopy(defaults)
     end
     return params, defaults
+end
+
+function estimate_runtime_from_params(args, params, defaults)
+    if get(args, "estimate_runtime", false)
+        return true
+    elseif haskey(params, "estimate_runtime")
+        return to_bool(params["estimate_runtime"], "estimate_runtime")
+    end
+    return to_bool(get(defaults, "estimate_runtime", false), "estimate_runtime")
+end
+
+function estimate_sample_size_from_params(args, params, defaults)
+    if haskey(args, "estimate_sample_size") && !isnothing(args["estimate_sample_size"])
+        return max(Int(args["estimate_sample_size"]), 1)
+    end
+    return max(to_int(get(params, "estimate_sample_size", defaults["estimate_sample_size"]), "estimate_sample_size"), 1)
+end
+
+function estimate_active_object_run_time(state, param, n_sweeps, rng; sample_size::Int=100)
+    sample_sweeps = max(min(Int(sample_size), Int(n_sweeps)), 1)
+    println("Estimating active-object run time using $(sample_sweeps) sweeps...")
+    state_copy = deepcopy(state)
+    warmup_sweeps = min(5, sample_sweeps)
+    for _ in 1:warmup_sweeps
+        update_and_compute_correlations!(state_copy, param, nothing, state_copy.t + 1, rng; collect_statistics=true)
+        rightward_counts, leftward_counts = FPDiffusive.latest_bond_passage_counts(state_copy)
+        FPActiveObjects.apply_object_dynamics!(state_copy, param, rng, rightward_counts, leftward_counts)
+        FPActiveObjects.record_object_history!(state_copy, param)
+    end
+    t0 = time()
+    for _ in 1:sample_sweeps
+        update_and_compute_correlations!(state_copy, param, nothing, state_copy.t + 1, rng; collect_statistics=true)
+        rightward_counts, leftward_counts = FPDiffusive.latest_bond_passage_counts(state_copy)
+        FPActiveObjects.apply_object_dynamics!(state_copy, param, rng, rightward_counts, leftward_counts)
+        FPActiveObjects.record_object_history!(state_copy, param)
+    end
+    elapsed = time() - t0
+    avg_time = elapsed / sample_sweeps
+    estimated_total = avg_time * n_sweeps
+    println("Average time per active-object sweep: $(round(avg_time, digits=6)) sec")
+    println("Estimated total run time for $(n_sweeps) sweeps: $(round(estimated_total, digits=2)) sec ($(round(estimated_total / 3600, digits=3)) hours)")
+    flush(stdout)
+    return estimated_total
 end
 
 function get_show_times(params, defaults, warmup_sweeps::Int; has_explicit_show_times::Bool=false)
@@ -800,6 +855,9 @@ function main()
         params, defaults = load_params(args)
         has_config = haskey(args, "config") && !isnothing(args["config"])
         performance_mode = performance_mode_from_params(params, defaults, performance_mode_cli)
+        estimate_only = get(args, "estimate_only", false)
+        estimate_runtime = estimate_runtime_from_params(args, params, defaults)
+        estimate_sample_size = estimate_sample_size_from_params(args, params, defaults)
         n_sweeps = n_sweeps_from_continue(args, params, defaults)
         warmup_sweeps = haskey(params, "warmup_sweeps") ? max(to_int(params["warmup_sweeps"], "warmup_sweeps"), 0) : 0
         description = haskey(params, "description") ? description_from_params(params, defaults) : ""
@@ -823,6 +881,15 @@ function main()
         end
         plotter = (!RUN_ACTIVE_OBJECTS_HEADLESS && !performance_mode) ? plot_active_object_sweep : nothing
         rng = MersenneTwister(rand(1:2^30))
+
+        if estimate_only
+            estimate_active_object_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
+            return
+        end
+        if estimate_runtime
+            estimate_active_object_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
+        end
+
         final_outputs_saved = Ref(false)
         register_active_object_exit_hook(
             state,
@@ -883,6 +950,9 @@ function main()
 
     params, defaults = load_params(args)
     performance_mode = performance_mode_from_params(params, defaults, performance_mode_cli)
+    estimate_only = get(args, "estimate_only", false)
+    estimate_runtime = estimate_runtime_from_params(args, params, defaults)
+    estimate_sample_size = estimate_sample_size_from_params(args, params, defaults)
     description = description_from_params(params, defaults)
     warmup_sweeps = max(to_int(get(params, "warmup_sweeps", defaults["warmup_sweeps"]), "warmup_sweeps"), 0)
     n_sweeps = to_int(get(params, "n_sweeps", defaults["n_sweeps"]), "n_sweeps")
@@ -903,6 +973,15 @@ function main()
 
     rng = MersenneTwister(rand(1:2^30))
     state, param = create_state_from_params(params, defaults, rng)
+
+    if estimate_only
+        estimate_active_object_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
+        return
+    end
+    if estimate_runtime
+        estimate_active_object_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
+    end
+
     if live_plot && save_live_plot
         live_plot_path = build_live_plot_path(save_dir, param; description=description, save_tag=get(args, "save_tag", nothing))
     end

@@ -14,7 +14,7 @@ Options:
   -h, --help               Show this help
 
 Notes:
-  - By default this script copies source/code + top-level YAML files only.
+  - By default this script copies source/code, utility scripts, and top-level YAML files.
   - d-sweep YAML files are excluded by default to avoid pushing large generated sets every time.
 EOF
 }
@@ -130,6 +130,9 @@ top_level_yaml_files=(
 cluster_script_files=(
     "${REPO_ROOT}"/cluster_scripts/*.sh
 )
+utility_script_files=(
+    "${REPO_ROOT}"/utility_scripts/*.jl
+)
 
 if to_bool "${include_d_sweep_configs}"; then
     if [[ -f "${SCRIPT_DIR}/generate_two_force_d_sweep_configs.sh" ]]; then
@@ -153,11 +156,12 @@ echo "Copying files to ${remote_user}@${remote_host}:${remote_dir}/"
 echo "Include d-sweep configs: ${include_d_sweep_configs}"
 open_ssh_master
 ssh_with_master "${remote_user}@${remote_host}" \
-    "mkdir -p '${remote_dir}' '${remote_dir}/configuration_files' '${remote_dir}/cluster_scripts'"
+    "mkdir -p '${remote_dir}' '${remote_dir}/configuration_files' '${remote_dir}/cluster_scripts' '${remote_dir}/utility_scripts'"
 
 copy_group "${remote_dir}" "${root_jl_files[@]}"
 copy_group "${remote_dir}/configuration_files" "${top_level_yaml_files[@]}"
 copy_group "${remote_dir}/cluster_scripts" "${cluster_script_files[@]}"
+copy_group "${remote_dir}/utility_scripts" "${utility_script_files[@]}"
 
 if to_bool "${include_d_sweep_configs}"; then
     ssh_with_master "${remote_user}@${remote_host}" \

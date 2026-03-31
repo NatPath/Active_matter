@@ -3,6 +3,7 @@ using Printf
 using JLD2
 using Dates
 using Sockets
+using SHA
 export save_aggregation, save_state
 
 const MAX_FILENAME_COMPONENT_BYTES = 240
@@ -182,11 +183,12 @@ function atomic_jld2_save(filename::AbstractString, state, param, potential; max
     base_name = basename(filename)
     mkpath(save_dir)
     last_err = nothing
+    name_hash = bytes2hex(sha1(codeunits(base_name)))[1:12]
 
     for attempt in 1:max_attempts
         temp_name = joinpath(
             save_dir,
-            "." * base_name * ".tmp-" * string(getpid()) * "-" * Dates.format(now(), "yyyymmdd-HHMMSSsss") * "-a" * string(attempt),
+            ".jld2tmp-" * name_hash * "-" * string(getpid()) * "-" * Dates.format(now(), "yyyymmdd-HHMMSSsss") * "-a" * string(attempt),
         )
         try
             isfile(temp_name) && rm(temp_name; force=true)
