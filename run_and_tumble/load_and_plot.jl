@@ -6,10 +6,10 @@ using Plots
 using Printf
 using Statistics
 
-include("potentials.jl")
-include("modules_diffusive_no_activity.jl")
-include("modules_ssep.jl")
-include("plot_utils.jl")
+include(joinpath(@__DIR__, "src", "common", "potentials.jl"))
+include(joinpath(@__DIR__, "src", "diffusive", "modules_diffusive_no_activity.jl"))
+include(joinpath(@__DIR__, "src", "ssep", "modules_ssep.jl"))
+include(joinpath(@__DIR__, "src", "common", "plot_utils.jl"))
 
 using .PlotUtils
 

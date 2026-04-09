@@ -42,6 +42,13 @@ if [[ ! -f "${SPACING_UTILS}" ]]; then
     echo "Could not find spacing utils script: ${SPACING_UTILS}"
     exit 1
 fi
+DAG_NOTIFY_UTILS="${SCRIPT_DIR}/dag_notification_utils.sh"
+if [[ ! -f "${DAG_NOTIFY_UTILS}" ]]; then
+    echo "Missing DAG notification utils: ${DAG_NOTIFY_UTILS}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${DAG_NOTIFY_UTILS}"
 source "${SPACING_UTILS}"
 
 "${GENERATE_SCRIPT}"
@@ -79,7 +86,7 @@ MANIFEST_PATH="${MANIFEST_PATH:-}"
 JOB_BATCH_NAME="${JOB_BATCH_NAME:-two_force_d_warmup}"
 
 REQUEST_CPUS="${REQUEST_CPUS:-1}"
-REQUEST_MEMORY="${REQUEST_MEMORY:-2 GB}"
+REQUEST_MEMORY="${REQUEST_MEMORY:-5 GB}"
 RUN_REGISTRY_PATH="${RUN_REGISTRY_PATH:-${REPO_ROOT}/runs/two_force_d/run_registry.csv}"
 CONTINUE_RUN_ID="${CONTINUE_RUN_ID:-}"
 CONTINUE_STATE_DIR="${CONTINUE_STATE_DIR:-}"
@@ -337,6 +344,7 @@ if [[ "${REPLICA_STRATEGY}" == "dag" && "${NUM_REPLICAS}" -gt 1 ]]; then
         echo "No DAG nodes were generated for warmup submission."
         exit 0
     fi
+    dag_append_final_notification_node "${dag_file}" "${SUBMIT_DIR}" "${LOG_DIR}" "$(dirname "${SUBMIT_DIR}")" "${JOB_BATCH_NAME}" "two_force_d_warmup" "${REPO_ROOT}"
     echo "Submitting warmup DAG: ${dag_file}"
     if [[ "${NO_SUBMIT}" == "true" ]]; then
         echo "NO_SUBMIT=true; generated warmup DAG but not submitting: ${dag_file}"

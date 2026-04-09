@@ -20,26 +20,32 @@ using YAML
 using ArgParse
 # using BenchmarkTools
 
+const SRC_ROOT = joinpath(@__DIR__, "src")
+const COMMON_DIR = joinpath(SRC_ROOT, "common")
+const RUN_AND_TUMBLE_DIR = joinpath(SRC_ROOT, "run_and_tumble")
+
 # First, on the main process, include all necessary files.
-include("potentials.jl")
-include("modules_run_and_tumble.jl")
-include("plot_utils.jl")
-include("save_utils.jl")
+include(joinpath(COMMON_DIR, "potentials.jl"))
+include(joinpath(RUN_AND_TUMBLE_DIR, "modules_run_and_tumble.jl"))
+include(joinpath(COMMON_DIR, "plot_utils.jl"))
+include(joinpath(COMMON_DIR, "save_utils.jl"))
 using .FP
 using .PlotUtils
 using .SaveUtils
 
 # Ensure all worker processes load the same files and modules.
+@everywhere const RUN_AND_TUMBLE_COMMON_DIR_WORKER = $COMMON_DIR
+@everywhere const RUN_AND_TUMBLE_MODULE_DIR_WORKER = $RUN_AND_TUMBLE_DIR
 @everywhere begin
     using Printf, Dates, Random, FFTW, ProgressMeter, Statistics, LsqFit, LinearAlgebra, JLD2, YAML, ArgParse
     if haskey(ENV, "WSL_DISTRO_NAME") && get(ENV, "QT_QPA_PLATFORM", "") in ("", "wayland", "wayland-egl")
         ENV["QT_QPA_PLATFORM"] = "xcb"
     end
     using Plots
-    include("potentials.jl")
-    include("modules_run_and_tumble.jl")
+    include(joinpath(RUN_AND_TUMBLE_COMMON_DIR_WORKER, "potentials.jl"))
+    include(joinpath(RUN_AND_TUMBLE_MODULE_DIR_WORKER, "modules_run_and_tumble.jl"))
     using .FP
-    include("plot_utils.jl")
+    include(joinpath(RUN_AND_TUMBLE_COMMON_DIR_WORKER, "plot_utils.jl"))
     using .PlotUtils
     # include("save_utils.jl")
     # using .SaveUtils

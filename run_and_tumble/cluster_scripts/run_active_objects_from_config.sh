@@ -14,6 +14,12 @@ else
     exit 1
 fi
 
+cluster_env_path="${CLUSTER_ENV_PATH:-${REPO_ROOT}/cluster_scripts/cluster_env.sh}"
+if [[ -f "${cluster_env_path}" ]]; then
+    # shellcheck disable=SC1090
+    source "${cluster_env_path}"
+fi
+
 CONFIG_PATH="$1"
 shift || true
 EXTRA_ARGS=("$@")
@@ -40,8 +46,8 @@ if [[ "${config_headless_mode}" =~ ^(true|1|yes|on)$ ]]; then
     export RUN_ACTIVE_OBJECTS_HEADLESS=1
 fi
 
-JULIA_SETUP_SCRIPT="${JULIA_SETUP_SCRIPT:-/Local/ph_kafri/julia-1.7.2/bin/setup.sh}"
-if [[ -f "${JULIA_SETUP_SCRIPT}" ]]; then
+JULIA_SETUP_SCRIPT="${JULIA_SETUP_SCRIPT:-${CLUSTER_JULIA_SETUP_SCRIPT:-}}"
+if [[ -n "${JULIA_SETUP_SCRIPT}" && -f "${JULIA_SETUP_SCRIPT}" ]]; then
     # shellcheck disable=SC1090
     source "${JULIA_SETUP_SCRIPT}"
 fi

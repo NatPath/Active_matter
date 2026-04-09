@@ -1,9 +1,28 @@
-<<<<<<< HEAD
+# Local editor / tooling
+.vscode/
+.codex/
+gui_mvp/__pycache__/
+gui_mvp/.secrets/
+
+# Generated binary data
 *.jld2
-*.png
-=======
-*.png
 *.log
-*.jld2
-cluster_results
->>>>>>> add_multicore_saving
+
+# Generated run outputs and analysis artifacts
+runs/
+saved_states/
+saved_states_*/
+results_figures/
+cluster_results/
+cluster_results*/
+condor_logs/
+dummy_states_agg/
+generated_configs/
+cluster_scripts/generated_submit/
+
+# Local scratch / transfer leftovers
+output_from_cluster.txt
+temp.txt
+
+# Local cluster-specific config (use cluster_env.example.sh as the template)
+cluster_scripts/cluster_env.sh

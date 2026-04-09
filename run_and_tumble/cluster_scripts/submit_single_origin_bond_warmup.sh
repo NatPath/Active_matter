@@ -69,6 +69,13 @@ else
     echo "Could not find aggregate_replicas_from_tags.sh"
     exit 1
 fi
+DAG_NOTIFY_UTILS="${SCRIPT_DIR}/dag_notification_utils.sh"
+if [[ ! -f "${DAG_NOTIFY_UTILS}" ]]; then
+    echo "Missing DAG notification utils: ${DAG_NOTIFY_UTILS}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${DAG_NOTIFY_UTILS}"
 
 "${GENERATE_SCRIPT}"
 
@@ -84,7 +91,7 @@ MANIFEST_PATH="${MANIFEST_PATH:-}"
 JOB_BATCH_NAME="${JOB_BATCH_NAME:-single_origin_bond_warmup}"
 
 REQUEST_CPUS="${REQUEST_CPUS:-1}"
-REQUEST_MEMORY="${REQUEST_MEMORY:-2 GB}"
+REQUEST_MEMORY="${REQUEST_MEMORY:-5 GB}"
 NUM_REPLICAS="${NUM_REPLICAS:-1}"
 REPLICA_STRATEGY="${REPLICA_STRATEGY:-mp}"
 NO_SUBMIT="${NO_SUBMIT:-false}"
@@ -178,6 +185,7 @@ queue
 EOF
     printf "JOB AGG %s\n" "${aggregate_submit_file}" >> "${dag_file}"
     printf "PARENT %s CHILD AGG\n" "${job_ids[*]}" >> "${dag_file}"
+    dag_append_final_notification_node "${dag_file}" "${SUBMIT_DIR}" "${LOG_DIR}" "$(dirname "${SUBMIT_DIR}")" "${JOB_BATCH_NAME}" "single_origin_bond_warmup" "${REPO_ROOT}"
 
     echo "Submitting single-origin-bond warmup DAG"
     if [[ "${NO_SUBMIT}" == "true" ]]; then

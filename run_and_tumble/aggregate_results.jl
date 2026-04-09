@@ -2,8 +2,8 @@ using JLD2
 using ArgParse
 using LinearAlgebra
 using Statistics
-include("modules_run_and_tumble.jl")
-include("save_utils.jl")
+include(joinpath(@__DIR__, "src", "run_and_tumble", "modules_run_and_tumble.jl"))
+include(joinpath(@__DIR__, "src", "common", "save_utils.jl"))
 using .FP
 using .SaveUtils
 

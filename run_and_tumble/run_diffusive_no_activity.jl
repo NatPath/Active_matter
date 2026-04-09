@@ -78,13 +78,17 @@ using YAML
 using ArgParse
 # using BenchmarkTools
 
+const SRC_ROOT = joinpath(@__DIR__, "src")
+const COMMON_DIR = joinpath(SRC_ROOT, "common")
+const DIFFUSIVE_DIR = joinpath(SRC_ROOT, "diffusive")
+
 # First, on the main process, include all necessary files.
-include("modules_diffusive_no_activity.jl")
-include("save_utils.jl")
+include(joinpath(DIFFUSIVE_DIR, "modules_diffusive_no_activity.jl"))
+include(joinpath(COMMON_DIR, "save_utils.jl"))
 using .FPDiffusive
 using .SaveUtils
 if !RUN_AND_TUMBLE_HEADLESS
-    include("plot_utils.jl")
+    include(joinpath(COMMON_DIR, "plot_utils.jl"))
     using .PlotUtils
     plot_sweep_runner = PlotUtils.plot_sweep
 else
@@ -144,6 +148,8 @@ const AGG_CONNECTED_FULL_EXACT_KEY = :agg_connected_corr_full_exact
 
 # Ensure all worker processes load the same files and modules.
 @everywhere const RUN_AND_TUMBLE_HEADLESS_WORKER = $RUN_AND_TUMBLE_HEADLESS
+@everywhere const RUN_AND_TUMBLE_COMMON_DIR_WORKER = $COMMON_DIR
+@everywhere const RUN_AND_TUMBLE_DIFFUSIVE_DIR_WORKER = $DIFFUSIVE_DIR
 @everywhere begin
     using Printf, Dates, Random, ProgressMeter, Statistics, LinearAlgebra, JLD2, YAML, ArgParse
     local run_and_tumble_headless = RUN_AND_TUMBLE_HEADLESS_WORKER
@@ -153,10 +159,10 @@ const AGG_CONNECTED_FULL_EXACT_KEY = :agg_connected_corr_full_exact
     if !run_and_tumble_headless
         using Plots
     end
-    include("modules_diffusive_no_activity.jl")
+    include(joinpath(RUN_AND_TUMBLE_DIFFUSIVE_DIR_WORKER, "modules_diffusive_no_activity.jl"))
     using .FPDiffusive
     if !run_and_tumble_headless
-        include("plot_utils.jl")
+        include(joinpath(RUN_AND_TUMBLE_COMMON_DIR_WORKER, "plot_utils.jl"))
         using .PlotUtils
         global plot_sweep_runner = PlotUtils.plot_sweep
     else

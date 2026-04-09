@@ -6,6 +6,10 @@ using ArgParse
 using Random
 using Statistics
 
+const SRC_ROOT = joinpath(@__DIR__, "src")
+const COMMON_DIR = joinpath(SRC_ROOT, "common")
+const SSEP_DIR = joinpath(SRC_ROOT, "ssep")
+
 function _parse_bool_literal(raw)
     raw === nothing && return nothing
     value = lowercase(strip(String(raw)))
@@ -71,15 +75,15 @@ if !RUN_SSEP_HEADLESS
     using Plots
 end
 
-include("modules_ssep.jl")
-include("save_utils.jl")
+include(joinpath(SSEP_DIR, "modules_ssep.jl"))
+include(joinpath(COMMON_DIR, "save_utils.jl"))
 
 using .Potentials
 using .FPSSEP
 using .SaveUtils
 
 if !RUN_SSEP_HEADLESS
-    include("plot_utils.jl")
+    include(joinpath(COMMON_DIR, "plot_utils.jl"))
     using .PlotUtils
     plot_sweep_runner = PlotUtils.plot_sweep
     plot_summary_runner = PlotUtils.plot_average_density_and_correlation
@@ -91,6 +95,8 @@ else
 end
 
 @everywhere const RUN_SSEP_HEADLESS_WORKER = $RUN_SSEP_HEADLESS
+@everywhere const RUN_SSEP_COMMON_DIR_WORKER = $COMMON_DIR
+@everywhere const RUN_SSEP_MODULE_DIR_WORKER = $SSEP_DIR
 @everywhere begin
     using JLD2
     using YAML
@@ -104,11 +110,11 @@ end
         using Plots
     end
     if myid() != 1
-        include("modules_ssep.jl")
+        include(joinpath(RUN_SSEP_MODULE_DIR_WORKER, "modules_ssep.jl"))
         using .Potentials
         using .FPSSEP
         if !run_ssep_headless
-            include("plot_utils.jl")
+            include(joinpath(RUN_SSEP_COMMON_DIR_WORKER, "plot_utils.jl"))
             using .PlotUtils
             global plot_sweep_runner = PlotUtils.plot_sweep
             global plot_summary_runner = PlotUtils.plot_average_density_and_correlation

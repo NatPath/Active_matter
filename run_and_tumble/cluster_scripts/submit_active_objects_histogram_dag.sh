@@ -21,9 +21,12 @@ Behavior:
   - Copies the config into a cluster/runtime variant that writes states into run_root/states/
   - Launches one active-object replica per DAG node with save tags:
       replica_<run_id>_r<idx>
-  - Launches one child aggregation node that exports:
+  - Launches one final aggregation node that exports:
       P_object1_ss(x), P_object2_ss(x), and P_distance_ss(d)
-    into run_root/histograms/
+    into run_root/histograms/ using whatever saved states finished successfully
+  - If you want to add repeats to an existing run_id, use:
+      cluster_scripts/submit_active_objects_add_states_to_histograms.sh
+    The --run_id flag here only names a fresh run; it is not a top-up mechanism.
   - Plotting is always disabled on the cluster path. Generate plots locally from
     the saved histogram artifacts if needed.
 EOF
@@ -33,6 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RUNNER_SCRIPT="${SCRIPT_DIR}/run_active_objects_from_config.sh"
 AGGREGATE_SCRIPT="${SCRIPT_DIR}/aggregate_active_object_histograms_from_tags.sh"
+DAG_NOTIFY_UTILS="${SCRIPT_DIR}/dag_notification_utils.sh"
 
 if [[ ! -f "${RUNNER_SCRIPT}" ]]; then
     echo "Missing active-object runner wrapper: ${RUNNER_SCRIPT}"
@@ -42,13 +46,19 @@ if [[ ! -f "${AGGREGATE_SCRIPT}" ]]; then
     echo "Missing histogram aggregate helper: ${AGGREGATE_SCRIPT}"
     exit 1
 fi
+if [[ ! -f "${DAG_NOTIFY_UTILS}" ]]; then
+    echo "Missing DAG notification utils: ${DAG_NOTIFY_UTILS}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${DAG_NOTIFY_UTILS}"
 
 config_path=""
 num_replicas=""
 n_sweeps_override=""
 run_id=""
 request_cpus="1"
-request_memory="2 GB"
+request_memory="5 GB"
 aggregate_request_cpus="1"
 tr_sweeps=""
 max_sweep=""
@@ -166,13 +176,6 @@ fi
 timestamp="$(date +%Y%m%d-%H%M%S)"
 config_stem="$(basename "${config_path}")"
 config_stem="${config_stem%.*}"
-if [[ -z "${run_id}" ]]; then
-    run_id="${config_stem}_nr${num_replicas}_hist_${timestamp}"
-fi
-if ! [[ "${run_id}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    echo "--run_id must match [A-Za-z0-9._-]+. Got '${run_id}'."
-    exit 1
-fi
 
 read_config_value() {
     local file_path="$1"
@@ -188,7 +191,48 @@ read_config_value() {
         }' "${file_path}" || true
 }
 
+motion_scheme="$(read_config_value "${config_path}" "object_motion_scheme")"
+refresh_sweeps_cfg="$(read_config_value "${config_path}" "object_refresh_sweeps")"
+memory_sweeps_cfg="$(read_config_value "${config_path}" "object_memory_sweeps")"
+hop_probability_cfg="$(read_config_value "${config_path}" "object_kappa")"
+motion_token=""
+case "${motion_scheme}" in
+    hard_refresh)
+        if [[ -n "${refresh_sweeps_cfg}" ]]; then
+            refresh_sweeps_token="${refresh_sweeps_cfg%.*}"
+            motion_token="_oref${refresh_sweeps_token}"
+        fi
+        ;;
+    exponential_memory)
+        if [[ -n "${memory_sweeps_cfg}" ]]; then
+            memory_sweeps_token="${memory_sweeps_cfg%.*}"
+            motion_token="_omem${memory_sweeps_token}"
+        fi
+        ;;
+    per_hop_probability|per_hop|hop_probability|hop_triggered|hop)
+        if [[ -n "${hop_probability_cfg}" ]]; then
+            hop_probability_token="${hop_probability_cfg//+/}"
+            motion_token="_ohop${hop_probability_token}"
+        fi
+        ;;
+esac
+
+if [[ -z "${run_id}" ]]; then
+    run_id="${config_stem}${motion_token}_nr${num_replicas}_hist_${timestamp}"
+fi
+if ! [[ "${run_id}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "--run_id must match [A-Za-z0-9._-]+. Got '${run_id}'."
+    exit 1
+fi
+
 run_root="${REPO_ROOT}/runs/active_objects/steady_state_histograms/${run_id}"
+if [[ -e "${run_root}" ]]; then
+    echo "Run root already exists: ${run_root}"
+    echo "submit_active_objects_histogram_dag.sh creates fresh runs only."
+    echo "To add repeats on top of an existing run, use:"
+    echo "  bash cluster_scripts/submit_active_objects_add_states_to_histograms.sh --run_id ${run_id} --nr <count> --ns <sweeps>"
+    exit 1
+fi
 effective_n_sweeps="${n_sweeps_override}"
 if [[ -n "${effective_n_sweeps}" && "${effective_n_sweeps}" =~ ^[0-9]+$ && "${tr_sweeps}" =~ ^-?[0-9]+$ ]]; then
     if (( tr_sweeps >= effective_n_sweeps )); then
@@ -340,7 +384,7 @@ EOF
         >> "${manifest}"
 done
 
-aggregate_arguments="${AGGREGATE_SCRIPT} --state_dir ${state_dir} --output_dir ${hist_dir} --num_replicas ${num_replicas} --replica_tag_prefix ${replica_tag_prefix} --save_tag aggregated_${run_id} --min_sweep ${tr_sweeps}"
+aggregate_arguments="${AGGREGATE_SCRIPT} --state_dir ${state_dir} --output_dir ${hist_dir} --save_tag aggregated_${run_id} --all_states_recursive --min_sweep ${tr_sweeps}"
 if [[ -n "${max_sweep}" ]]; then
     aggregate_arguments="${aggregate_arguments} --max_sweep ${max_sweep}"
 fi
@@ -361,11 +405,12 @@ batch_name = ${job_batch_name}
 queue
 EOF
 
-printf "JOB AGG %s\n" "${aggregate_submit_file}" >> "${dag_file}"
-printf "PARENT %s CHILD AGG\n" "${replica_job_ids[*]}" >> "${dag_file}"
+printf "FINAL AGG %s\n" "${aggregate_submit_file}" >> "${dag_file}"
 printf "aggregate,AGG,%s,%s,%s,%s,%s\n" \
     "${aggregate_submit_file}" "${aggregate_output_file}" "${aggregate_error_file}" "${aggregate_log_file}" "${aggregate_save_tag}" \
     >> "${manifest}"
+
+dag_append_post_notification_script "${dag_file}" "AGG" "${submit_dir}" "${log_dir}" "${run_root}" "${run_id}" "active_objects_histograms" "${REPO_ROOT}"
 
 cat > "${run_info}" <<EOF
 run_id=${run_id}
@@ -389,6 +434,7 @@ max_sweep=${max_sweep}
 no_plot=${no_plot}
 dag_file=${dag_file}
 aggregate_save_tag=${aggregate_save_tag}
+dag_notification_status_log=${DAG_NOTIFICATION_STATUS_LOG}
 EOF
 
 cluster_id=""

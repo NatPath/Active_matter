@@ -23,7 +23,7 @@ Options:
   --request_cpus <int>              Replica request_cpus
                                     (default: infer from target run_info or 1)
   --request_memory <value>          Replica/aggregate request_memory
-                                    (default: infer from target run_info or "2 GB")
+                                    (default: infer from target run_info or "5 GB")
   --aggregate_request_cpus <int>    Aggregate request_cpus (default: 1)
   --julia_num_procs_aggregate <int> Aggregate JULIA_NUM_PROCS_AGGREGATE (default: 1)
   --replica_retries <int>           DAG retry count for replica nodes (default: 2)
@@ -293,7 +293,7 @@ fi
 if [[ -z "${request_memory}" ]]; then
     request_memory="$(read_run_info_value "${run_info_path}" "request_memory")"
     if [[ -z "${request_memory}" ]]; then
-        request_memory="2 GB"
+        request_memory="5 GB"
     fi
 fi
 

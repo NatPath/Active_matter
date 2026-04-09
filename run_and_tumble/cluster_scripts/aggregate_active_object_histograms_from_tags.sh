@@ -8,6 +8,7 @@ Usage:
       --state_dir <path> \
       --output_dir <path> \
       --save_tag <tag> \
+      [--base_aggregate <path>] \
       [--num_replicas <int> --replica_tag_prefix <prefix>] \
       [--all_states_recursive] \
       [--min_sweep <int>] \
@@ -31,6 +32,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HISTOGRAM_SCRIPT="${REPO_ROOT}/utility_scripts/active_object_steady_state_histograms.jl"
 
+cluster_env_path="${CLUSTER_ENV_PATH:-${REPO_ROOT}/cluster_scripts/cluster_env.sh}"
+if [[ -f "${cluster_env_path}" ]]; then
+    # shellcheck disable=SC1090
+    source "${cluster_env_path}"
+fi
+
 if [[ ! -f "${HISTOGRAM_SCRIPT}" ]]; then
     echo "Missing histogram utility: ${HISTOGRAM_SCRIPT}"
     exit 1
@@ -38,6 +45,7 @@ fi
 
 state_dir=""
 output_dir=""
+base_aggregate=""
 num_replicas=""
 replica_tag_prefix=""
 save_tag=""
@@ -55,6 +63,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --output_dir)
             output_dir="${2:-}"
+            shift 2
+            ;;
+        --base_aggregate)
+            base_aggregate="${2:-}"
             shift 2
             ;;
         --num_replicas)
@@ -104,6 +116,10 @@ done
 if [[ -z "${state_dir}" || -z "${output_dir}" || -z "${save_tag}" ]]; then
     echo "Missing required arguments."
     usage
+    exit 1
+fi
+if [[ -n "${base_aggregate}" && ! -f "${base_aggregate}" ]]; then
+    echo "Base aggregate not found: ${base_aggregate}"
     exit 1
 fi
 
@@ -189,12 +205,28 @@ else
     done
 fi
 
-cmd=(julia --startup-file=no "${HISTOGRAM_SCRIPT}"
+JULIA_SETUP_SCRIPT="${JULIA_SETUP_SCRIPT:-${CLUSTER_JULIA_SETUP_SCRIPT:-}}"
+if [[ -n "${JULIA_SETUP_SCRIPT}" && -f "${JULIA_SETUP_SCRIPT}" ]]; then
+    # shellcheck disable=SC1090
+    source "${JULIA_SETUP_SCRIPT}"
+fi
+
+JULIA_BIN="${JULIA_BIN:-julia}"
+if ! command -v "${JULIA_BIN}" >/dev/null 2>&1; then
+    echo "Julia executable '${JULIA_BIN}' not found in PATH."
+    echo "Tried setup script: ${JULIA_SETUP_SCRIPT}"
+    exit 127
+fi
+
+cmd=("${JULIA_BIN}" --startup-file=no "${HISTOGRAM_SCRIPT}"
     --state_list "${state_list_file}"
     --output_dir "${output_dir}"
     --save_tag "${save_tag}"
     --min_sweep "${min_sweep}"
     --write_per_run)
+if [[ -n "${base_aggregate}" ]]; then
+    cmd+=(--base_aggregate "${base_aggregate}")
+fi
 if [[ -n "${max_sweep}" ]]; then
     cmd+=(--max_sweep "${max_sweep}")
 fi
@@ -212,4 +244,7 @@ else
 fi
 echo "Output dir: ${output_dir}"
 echo "Save tag: ${save_tag}"
+if [[ -n "${base_aggregate}" ]]; then
+    echo "Base aggregate: ${base_aggregate}"
+fi
 "${cmd[@]}"

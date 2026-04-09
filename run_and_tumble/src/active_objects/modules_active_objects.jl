@@ -12,6 +12,7 @@ module FPActiveObjects
 
     const HARD_REFRESH_SCHEME = "hard_refresh"
     const EXPONENTIAL_MEMORY_SCHEME = "exponential_memory"
+    const PER_HOP_PROBABILITY_SCHEME = "per_hop_probability"
 
     function normalize_object_motion_scheme(raw_scheme)
         scheme = lowercase(strip(String(raw_scheme)))
@@ -19,8 +20,10 @@ module FPActiveObjects
             return HARD_REFRESH_SCHEME
         elseif scheme in ("exponential_memory", "exponential", "ema", "ewma", "memory")
             return EXPONENTIAL_MEMORY_SCHEME
+        elseif scheme in ("per_hop_probability", "per_hop", "hop_probability", "hop_triggered", "hop")
+            return PER_HOP_PROBABILITY_SCHEME
         end
-        throw(ArgumentError("Unsupported object_motion_scheme: $raw_scheme. Use \"hard_refresh\" or \"exponential_memory\"."))
+        throw(ArgumentError("Unsupported object_motion_scheme: $raw_scheme. Use \"hard_refresh\", \"exponential_memory\", or \"per_hop_probability\"."))
     end
 
     mutable struct Param
@@ -118,6 +121,16 @@ module FPActiveObjects
     end
 
     object_memory_alpha(param::Param) = clamp(1.0 / max(param.object_memory_sweeps, 1.0), 0.0, 1.0)
+
+    function object_hop_probability_rate_scale(param::Param)
+        p_hop = Float64(param.object_kappa)
+        if !(0.0 <= p_hop < 1.0)
+            throw(ArgumentError("For object_motion_scheme=\"$(PER_HOP_PROBABILITY_SCHEME)\", object_kappa must satisfy 0 <= object_kappa < 1. Got $(param.object_kappa)."))
+        end
+        # Map a per-hop move probability p to an additive effective rate κ_eff so
+        # sweep-level hop counts can reuse the existing move sampler.
+        return -log1p(-p_hop)
+    end
 
     function bond_left_site_and_orientation_1d(first_site::Int, second_site::Int, L::Int)
         if mod1(first_site + 1, L) == second_site
@@ -320,12 +333,11 @@ module FPActiveObjects
         rand(rng) < (λ_left / λ_total) ? -1 : 1
     end
 
-    function apply_sampled_object_moves!(
+    function apply_proposed_object_moves!(
         state::State,
         param::Param,
         rng::AbstractRNG,
-        left_rates::AbstractVector{<:Real},
-        right_rates::AbstractVector{<:Real},
+        proposed_deltas::AbstractVector{<:Integer},
     )
         forcings = FPDiffusive.get_state_forcings!(state)
         n_objects = length(forcings)
@@ -334,11 +346,10 @@ module FPActiveObjects
         L = param.dims[1]
         current_left_sites = current_object_left_sites(forcings, L)
         occupied_left_sites = Set(current_left_sites)
-        proposed_deltas = [sample_object_delta(left_rates[idx], right_rates[idx], rng) for idx in 1:n_objects]
         accepted_deltas = zeros(Int, n_objects)
 
         for object_idx in randperm(rng, n_objects)
-            delta = proposed_deltas[object_idx]
+            delta = Int(proposed_deltas[object_idx])
             delta == 0 && continue
             current_left_site = current_left_sites[object_idx]
             target_left_site = mod1(current_left_site + delta, L)
@@ -353,6 +364,21 @@ module FPActiveObjects
         end
 
         return accepted_deltas
+    end
+
+    function apply_sampled_object_moves!(
+        state::State,
+        param::Param,
+        rng::AbstractRNG,
+        left_rates::AbstractVector{<:Real},
+        right_rates::AbstractVector{<:Real},
+    )
+        forcings = FPDiffusive.get_state_forcings!(state)
+        n_objects = length(forcings)
+        n_objects == 0 && return Int[]
+
+        proposed_deltas = [sample_object_delta(left_rates[idx], right_rates[idx], rng) for idx in 1:n_objects]
+        return apply_proposed_object_moves!(state, param, rng, proposed_deltas)
     end
 
     function apply_object_dynamics!(
@@ -384,13 +410,20 @@ module FPActiveObjects
                 fill!(stats[:window_reverse], 0.0)
                 stats[:refresh_age] = 0
             end
-        else
+        elseif param.object_motion_scheme == EXPONENTIAL_MEMORY_SCHEME
             α = object_memory_alpha(param)
             stats[:memory_forward] .= (1.0 - α) .* stats[:memory_forward] .+ α .* rightward_counts
             stats[:memory_reverse] .= (1.0 - α) .* stats[:memory_reverse] .+ α .* leftward_counts
             left_rates = param.object_D0 .+ param.object_kappa .* stats[:memory_forward]
             right_rates = param.object_D0 .+ param.object_kappa .* stats[:memory_reverse]
             move_deltas .= apply_sampled_object_moves!(state, param, rng, left_rates, right_rates)
+        elseif param.object_motion_scheme == PER_HOP_PROBABILITY_SCHEME
+            hop_rate_scale = object_hop_probability_rate_scale(param)
+            left_rates = param.object_D0 .+ hop_rate_scale .* rightward_counts
+            right_rates = param.object_D0 .+ hop_rate_scale .* leftward_counts
+            move_deltas .= apply_sampled_object_moves!(state, param, rng, left_rates, right_rates)
+        else
+            throw(ArgumentError("Unsupported object_motion_scheme stored in param: $(param.object_motion_scheme)"))
         end
 
         stats[:last_move_deltas] .= move_deltas

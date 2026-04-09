@@ -24,7 +24,7 @@ Options:
   --warmup_run_id <id>               Override warmup source via explicit warmup run_id
   --warmup_state_dir <path>          Override warmup source via explicit state directory
   --request_cpus <int>               Condor request_cpus for replica nodes (default: 1)
-  --request_memory <value>           Condor request_memory for replica/aggregate nodes (default: "2 GB")
+  --request_memory <value>           Condor request_memory for replica/aggregate nodes (default: "5 GB")
   --aggregate_request_cpus <int>     Condor request_cpus for aggregate nodes (default: 1)
   --julia_num_procs_aggregate <int>  JULIA_NUM_PROCS_AGGREGATE for aggregate nodes (default: 1)
   --replica_retries <int>            DAG retry count for replica nodes on transient failures
@@ -105,6 +105,13 @@ if [[ ! -f "${SPACING_UTILS}" ]]; then
     echo "Missing helper script: ${SPACING_UTILS}"
     exit 1
 fi
+DAG_NOTIFY_UTILS="${SCRIPT_DIR}/dag_notification_utils.sh"
+if [[ ! -f "${DAG_NOTIFY_UTILS}" ]]; then
+    echo "Missing DAG notification utils: ${DAG_NOTIFY_UTILS}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${DAG_NOTIFY_UTILS}"
 # shellcheck disable=SC1090
 source "${SPACING_UTILS}"
 
@@ -442,7 +449,7 @@ num_repeats=""
 warmup_run_id=""
 warmup_state_dir=""
 request_cpus="1"
-request_memory="2 GB"
+request_memory="5 GB"
 aggregate_request_cpus="1"
 julia_num_procs_aggregate="1"
 replica_retries="2"
@@ -1051,6 +1058,7 @@ done
 
 cat "${jobs_section_file}" >> "${dag_file}"
 cat "${deps_section_file}" >> "${dag_file}"
+dag_append_final_notification_node "${dag_file}" "${submit_dir}" "${log_dir}" "${job_root}" "${target_run_id}" "two_force_d_add_repeats" "${REPO_ROOT}"
 
 {
     echo "timestamp=${timestamp}"
@@ -1086,6 +1094,7 @@ cat "${deps_section_file}" >> "${dag_file}"
     echo "batch_name=${batch_name}"
     echo "job_root=${job_root}"
     echo "dag_file=${dag_file}"
+    echo "dag_notification_status_log=${DAG_NOTIFICATION_STATUS_LOG}"
     echo "manifest=${manifest}"
 } > "${job_info}"
 

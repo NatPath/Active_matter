@@ -2,9 +2,9 @@ using JLD2
 using ArgParse
 using Plots
 
-include("potentials.jl")
-include("modules_diffusive_no_activity.jl")
-include("plot_utils.jl")
+include(joinpath(@__DIR__, "src", "common", "potentials.jl"))
+include(joinpath(@__DIR__, "src", "diffusive", "modules_diffusive_no_activity.jl"))
+include(joinpath(@__DIR__, "src", "common", "plot_utils.jl"))
 
 using .PlotUtils
 

@@ -20,7 +20,7 @@ Options:
   --n_sweeps <int>                 Alias for --ns
   --mode <auto|production>         How to resolve --run_id (default: auto)
   --request_cpus <int>             Replica request_cpus (default: 1)
-  --request_memory <value>         Replica and aggregate request_memory (default: "2 GB")
+  --request_memory <value>         Replica and aggregate request_memory (default: "5 GB")
   --aggregate_request_cpus <int>   Aggregate request_cpus (default: 1)
   --batch_name <name>              Condor batch_name (default: auto)
   --job_label <label>              Optional label in the top-up batch token
@@ -52,6 +52,7 @@ fi
 RUNNER_SCRIPT="${SCRIPT_DIR}/run_ssep_from_config.sh"
 AGGREGATE_SCRIPT="${SCRIPT_DIR}/aggregate_ssep_topup_batch.sh"
 REGISTRY_FILE="${REPO_ROOT}/runs/ssep/single_center_bond/run_registry.csv"
+DAG_NOTIFY_UTILS="${SCRIPT_DIR}/dag_notification_utils.sh"
 
 if [[ ! -f "${RUNNER_SCRIPT}" ]]; then
     echo "Missing runner script: ${RUNNER_SCRIPT}"
@@ -61,6 +62,12 @@ if [[ ! -f "${AGGREGATE_SCRIPT}" ]]; then
     echo "Missing aggregate helper: ${AGGREGATE_SCRIPT}"
     exit 1
 fi
+if [[ ! -f "${DAG_NOTIFY_UTILS}" ]]; then
+    echo "Missing DAG notification utils: ${DAG_NOTIFY_UTILS}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${DAG_NOTIFY_UTILS}"
 
 read_run_info_value() {
     local run_info_path="$1"
@@ -259,7 +266,7 @@ mode="auto"
 num_replicas=""
 n_sweeps=""
 request_cpus="1"
-request_memory="2 GB"
+request_memory="5 GB"
 aggregate_request_cpus="1"
 batch_name=""
 job_label=""
@@ -484,6 +491,7 @@ printf "PARENT %s CHILD AGG\n" "${replica_job_ids[*]}" >> "${dag_file}"
 printf "aggregate,AGG,%s,%s,%s,%s,%s,%s\n" \
     "${aggregate_submit_file}" "${aggregate_output_file}" "${aggregate_error_file}" "${aggregate_log_file}" "${aggregate_run_id}" "${current_aggregate}" \
     >> "${manifest}"
+dag_append_final_notification_node "${dag_file}" "${submit_dir}" "${log_dir}" "${job_root}" "${run_id}" "ssep_add_states_to_aggregate" "${REPO_ROOT}"
 
 cluster_id=""
 if [[ "${no_submit}" == "true" ]]; then
@@ -521,6 +529,7 @@ raw_state_dir=${raw_state_dir}
 archive_dir=${archive_dir}
 manifest=${manifest}
 dag_file=${dag_file}
+dag_notification_status_log=${DAG_NOTIFICATION_STATUS_LOG}
 cluster_id=${cluster_id}
 EOF
 

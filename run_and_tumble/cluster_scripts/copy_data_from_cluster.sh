@@ -8,7 +8,7 @@ Usage:
 
 Core options:
   --mode <warmup|production>              Run mode for --list/--latest (for --run_id, registry mode is used)
-  --run_id <id>                           Exact run_id to fetch (searched in both registries)
+  --run_id <id>                           Exact run_id to fetch (searched in both registry roots)
   --latest                                Fetch latest run_id in selected run family (can combine with filters)
   --list                                  List run registry entries and exit
   --tail <N>                              Number of listed entries (default: 30)
@@ -24,9 +24,11 @@ Run filters for --list / --latest:
   --d_step <int>                          Match d_step column (two_force_d only)
 
 Paths / connection:
-  --remote_user <name>                    SSH user (default: nativmr)
-  --remote_host <host>                    SSH host (default: tech-ui02.hep.technion.ac.il)
-  --remote_root <path>                    Cluster repo root (default: /storage/ph_kafri/nativmr/run_and_tumble)
+  --remote_user <name>                    SSH user (default: CLUSTER_REMOTE_USER)
+  --remote_host <host>                    SSH host (default: CLUSTER_REMOTE_HOST)
+  --remote_root <path>                    Primary cluster root (default: CLUSTER_DATA_ROOT)
+  --secondary_remote_root <path>          Secondary cluster root checked for --run_id
+                                          (default: CLUSTER_CODE_ROOT)
   --local_root <path>                     Local root for downloaded data (default: <repo>/cluster_results)
   --sync_scope <auto|aggregation|full>    Data sync scope:
                                           auto (default): if run_id looks aggregated (_nr...), fetch aggregated artifacts only
@@ -59,6 +61,9 @@ Examples:
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
   bash copy_data_from_cluster.sh --run_id two_force_warmup_production_L256_rho100_..._production_20260226-032016 --aggregated_saved_only --plot
+
+Notes:
+  - If present, cluster_scripts/cluster_env.sh is sourced automatically for local defaults.
 USAGE_EOF
 }
 
@@ -70,6 +75,12 @@ elif [[ -f "${SCRIPT_DIR}/../run_diffusive_no_activity.jl" ]]; then
 else
     echo "Could not locate repo root from script location: ${SCRIPT_DIR}"
     exit 1
+fi
+
+cluster_env_path="${CLUSTER_ENV_PATH:-${REPO_ROOT}/cluster_scripts/cluster_env.sh}"
+if [[ -f "${cluster_env_path}" ]]; then
+    # shellcheck disable=SC1090
+    source "${cluster_env_path}"
 fi
 
 mode="warmup"
@@ -87,9 +98,10 @@ filter_d_min=""
 filter_d_max=""
 filter_d_step=""
 
-remote_user="${REMOTE_USER:-nativmr}"
-remote_host="${REMOTE_HOST:-tech-ui02.hep.technion.ac.il}"
-remote_root="${REMOTE_ROOT:-/storage/ph_kafri/nativmr/run_and_tumble}"
+remote_user="${REMOTE_USER:-${CLUSTER_REMOTE_USER:-}}"
+remote_host="${REMOTE_HOST:-${CLUSTER_REMOTE_HOST:-}}"
+remote_root="${REMOTE_ROOT:-${CLUSTER_DATA_ROOT:-}}"
+secondary_remote_root="${SECONDARY_REMOTE_ROOT:-${CLUSTER_CODE_ROOT:-}}"
 local_root="${LOCAL_RESULTS_ROOT:-${REPO_ROOT}/cluster_results}"
 sync_scope="auto"
 
@@ -223,6 +235,10 @@ while [[ $# -gt 0 ]]; do
             remote_root="${2:-}"
             shift 2
             ;;
+        --secondary_remote_root)
+            secondary_remote_root="${2:-}"
+            shift 2
+            ;;
         --local_root)
             local_root="${2:-}"
             shift 2
@@ -332,17 +348,31 @@ if [[ "${aggregated_saved_only}" == "true" ]]; then
     fi
 fi
 
+missing_settings=()
+[[ -n "${remote_user}" ]] || missing_settings+=("--remote_user or CLUSTER_REMOTE_USER")
+[[ -n "${remote_host}" ]] || missing_settings+=("--remote_host or CLUSTER_REMOTE_HOST")
+[[ -n "${remote_root}" ]] || missing_settings+=("--remote_root or CLUSTER_DATA_ROOT")
+if (( ${#missing_settings[@]} > 0 )); then
+    echo "Missing cluster connection settings:"
+    printf '  %s\n' "${missing_settings[@]}"
+    echo "Set them via flags, environment variables, or cluster_scripts/cluster_env.sh."
+    echo "Use cluster_scripts/cluster_env.example.sh as a template."
+    exit 1
+fi
+
 trap cleanup_ssh_master EXIT
 open_ssh_master
 
 sync_registry() {
     local family="$1"
+    local remote_root_base="$2"
+    local cache_label="$3"
     local registry_rel="${REGISTRY_REL_MAP[$family]}"
-    local local_registry="${local_root}/${registry_rel}"
+    local local_registry="${local_root}/.registry_cache/${cache_label}/${registry_rel}"
 
     mkdir -p "$(dirname "${local_registry}")"
-    echo "Syncing ${family} run registry from cluster..." >&2
-    if scp_with_master "${remote_user}@${remote_host}:${remote_root}/${registry_rel}" "${local_registry}"; then
+    echo "Syncing ${family} run registry from cluster root ${remote_root_base}..." >&2
+    if scp_with_master "${remote_user}@${remote_host}:${remote_root_base}/${registry_rel}" "${local_registry}"; then
         echo "${local_registry}"
         return 0
     fi
@@ -546,6 +576,13 @@ write_filtered_registry() {
 resolved_family=""
 resolved_registry=""
 registry_row=""
+resolved_remote_root=""
+
+declare -a SEARCH_REMOTE_ROOTS=()
+SEARCH_REMOTE_ROOTS+=("${remote_root}")
+if [[ -n "${secondary_remote_root}" && "${secondary_remote_root}" != "${remote_root}" ]]; then
+    SEARCH_REMOTE_ROOTS+=("${secondary_remote_root}")
+fi
 
 if [[ -z "${run_id}" ]]; then
     if [[ "${latest}" != "true" && "${list_only}" != "true" ]]; then
@@ -564,10 +601,11 @@ if [[ -z "${run_id}" ]]; then
         fi
     fi
 
-    if ! resolved_registry="$(sync_registry "${selected_family}")"; then
+    if ! resolved_registry="$(sync_registry "${selected_family}" "${remote_root}" "primary")"; then
         echo "Could not access registry for run family '${selected_family}'."
         exit 1
     fi
+    resolved_remote_root="${remote_root}"
 
     if [[ "${list_only}" == "true" ]]; then
         filtered="$(mktemp)"
@@ -597,38 +635,43 @@ else
     found_count=0
     found_families=()
     found_registries=()
+    found_roots=()
 
-    for family in "${ALL_FAMILIES[@]}"; do
-        if registry_path="$(sync_registry "${family}")"; then
-            row="$(find_row_by_run_id "${registry_path}" "${run_id}")"
-            if [[ -n "${row}" ]]; then
-                found_count=$((found_count + 1))
-                found_families+=("${family}")
-                found_registries+=("${registry_path}")
-                resolved_family="${family}"
-                resolved_registry="${registry_path}"
-                registry_row="${row}"
+    for root_idx in "${!SEARCH_REMOTE_ROOTS[@]}"; do
+        registry_root="${SEARCH_REMOTE_ROOTS[$root_idx]}"
+        cache_label="root$((root_idx + 1))"
+        for family in "${ALL_FAMILIES[@]}"; do
+            if registry_path="$(sync_registry "${family}" "${registry_root}" "${cache_label}")"; then
+                row="$(find_row_by_run_id "${registry_path}" "${run_id}")"
+                if [[ -n "${row}" ]]; then
+                    if (( found_count > 0 )) && [[ "${family}" == "${resolved_family}" ]]; then
+                        continue
+                    fi
+                    found_count=$((found_count + 1))
+                    found_families+=("${family}")
+                    found_registries+=("${registry_path}")
+                    found_roots+=("${registry_root}")
+                    resolved_family="${family}"
+                    resolved_registry="${registry_path}"
+                    resolved_remote_root="${registry_root}"
+                    registry_row="${row}"
+                fi
             fi
-        fi
+        done
     done
 
     if (( found_count == 0 )); then
-        two_force_registry="${local_root}/${REGISTRY_REL_MAP[two_force_d]}"
-        single_registry="${local_root}/${REGISTRY_REL_MAP[single_origin_bond]}"
-        ssep_registry="${local_root}/${REGISTRY_REL_MAP[ssep]}"
-        active_objects_registry="${local_root}/${REGISTRY_REL_MAP[active_objects]}"
-        echo "run_id '${run_id}' not found in available registries:"
-        echo "  ${two_force_registry}"
-        echo "  ${single_registry}"
-        echo "  ${ssep_registry}"
-        echo "  ${active_objects_registry}"
+        echo "run_id '${run_id}' not found in available registries under:"
+        for registry_root in "${SEARCH_REMOTE_ROOTS[@]}"; do
+            echo "  ${registry_root}"
+        done
         exit 1
     fi
 
     if (( found_count > 1 )); then
         echo "run_id '${run_id}' was found in multiple registries, cannot disambiguate automatically:"
         for idx in "${!found_families[@]}"; do
-            echo "  family=${found_families[$idx]} registry=${found_registries[$idx]}"
+            echo "  family=${found_families[$idx]} root=${found_roots[$idx]} registry=${found_registries[$idx]}"
         done
         echo "Use a unique run_id or run with --run_family plus --latest/--list to select a specific registry."
         exit 1
@@ -658,7 +701,7 @@ mode="${reg_mode}"
 if [[ -n "${reg_run_root}" ]]; then
     remote_run_dir="${reg_run_root}"
 else
-    remote_run_dir="${remote_root}/${RUN_ROOT_REL_MAP[$resolved_family]}/${mode}/${run_id}"
+    remote_run_dir="${resolved_remote_root}/${RUN_ROOT_REL_MAP[$resolved_family]}/${mode}/${run_id}"
 fi
 
 local_run_dir="${local_root}/${RUN_ROOT_REL_MAP[$resolved_family]}/${mode}/${run_id}"
@@ -687,7 +730,7 @@ aggregation_glob="*id-aggregated_*.jld2"
 if [[ "${state_glob_explicit}" == "true" ]]; then
     aggregation_glob="${state_glob}"
 elif [[ "${resolved_family}" == "active_objects" && -n "${reg_aggregate_run_id:-}" ]]; then
-    aggregation_glob="${reg_aggregate_run_id}_steady_state_hist.jld2"
+    aggregation_glob="${reg_aggregate_run_id}*_steady_state_hist.jld2"
 elif [[ "${resolved_family}" == "ssep" && -n "${reg_aggregate_run_id:-}" ]]; then
     aggregation_glob="*id-${reg_aggregate_run_id}.jld2"
 elif [[ -n "${state_glob}" ]]; then
@@ -801,8 +844,8 @@ else
 fi
 
 if [[ "${plot_after_sync}" == "true" ]]; then
-    julia_setup="${JULIA_SETUP_SCRIPT:-/Local/ph_kafri/julia-1.7.2/bin/setup.sh}"
-    if [[ -f "${julia_setup}" ]]; then
+    julia_setup="${JULIA_SETUP_SCRIPT:-${CLUSTER_JULIA_SETUP_SCRIPT:-}}"
+    if [[ -n "${julia_setup}" && -f "${julia_setup}" ]]; then
         # shellcheck disable=SC1090
         source "${julia_setup}"
     fi

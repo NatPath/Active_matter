@@ -1,7 +1,7 @@
 using LinearAlgebra
 using Statistics
 using ProgressMeter
-include("potentials.jl")
+include(joinpath(@__DIR__, "..", "common", "potentials.jl"))
 
 module FPSSEP
     using ..Potentials: AbstractPotential, BondForce, bondforce_update!, potential_update!, setPotential, setBondForce

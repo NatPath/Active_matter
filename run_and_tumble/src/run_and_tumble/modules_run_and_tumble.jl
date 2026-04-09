@@ -2,9 +2,9 @@ using Statistics
 using FFTW
 using LsqFit
 # using BenchmarkTools
-include("plot_utils.jl") 
+include(joinpath(@__DIR__, "..", "common", "plot_utils.jl"))
 using .PlotUtils
-include("potentials.jl")
+include(joinpath(@__DIR__, "..", "common", "potentials.jl"))
 
 #Wrap everything with a module to allow redefinition of type
 module FP

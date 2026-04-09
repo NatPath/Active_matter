@@ -11,7 +11,7 @@ Required:
   --mode/--L/--rho    required unless --continue_run_id or --warmup_run_id is provided (warmup_production always requires them)
 
 Optional:
-  --request_memory    Condor request_memory value (e.g. "4 GB")
+  --request_memory    Condor request_memory value (e.g. "5 GB")
   --request_cpus      Condor request_cpus value
   --num_replicas      number of independent replicas to run and aggregate per job (default: 1)
   --replica_strategy  replica execution strategy on cluster: mp or dag (default: mp)
@@ -55,6 +55,13 @@ if [[ ! -f "${WARMUP_SCRIPT}" || ! -f "${PRODUCTION_SCRIPT}" ]]; then
     echo "Could not find single-origin-bond submit scripts in ${SCRIPT_DIR}"
     exit 1
 fi
+DAG_NOTIFY_UTILS="${SCRIPT_DIR}/dag_notification_utils.sh"
+if [[ ! -f "${DAG_NOTIFY_UTILS}" ]]; then
+    echo "Missing DAG notification utils: ${DAG_NOTIFY_UTILS}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${DAG_NOTIFY_UTILS}"
 
 registry_file="${REPO_ROOT}/runs/single_origin_bond/run_registry.csv"
 
@@ -127,7 +134,7 @@ submit_chained_warmup_production() {
     echo "Preparing chained warmup stage (single process, NO_SUBMIT)..."
     local warmup_output
     warmup_output="$(
-        NO_SUBMIT=true "${warmup_cmd[@]}"
+        NO_SUBMIT=true NO_DAG_NOTIFICATION=true "${warmup_cmd[@]}"
     )"
     printf "%s\n" "${warmup_output}"
 
@@ -171,7 +178,7 @@ submit_chained_warmup_production() {
     echo "Preparing chained production stage (NO_SUBMIT, deferred warmup state lookup)..."
     local production_output
     production_output="$(
-        NO_SUBMIT=true DEFER_INITIAL_STATE_LOOKUP=true "${production_cmd[@]}"
+        NO_SUBMIT=true NO_DAG_NOTIFICATION=true DEFER_INITIAL_STATE_LOOKUP=true "${production_cmd[@]}"
     )"
     printf "%s\n" "${production_output}"
 
@@ -213,6 +220,8 @@ submit_chained_warmup_production() {
         echo "PARENT WARMUP CHILD PRODUCTION"
     } > "${chain_dag_file}"
 
+    dag_append_final_notification_node "${chain_dag_file}" "${chain_submit_dir}" "${chain_log_dir}" "${chain_root}" "${chain_run_id}" "single_origin_bond_warmup_production" "${REPO_ROOT}"
+
     local chain_cluster_id
     if [[ "${chain_no_submit}" == "true" ]]; then
         echo "NO_SUBMIT=true; generated chained DAG but not submitting: ${chain_dag_file}"
@@ -243,6 +252,7 @@ warmup_state_dir=${warmup_state_dir_local}
 production_run_id=${production_run_id_local}
 production_run_info=${production_run_info}
 chain_dag=${chain_dag_file}
+dag_notification_status_log=${DAG_NOTIFICATION_STATUS_LOG}
 chain_cluster_id=${chain_cluster_id}
 EOF
 
@@ -555,7 +565,7 @@ elif (( num_replicas > 1 )); then
 fi
 
 request_cpus_effective="${REQUEST_CPUS:-1}"
-request_memory_effective="${REQUEST_MEMORY:-2 GB}"
+request_memory_effective="${REQUEST_MEMORY:-5 GB}"
 
 if [[ "${mode}" == "production" ]]; then
     if [[ -n "${continue_run_id}" ]]; then

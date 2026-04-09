@@ -72,9 +72,14 @@ using JLD2
 using YAML
 using ArgParse
 
-include("modules_diffusive_no_activity.jl")
-include("modules_active_objects.jl")
-include("save_utils.jl")
+const SRC_ROOT = joinpath(@__DIR__, "src")
+const COMMON_DIR = joinpath(SRC_ROOT, "common")
+const DIFFUSIVE_DIR = joinpath(SRC_ROOT, "diffusive")
+const ACTIVE_OBJECTS_DIR = joinpath(SRC_ROOT, "active_objects")
+
+include(joinpath(DIFFUSIVE_DIR, "modules_diffusive_no_activity.jl"))
+include(joinpath(ACTIVE_OBJECTS_DIR, "modules_active_objects.jl"))
+include(joinpath(COMMON_DIR, "save_utils.jl"))
 
 using .Potentials
 using .FPDiffusive
@@ -82,7 +87,7 @@ using .FPActiveObjects
 using .SaveUtils
 
 if !RUN_ACTIVE_OBJECTS_HEADLESS
-    include("plot_utils.jl")
+    include(joinpath(COMMON_DIR, "plot_utils.jl"))
     using .PlotUtils
 end
 
@@ -287,6 +292,7 @@ function inferred_bond_indices_list(params, defaults, dim_num::Int, L::Int)
     if requested_force_count == 2 && has_distance
         d_raw = haskey(params, "distance_between_forces") ? params["distance_between_forces"] : params["forcing_distance_d"]
         d = mod(Int(round(Float64(d_raw))), L)
+        d <= L - 2 || error("For two inferred active-object bonds, forcing_distance_d must satisfy 0 <= d <= L - 2. Got d=$(d) for L=$(L).")
         left_site = if haskey(params, "forcing_base_site")
             mod1(Int(round(Float64(params["forcing_base_site"]))), L)
         else
@@ -568,6 +574,8 @@ function active_object_filename_suffix(param)
         "obj-hr"
     elseif scheme_raw == FPActiveObjects.EXPONENTIAL_MEMORY_SCHEME
         "obj-em"
+    elseif scheme_raw == FPActiveObjects.PER_HOP_PROBABILITY_SCHEME
+        "obj-hop"
     else
         "obj-" * sanitize_filename_token(scheme_raw)
     end

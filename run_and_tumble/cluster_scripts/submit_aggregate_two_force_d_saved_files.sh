@@ -36,7 +36,7 @@ Aggregation options (forwarded to aggregate_two_force_d_saved_files.sh):
 
 Submit options:
   --request_cpus <int>             Condor request_cpus (default: 1)
-  --request_memory <value>         Condor request_memory (default: "2 GB")
+  --request_memory <value>         Condor request_memory (default: "5 GB")
   --julia_num_procs_aggregate <n>  sets JULIA_NUM_PROCS_AGGREGATE in job env (default: 1)
   --batch_name <name>              Condor batch_name (default: auto)
   --no_submit                      generate files only; do not call condor_submit
@@ -87,7 +87,7 @@ dry_run="false"
 keep_going="false"
 
 request_cpus="1"
-request_memory="2 GB"
+request_memory="5 GB"
 julia_num_procs_aggregate="1"
 batch_name=""
 no_submit="false"

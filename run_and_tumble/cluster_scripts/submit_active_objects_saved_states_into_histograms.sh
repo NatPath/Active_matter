@@ -13,7 +13,7 @@ Options:
   --tr <int>                     Override histogram thermalization cutoff
   --max_sweep <int>              Override histogram max_sweep
   --request_cpus <int>           Condor request_cpus (default: 1)
-  --request_memory <value>       Condor request_memory (default: "2 GB")
+  --request_memory <value>       Condor request_memory (default: "5 GB")
   --batch_name <name>            Condor batch_name (default: auto)
   --job_label <label>            Optional label in the submit token
   --no_submit                    Generate files only; do not call condor_submit
@@ -68,7 +68,7 @@ run_id=""
 tr_sweeps=""
 max_sweep=""
 request_cpus="1"
-request_memory="2 GB"
+request_memory="5 GB"
 batch_name=""
 job_label=""
 no_submit="false"

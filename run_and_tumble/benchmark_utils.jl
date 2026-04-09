@@ -1,6 +1,6 @@
 using BenchmarkTools
 using Profile
-include("modules_run_and_tumble.jl")
+include(joinpath(@__DIR__, "src", "run_and_tumble", "modules_run_and_tumble.jl"))
 using .FP
 
 """
