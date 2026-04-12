@@ -29,6 +29,22 @@ const SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME = "symmetric_normalized"
 const INDEPENDENT_CORRELATION_BASELINE_MODEL = :independent
 const SSEP_CORRELATION_BASELINE_MODEL = :ssep
 
+@inline function directional_density_pair(state)
+    if !hasfield(typeof(state), :ρ₊) || !hasfield(typeof(state), :ρ₋)
+        return nothing
+    end
+    ρ₊ = getfield(state, :ρ₊)
+    ρ₋ = getfield(state, :ρ₋)
+    if isnothing(ρ₊) || isnothing(ρ₋)
+        return nothing
+    end
+    return ρ₊, ρ₋
+end
+
+@inline function has_directional_densities(state)
+    return directional_density_pair(state) !== nothing
+end
+
 @inline function normalized_forcing_rate_scheme_for_plot(param)
     if !hasfield(typeof(param), :forcing_rate_scheme)
         return LEGACY_FORCING_RATE_SCHEME
@@ -1771,7 +1787,8 @@ end
 function plot_density(density, param, state; title="Density", show_directions=false)
     dim_num = length(size(density))
     if dim_num==1
-        if !show_directions
+        directional_pair = directional_density_pair(state)
+        if !show_directions || directional_pair === nothing
             # Original plotting code
             x_range = 1:param.dims[1]
             # p = plot(x_range, density, 
@@ -1797,6 +1814,7 @@ function plot_density(density, param, state; title="Density", show_directions=fa
                   linestyle=:dash,
                   legend=:outerright)
         else
+            ρ₊, ρ₋ = directional_pair
             # Create subplot with total density, right-moving and left-moving particles
             x_range = 1:param.dims[1]
             p1 = plot(x_range, density, 
@@ -1804,13 +1822,13 @@ function plot_density(density, param, state; title="Density", show_directions=fa
                      xlabel="Position", ylabel="Density",
                      legend=false, lw=2, seriestype=:scatter)
             
-            p2 = plot(x_range, state.ρ₊,
+            p2 = plot(x_range, ρ₊,
                      title="Right-moving (ρ₊)", 
                      xlabel="Position", ylabel="Density",
                      legend=false, lw=2, seriestype=:scatter,
                      color=:red)
             
-            p3 = plot(x_range, state.ρ₋,
+            p3 = plot(x_range, ρ₋,
                      title="Left-moving (ρ₋)", 
                      xlabel="Position", ylabel="Density",
                      legend=false, lw=2, seriestype=:scatter,
@@ -2351,6 +2369,19 @@ end
 
 function plot_directional_densities(state, param; title="Average Directional Densities")
     x_range = 1:param.dims[1]
+    directional_pair = directional_density_pair(state)
+    if directional_pair === nothing
+        p = plot(
+            title="$(title) (unavailable)",
+            xlabel="Position",
+            ylabel="Density",
+            legend=:outerright,
+            size=(1000,400)
+        )
+        plot!(p, x_range, state.ρ_avg, label="Density", color=:blue, lw=2, marker=:circle, markersize=4)
+        return p
+    end
+    ρ₊, ρ₋ = directional_pair
     
     # Create the plot with both densities
     p = plot(
@@ -2362,8 +2393,8 @@ function plot_directional_densities(state, param; title="Average Directional Den
     )
     
     # Normalize the densities
-    ρ₊_avg = state.ρ₊ / sum(state.ρ₊)
-    ρ₋_avg = state.ρ₋ / sum(state.ρ₋)
+    ρ₊_avg = ρ₊ / sum(ρ₊)
+    ρ₋_avg = ρ₋ / sum(ρ₋)
     
     # Plot right-moving particles
     plot!(p, x_range, ρ₊_avg,
@@ -2397,9 +2428,22 @@ function plot_directional_densities(state, param; title="Average Directional Den
 end
 function plot_magnetization(state, param; title="Average Magnetization")
     x_range = 1:param.dims[1]
+    directional_pair = directional_density_pair(state)
+    if directional_pair === nothing
+        return plot(
+            x_range,
+            zeros(length(x_range)),
+            title="$(title) (unavailable)",
+            xlabel="Position",
+            ylabel="Magnetization",
+            legend=false,
+            size=(1000,400)
+        )
+    end
+    ρ₊, ρ₋ = directional_pair
     
     # Calculate magnetization (ρ₊ - ρ₋)/(ρ₊ + ρ₋)
-    magnetization = (state.ρ₊ - state.ρ₋) ./ (state.ρ₊ + state.ρ₋)
+    magnetization = (ρ₊ - ρ₋) ./ (ρ₊ + ρ₋)
     
     # Create the plot
     p = plot(
@@ -2452,18 +2496,19 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
 
         # Show visualization at specified times
         if frame in show_times
-            if show_directions
+            if show_directions && has_directional_densities(state)
                 # Create two subplots side by side
                 p1 = plot(title="Particle Densities by Direction",
                         xlabel="Position", ylabel="Density")
                 
                 # Plot right-moving particles
-                plot!(p1, 1:param.dims[1], state.ρ₊, 
+                ρ₊, ρ₋ = directional_density_pair(state)
+                plot!(p1, 1:param.dims[1], ρ₊,
                     label="Right-moving", color=:red, 
                     marker=:circle, markersize=4)
                 
                 # Plot left-moving particles on the same graph
-                plot!(p1, 1:param.dims[1], state.ρ₋, 
+                plot!(p1, 1:param.dims[1], ρ₋,
                     label="Left-moving", color=:blue, 
                     marker=:circle, markersize=4)
                 
@@ -2488,7 +2533,7 @@ function make_movie!(state, param, n_frame, rng, file_name, in_fps;
         end
         
         # For the animation frame
-        if show_directions
+        if show_directions && has_directional_densities(state)
             # ... existing show_directions plotting code ...
         else
             p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")

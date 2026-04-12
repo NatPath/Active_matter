@@ -12,7 +12,7 @@ Required:
 Optional:
   --rho <float>               Density rho0 for the run batch (default: 0.5)
   --run_id <id>               Explicit run id for the batch
-  --request_memory <value>    Replica and aggregate request_memory (default: "2 GB")
+  --request_memory <value>    Replica and aggregate request_memory (default: "5 GB")
   --request_cpus <int>        Replica request_cpus (default: 1)
   --aggregate_request_cpus    Aggregate request_cpus (default: 1)
   --no_submit                 Generate files only; do not call condor_submit_dag
@@ -44,6 +44,7 @@ fi
 RUNNER_SCRIPT="${SCRIPT_DIR}/run_ssep_from_config.sh"
 AGGREGATE_SCRIPT="${SCRIPT_DIR}/aggregate_ssep_replicas_from_tags.sh"
 SOURCE_CONFIG_PATH="${REPO_ROOT}/configuration_files/ssep_ctmc_single_center_bond_L256_collapse_template.yaml"
+DAG_NOTIFY_UTILS="${SCRIPT_DIR}/dag_notification_utils.sh"
 
 if [[ ! -f "${RUNNER_SCRIPT}" ]]; then
     echo "Missing runner script: ${RUNNER_SCRIPT}"
@@ -57,6 +58,12 @@ if [[ ! -f "${SOURCE_CONFIG_PATH}" ]]; then
     echo "Missing source config: ${SOURCE_CONFIG_PATH}"
     exit 1
 fi
+if [[ ! -f "${DAG_NOTIFY_UTILS}" ]]; then
+    echo "Missing DAG notification utils: ${DAG_NOTIFY_UTILS}"
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "${DAG_NOTIFY_UTILS}"
 
 slugify() {
     printf "%s" "$1" | sed -E 's/[^A-Za-z0-9._-]+/_/g'
@@ -71,7 +78,7 @@ ensure_cluster_shared_dir_permissions() {
 num_replicas=""
 rho="0.5"
 run_id=""
-request_memory="2 GB"
+request_memory="5 GB"
 request_cpus="1"
 aggregate_request_cpus="1"
 no_submit="${NO_SUBMIT:-false}"
@@ -269,6 +276,7 @@ printf "PARENT %s CHILD AGG\n" "${replica_job_ids[*]}" >> "${dag_file}"
 printf "aggregate,AGG,%s,%s,%s,%s,%s\n" \
     "${aggregate_submit_file}" "${aggregate_output_file}" "${aggregate_error_file}" "${aggregate_log_file}" "${aggregate_run_id}" \
     >> "${manifest}"
+dag_append_final_notification_node "${dag_file}" "${submit_dir}" "${log_dir}" "${run_root}" "${run_id}" "ssep_single_center_bond_production" "${REPO_ROOT}"
 
 cluster_id=""
 if [[ "${no_submit}" == "true" ]]; then
@@ -311,6 +319,7 @@ dag_file=${dag_file}
 manifest=${manifest}
 replica_tag_prefix=${replica_tag_prefix}
 aggregate_run_id=${aggregate_run_id}
+dag_notification_status_log=${DAG_NOTIFICATION_STATUS_LOG}
 cluster_id=${cluster_id}
 correlation_cut_offsets=8,16,32,64,128
 EOF

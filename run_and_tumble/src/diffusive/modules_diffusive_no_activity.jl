@@ -91,19 +91,80 @@ module FPDiffusive
         return LEGACY_FORCING_RATE_SCHEME
     end
 
-    mutable struct Particle{D}
-        position::NTuple{D,Int64}
+    struct Particle{D,I<:Signed}
+        position::NTuple{D,I}
     end
 
-    function setParticle(sys_params,rng; ic="random",ic_specific=[])
+    @inline function particle_position_type(particle)
+        return typeof(particle.position[1])
+    end
+
+    function particle_position_type_from_particles(particles, fallback::Type{<:Signed}=Int32)
+        if isempty(particles)
+            return fallback
+        end
+        raw_position = getfield(first(particles), :position)
+        if isempty(raw_position)
+            return fallback
+        end
+        candidate = typeof(raw_position[1])
+        return candidate <: Signed ? candidate : fallback
+    end
+
+    @inline function convert_position_tuple(raw_position, ::Type{I}, dim_num::Int) where {I<:Signed}
+        return ntuple(i -> convert(I, Int(raw_position[i])), dim_num)
+    end
+
+    function loaded_object_field(obj, field_name::Symbol)
+        if hasfield(typeof(obj), field_name)
+            return getfield(obj, field_name)
+        end
+        if hasfield(typeof(obj), :fields)
+            field_names = Tuple(typeof(obj).parameters[2])
+            idx = findfirst(==(field_name), field_names)
+            idx === nothing && error("Loaded object of type $(typeof(obj)) does not contain field $(field_name).")
+            return getfield(obj, :fields)[idx]
+        end
+        error("Unsupported object type $(typeof(obj)); cannot read field $(field_name).")
+    end
+
+    @inline function move_particle(particle::Particle{D,I}, new_position) where {D,I<:Signed}
+        return Particle{D,I}(convert_position_tuple(new_position, I, D))
+    end
+
+    Base.convert(::Type{Particle{D}}, x) where {D} =
+        Particle{D,Int32}(convert_position_tuple(loaded_object_field(x, :position), Int32, D))
+
+    function convert_particles(particles, ::Type{I}, dim_num::Int) where {I<:Signed}
+        converted = Vector{Particle{dim_num,I}}(undef, length(particles))
+        for idx in eachindex(particles)
+            raw_position = loaded_object_field(particles[idx], :position)
+            converted[idx] = Particle{dim_num,I}(convert_position_tuple(raw_position, I, dim_num))
+        end
+        return converted
+    end
+
+    function convert_density_array(arr::AbstractArray{<:Integer,N}, ::Type{T}) where {N,T<:Signed}
+        converted = Array{T,N}(undef, size(arr))
+        @inbounds for idx in eachindex(arr)
+            converted[idx] = convert(T, arr[idx])
+        end
+        return converted
+    end
+
+    @inline function has_directional_densities(state)
+        return !(getfield(state, :ρ₊) === nothing || getfield(state, :ρ₋) === nothing)
+    end
+
+    function setParticle(sys_params,rng; ic="random",ic_specific=[], position_int_type::Type{<:Signed}=Int32)
         dim_num = length(sys_params.dims)
         if ic == "random"
-            position = ntuple(i -> rand(rng, 1:sys_params.dims[i]), dim_num)
+            position = ntuple(i -> convert(position_int_type, rand(rng, 1:sys_params.dims[i])), dim_num)
         elseif ic == "center"
-            position = ntuple(i -> div(sys_params.dims[i], 2), dim_num)
+            position = ntuple(i -> convert(position_int_type, div(sys_params.dims[i], 2)), dim_num)
         elseif ic == "specific"
             if length(ic_specific) == dim_num
-                position = Tuple(ic_specific[1:dim_num])
+                position = ntuple(i -> convert(position_int_type, Int(ic_specific[i])), dim_num)
             else
                 throw(DomainError("Invalid input - specific initial condition must have length $(dim_num)"))
             end
@@ -111,7 +172,7 @@ module FPDiffusive
             throw(DomainError("Invalid input - initial condition not supported yet"))
         end
         
-        Particle{dim_num}(position)
+        Particle{dim_num,position_int_type}(position)
     end
 
     # mutable struct State{N}
@@ -136,12 +197,12 @@ module FPDiffusive
     #     exp_table::ExpLookupTable  # Add exponential lookup table
     # end
 
-    mutable struct State{N, C, B, D}
+    mutable struct State{N, P, R, C, B}
         t::Int64
-        particles::Vector{Particle{D}}
-        ρ::Array{Int64, N}           
-        ρ₊::Array{Int64, N}          
-        ρ₋::Array{Int64, N}          
+        particles::P
+        ρ::R
+        ρ₊::Union{Nothing,R}
+        ρ₋::Union{Nothing,R}
         ρ_avg::Array{Float64, N}     
         ρ_matrix_avg_cuts::C
         bond_pass_stats::B
@@ -200,51 +261,100 @@ module FPDiffusive
         return nothing
     end
 
-    function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t, bond_pass_stats=nothing)
+    function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t, bond_pass_stats=nothing;
+                           density_int_type=nothing, position_int_type=nothing,
+                           keep_directional_densities::Bool=false)
         stats_to_use = if isnothing(bond_pass_stats)
             if hasfield(typeof(state_to_imitate), :bond_pass_stats)
                 getfield(state_to_imitate, :bond_pass_stats)
+            elseif hasfield(typeof(state_to_imitate), :fields)
+                try
+                    loaded_object_field(state_to_imitate, :bond_pass_stats)
+                catch
+                    Dict{Symbol,Vector{Float64}}()
+                end
             else
                 Dict{Symbol,Vector{Float64}}()
             end
         else
             bond_pass_stats
         end
-        max_site_occupancy = hasfield(typeof(state_to_imitate), :max_site_occupancy) ? state_to_imitate.max_site_occupancy : maximum(state_to_imitate.ρ)
+        raw_ρ = loaded_object_field(state_to_imitate, :ρ)
+        raw_particles = loaded_object_field(state_to_imitate, :particles)
+        raw_T = loaded_object_field(state_to_imitate, :T)
+        raw_potential = loaded_object_field(state_to_imitate, :potential)
+        raw_forcing = loaded_object_field(state_to_imitate, :forcing)
+        raw_exp_table = loaded_object_field(state_to_imitate, :exp_table)
+        dim_num = ndims(raw_ρ)
+        density_type = isnothing(density_int_type) ? eltype(raw_ρ) : density_int_type
+        position_type = isnothing(position_int_type) ?
+            particle_position_type_from_particles(raw_particles, Int32) :
+            position_int_type
+        density_type <: Signed || throw(ArgumentError("density_int_type must be signed. Got $(density_type)."))
+        position_type <: Signed || throw(ArgumentError("position_int_type must be signed. Got $(position_type)."))
+        particles = convert_particles(raw_particles, position_type, dim_num)
+        ρ = convert_density_array(raw_ρ, density_type)
+        ρ₊ = nothing
+        ρ₋ = nothing
+        if keep_directional_densities
+            raw_ρ₊ = try
+                loaded_object_field(state_to_imitate, :ρ₊)
+            catch
+                nothing
+            end
+            raw_ρ₋ = try
+                loaded_object_field(state_to_imitate, :ρ₋)
+            catch
+                nothing
+            end
+            if !(isnothing(raw_ρ₊) || isnothing(raw_ρ₋))
+                ρ₊ = convert_density_array(raw_ρ₊, density_type)
+                ρ₋ = convert_density_array(raw_ρ₋, density_type)
+            end
+        end
+        max_site_occupancy = Int64(maximum(ρ))
         dummy_state = State(
             t, 
-            state_to_imitate.particles, 
-            state_to_imitate.ρ, 
-            state_to_imitate.ρ₊, 
-            state_to_imitate.ρ₋, 
+            particles,
+            ρ,
+            ρ₊,
+            ρ₋,
             ρ_avg, 
             ρ_matrix_avg_cuts,
             stats_to_use,
             max_site_occupancy,
-            state_to_imitate.T, 
-            state_to_imitate.potential, 
-            state_to_imitate.forcing, 
-            state_to_imitate.exp_table
+            raw_T,
+            raw_potential,
+            raw_forcing,
+            raw_exp_table
         )
         return dummy_state
     end
 
     function populate_densities!(
         ρ::AbstractArray{<:Integer},
-        ρ₊::AbstractArray{<:Integer},
-        ρ₋::AbstractArray{<:Integer},
-        particles::AbstractVector{<:Particle}
+        ρ₊,
+        ρ₋,
+        particles::AbstractVector
     )
         fill!(ρ,  0)
-        fill!(ρ₊, 0)
-        fill!(ρ₋, 0)
+        if !(ρ₊ === nothing)
+            fill!(ρ₊, 0)
+        end
+        if !(ρ₋ === nothing)
+            fill!(ρ₋, 0)
+        end
     
         for p in particles
             pos = CartesianIndex(p.position...)            # CartesianIndex
-            ρ[pos] += 1
+            ρ[pos] += one(eltype(ρ))
             # Keep directional arrays neutral/finite for legacy plotting paths.
-            ρ₊[pos] += 1
-            ρ₋[pos] += 1
+            if !(ρ₊ === nothing)
+                ρ₊[pos] += one(eltype(ρ₊))
+            end
+            if !(ρ₋ === nothing)
+                ρ₋[pos] += one(eltype(ρ₋))
+            end
         end
     end
 
@@ -270,12 +380,22 @@ module FPDiffusive
         return reshape(M, Nx, Ny, Nx, Ny)
     end
 
-    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce(([1],[2]),true,0.0); ic ="random", full_corr_tensor=false, int_type::Type{<:Integer}=Int32, bond_pass_count_mode::AbstractString="nonzero_magnitude")
+    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce(([1],[2]),true,0.0);
+                      ic ="random", full_corr_tensor=false, int_type::Type{<:Signed}=Int32,
+                      position_int_type::Type{<:Signed}=Int32,
+                      keep_directional_densities::Bool=false,
+                      bond_pass_count_mode::AbstractString="nonzero_magnitude")
         N = param.N
         dim = length(param.dims)
+        if N > typemax(int_type)
+            throw(ArgumentError("Requested density int_type $(int_type) cannot represent max site occupancy N=$(N)."))
+        end
+        if maximum(param.dims) > typemax(position_int_type)
+            throw(ArgumentError("Requested position_int_type $(position_int_type) cannot represent lattice coordinates up to $(maximum(param.dims))."))
+        end
 
         # initialize particles
-        particles = Vector{Particle{dim}}(undef, N)
+        particles = Vector{Particle{dim,position_int_type}}(undef, N)
         if ic == "flat"
             print("flat ic initialized \n")
             num_sites = prod(param.dims)
@@ -283,17 +403,17 @@ module FPDiffusive
             for n in 1:N
                 lin_idx = mod(n - 1, num_sites) + 1
                 pos_tuple = Tuple(cart_inds[lin_idx])
-                particles[n] = Particle{dim}(pos_tuple)
+                particles[n] = Particle{dim,position_int_type}(convert_position_tuple(pos_tuple, position_int_type, dim))
             end
         else
             for n in 1:N
-                particles[n] = setParticle(param, rng; ic=ic)
+                particles[n] = setParticle(param, rng; ic=ic, position_int_type=position_int_type)
             end
         end
         # Initialize the matrix with dimensions specified by a tuple
-        ρ = zeros(Int64, param.dims...)
-        ρ₊ = zeros(Int64, param.dims...)
-        ρ₋ = zeros(Int64, param.dims...)
+        ρ = zeros(int_type, param.dims...)
+        ρ₊ = keep_directional_densities ? zeros(int_type, param.dims...) : nothing
+        ρ₋ = keep_directional_densities ? zeros(int_type, param.dims...) : nothing
         populate_densities!(ρ,ρ₊,ρ₋,particles)
         # Iterate over the positions and update the matrix
         # for n in 1:N
@@ -344,7 +464,7 @@ module FPDiffusive
         if dim == 1
             initialize_spatial_bond_passage_stats!(bond_pass_stats, param.dims[1])
         end
-        max_site_occupancy = maximum(ρ)
+        max_site_occupancy = Int64(maximum(ρ))
         state = State(t, particles, ρ,ρ₊,ρ₋, ρ_avg, ρ_matrix_avg_cuts, bond_pass_stats, max_site_occupancy, T, potential, bond_forces, exp_table)
         return state
     end
@@ -353,7 +473,11 @@ module FPDiffusive
         dim = ndims(state.ρ)
         state.t = 0
         state.ρ_avg .= state.ρ
-        state.max_site_occupancy = maximum(state.ρ)
+        state.max_site_occupancy = Int64(maximum(state.ρ))
+        if has_directional_densities(state)
+            state.ρ₊ .= state.ρ
+            state.ρ₋ .= state.ρ
+        end
 
         if dim == 1
             ρf = float(state.ρ)
@@ -544,7 +668,7 @@ module FPDiffusive
 
     function record_bond_passage_1d!(forward_counts::Vector{Int64}, reverse_counts::Vector{Int64},
                                      forcings::Vector{BondForce}, tracked_force_indices::Vector{Int},
-                                     from_idx::Int, to_idx::Int)
+                                     from_idx::Integer, to_idx::Integer)
         for force_idx in tracked_force_indices
             force = forcings[force_idx]
             b1 = force.bond_indices[1][1]
@@ -560,7 +684,7 @@ module FPDiffusive
 
     function record_bond_passage_2d!(forward_counts::Vector{Int64}, reverse_counts::Vector{Int64},
                                      forcings::Vector{BondForce}, tracked_force_indices::Vector{Int},
-                                     from_pos::NTuple{2,Int}, to_pos::NTuple{2,Int})
+                                     from_pos::Tuple{<:Integer,<:Integer}, to_pos::Tuple{<:Integer,<:Integer})
         for force_idx in tracked_force_indices
             force = forcings[force_idx]
             b1 = (force.bond_indices[1][1], force.bond_indices[1][2])
@@ -686,7 +810,7 @@ module FPDiffusive
         return base_rate / rate_normalization
     end
 
-    function directed_bond_forcing_1d(forcings::Vector{BondForce}, from_idx::Int, to_idx::Int)
+    function directed_bond_forcing_1d(forcings::Vector{BondForce}, from_idx::Integer, to_idx::Integer)
         total_forcing = 0.0
         for force in forcings
             endpoint_1 = force.bond_indices[1][1]
@@ -702,7 +826,7 @@ module FPDiffusive
         return total_forcing
     end
 
-    function directed_bond_forcing_2d(forcings::Vector{BondForce}, from_pos::NTuple{2,Int}, to_pos::NTuple{2,Int})
+    function directed_bond_forcing_2d(forcings::Vector{BondForce}, from_pos::Tuple{<:Integer,<:Integer}, to_pos::Tuple{<:Integer,<:Integer})
         total_forcing = 0.0
         for force in forcings
             endpoint_1 = (force.bond_indices[1][1], force.bond_indices[1][2])
@@ -896,16 +1020,18 @@ module FPDiffusive
                             sweep_spatial_reverse_counts[left_index] += 1
                         end
 
-                        particle.position = (candidate_spot_index,)
-                        new_position = particle.position[1]
+                        state.particles[n] = move_particle(particle, (candidate_spot_index,))
+                        new_position = state.particles[n].position[1]
                         state.ρ[spot_index] -= 1
                         state.ρ[new_position] += 1
-                        state.ρ₊[spot_index] -= 1
-                        state.ρ₊[new_position] += 1
-                        state.ρ₋[spot_index] -= 1
-                        state.ρ₋[new_position] += 1
+                        if has_directional_densities(state)
+                            state.ρ₊[spot_index] -= 1
+                            state.ρ₊[new_position] += 1
+                            state.ρ₋[spot_index] -= 1
+                            state.ρ₋[new_position] += 1
+                        end
                         if state.ρ[new_position] > state.max_site_occupancy
-                            state.max_site_occupancy = state.ρ[new_position]
+                            state.max_site_occupancy = Int64(state.ρ[new_position])
                         end
                         
                         if benchmark
@@ -1047,7 +1173,7 @@ module FPDiffusive
                                                     forcings, tracked_force_indices,
                                                     spot_index, cand)
                         end
-                        particle.position = cand
+                        state.particles[n] = move_particle(particle, cand)
                     elseif n == param.N + 1  # fluctuate potential
                         potential_update!(state.potential, rng)
                     end
@@ -1075,15 +1201,18 @@ module FPDiffusive
                 
                 if n<=param.N
                     state.ρ[i,j] -= 1
-                    state.ρ[particle.position...] += 1
-                    state.ρ₊[i,j] -= 1
-                    state.ρ₊[particle.position...] += 1
-                    state.ρ₋[i,j] -= 1
-                    state.ρ₋[particle.position...] += 1
-                    if state.ρ[particle.position...]<0
-                        println("Negative density encountered at position $(particle.position)...")
-                    elseif state.ρ[particle.position...] > state.max_site_occupancy
-                        state.max_site_occupancy = state.ρ[particle.position...]
+                    new_position = state.particles[n].position
+                    state.ρ[new_position...] += 1
+                    if has_directional_densities(state)
+                        state.ρ₊[i,j] -= 1
+                        state.ρ₊[new_position...] += 1
+                        state.ρ₋[i,j] -= 1
+                        state.ρ₋[new_position...] += 1
+                    end
+                    if state.ρ[new_position...]<0
+                        println("Negative density encountered at position $(new_position)...")
+                    elseif state.ρ[new_position...] > state.max_site_occupancy
+                        state.max_site_occupancy = Int64(state.ρ[new_position...])
                     end
                 end
                 

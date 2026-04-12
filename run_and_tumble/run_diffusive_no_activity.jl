@@ -195,7 +195,11 @@ function parse_commandline()
             help = "Path to saved state file to start from as t=0 (statistics reset)"
             required = false
         "--int_type"
-            help = "Integer type for positions/densities (e.g., Int16, Int32, Int64)"
+            help = "Density integer type (signed; e.g., Int16, Int32, Int64, or auto)"
+            arg_type = String
+            required = false
+        "--position_int_type"
+            help = "Particle-position integer type (signed; e.g., Int16, Int32, Int64, or auto)"
             arg_type = String
             required = false
         "--save_tag"
@@ -256,11 +260,60 @@ end
     end
 end
 
-@everywhere function resolve_int_type(args, params, defaults)
-    if haskey(args, "int_type") && !isnothing(args["int_type"])
-        return parse_int_type(args["int_type"])
+@everywhere function parse_int_type_or_auto(value)
+    value === nothing && return nothing
+    if value isa Symbol
+        return value == :auto ? nothing : parse_int_type(String(value))
+    elseif value isa AbstractString
+        return lowercase(strip(String(value))) == "auto" ? nothing : parse_int_type(value)
     end
-    return parse_int_type(get(params, "int_type", defaults["int_type"]))
+    return parse_int_type(value)
+end
+
+@everywhere function smallest_signed_int_type(max_value::Integer)
+    max_value < 0 && error("smallest_signed_int_type expects a non-negative bound. Got $(max_value).")
+    if max_value <= typemax(Int8)
+        return Int8
+    elseif max_value <= typemax(Int16)
+        return Int16
+    elseif max_value <= typemax(Int32)
+        return Int32
+    elseif max_value <= typemax(Int64)
+        return Int64
+    end
+    error("Requested integer bound $(max_value) exceeds Int64 capacity.")
+end
+
+@everywhere function resolve_density_int_type(args, params, defaults, max_occupancy::Integer)
+    requested = if haskey(args, "int_type") && !isnothing(args["int_type"])
+        parse_int_type_or_auto(args["int_type"])
+    else
+        parse_int_type_or_auto(get(params, "int_type", defaults["int_type"]))
+    end
+    resolved = isnothing(requested) ? smallest_signed_int_type(max_occupancy) : requested
+    resolved <: Signed || error("Density int_type must be signed to avoid underflow/overflow surprises. Got $(resolved).")
+    max_occupancy <= typemax(resolved) || error("Density int_type $(resolved) cannot represent max site occupancy $(max_occupancy).")
+    return resolved
+end
+
+@everywhere function resolve_position_int_type(args, params, defaults, dims)
+    requested = if haskey(args, "position_int_type") && !isnothing(args["position_int_type"])
+        parse_int_type_or_auto(args["position_int_type"])
+    else
+        parse_int_type_or_auto(get(params, "position_int_type", defaults["position_int_type"]))
+    end
+    max_coord = maximum(Int.(dims))
+    resolved = isnothing(requested) ? smallest_signed_int_type(max_coord) : requested
+    resolved <: Signed || error("position_int_type must be signed. Got $(resolved).")
+    max_coord <= typemax(resolved) || error("position_int_type $(resolved) cannot represent coordinates up to $(max_coord).")
+    return resolved
+end
+
+@everywhere function get_keep_directional_densities(params, defaults)
+    if haskey(params, "keep_directional_densities")
+        return to_bool(params["keep_directional_densities"], "keep_directional_densities")
+    end
+    return to_bool(get(defaults, "keep_directional_densities", false), "keep_directional_densities")
 end
 # Load a saved state and reset its statistics so it can be used as a fresh initial condition.
 function load_initial_state(path)
@@ -340,7 +393,9 @@ end
         "forcing_rate_scheme" => "legacy_penalty",
         "bond_pass_count_mode" => "nonzero_magnitude",
         "ic" => "random",
-        "int_type" => "Int32",
+        "int_type" => "auto",
+        "position_int_type" => "auto",
+        "keep_directional_densities" => false,
     )
 end
 
@@ -685,7 +740,7 @@ function loaded_param_field(param, field_name::Symbol)
     error("Unsupported loaded param type $(typeof(param)); cannot read field $(field_name).")
 end
 
-function reconcile_loaded_state_with_config!(state, loaded_param, params, defaults)
+function reconcile_loaded_state_with_config!(state, loaded_param, args, params, defaults)
     dim_num = Int(get(params, "dim_num", length(normalized_dims_tuple(loaded_param_field(loaded_param, :dims)))))
     loaded_dims = normalized_dims_tuple(loaded_param_field(loaded_param, :dims))
     L = Int(get(params, "L", loaded_dims[1]))
@@ -734,11 +789,28 @@ function reconcile_loaded_state_with_config!(state, loaded_param, params, defaul
         ffrs;
         forcing_rate_scheme=forcing_rate_scheme,
     )
+    density_int_type = resolve_density_int_type(args, params, defaults, reconciled_param.N)
+    position_int_type = resolve_position_int_type(args, params, defaults, dims)
+    keep_directional_densities = get_keep_directional_densities(params, defaults)
+    state = FPDiffusive.setDummyState(
+        state,
+        state.ρ_avg,
+        state.ρ_matrix_avg_cuts,
+        state.t,
+        state.bond_pass_stats;
+        density_int_type=density_int_type,
+        position_int_type=position_int_type,
+        keep_directional_densities=keep_directional_densities,
+    )
+    FPDiffusive.configure_bond_passage_tracking!(state, bond_pass_count_mode)
 
     println("Reconciled initial_state with config:")
     println("  dims=$(dims)")
     println("  forcing_rate_scheme=$(forcing_rate_scheme)")
     println("  bond_pass_count_mode=$(bond_pass_count_mode)")
+    println("  density_int_type=$(density_int_type)")
+    println("  position_int_type=$(position_int_type)")
+    println("  keep_directional_densities=$(keep_directional_densities)")
     println("  num_forces=$(length(config_forcings))")
     for (i, force) in enumerate(config_forcings)
         println("    force[$i] bond=$(force.bond_indices) magnitude=$(force.magnitude) direction=$(force.direction_flag) ffr=$(i <= length(ffrs) ? ffrs[i] : NaN)")
@@ -1796,8 +1868,6 @@ end
     description = get_description(params, defaults)
     params["show_times"] = Int[]
     params["save_times"] = Int[]
-    int_type = resolve_int_type(args, params, defaults)
-    
     # Set up simulation parameters.
     dim_num            = get(params, "dim_num", defaults["dim_num"])
     potential_type     = get(params, "potential_type", defaults["potential_type"])
@@ -1821,9 +1891,24 @@ end
     # Initialize simulation parameters and state.
     param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
                                  forcing_rate_scheme=forcing_rate_scheme)
+    density_int_type = resolve_density_int_type(args, params, defaults, param.N)
+    position_int_type = resolve_position_int_type(args, params, defaults, dims)
+    keep_directional_densities = get_keep_directional_densities(params, defaults)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type, rng=rng, plot_flag=!performance_mode)
-    state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
+    state = FPDiffusive.setState(
+        0,
+        rng,
+        param,
+        T,
+        potential,
+        forcings;
+        ic=ic,
+        int_type=density_int_type,
+        position_int_type=position_int_type,
+        keep_directional_densities=keep_directional_densities,
+        bond_pass_count_mode=bond_pass_count_mode,
+    )
    
     if estimate_runtime
         estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
@@ -1926,7 +2011,7 @@ function main()
             else
                 params = get_default_params()
             end
-            initial_state, initial_param = reconcile_loaded_state_with_config!(initial_state, initial_param, params, defaults)
+            initial_state, initial_param = reconcile_loaded_state_with_config!(initial_state, initial_param, args, params, defaults)
             n_sweeps = n_sweeps_from_args(args)
             warmup_sweeps = warmup_sweeps_from_args(args)
             performance_mode = performance_mode_from_args(args)
@@ -2020,7 +2105,7 @@ function main()
                 println("No config file provided. Using default parameters.")
                 params = get_default_params()
             end
-            state, param = reconcile_loaded_state_with_config!(state, param, params, defaults)
+            state, param = reconcile_loaded_state_with_config!(state, param, args, params, defaults)
             n_sweeps = get(params, "n_sweeps", defaults["n_sweeps"])
             warmup_sweeps = get_warmup_sweeps(params, defaults)
             performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
@@ -2059,8 +2144,6 @@ function main()
             description        = get_description(params, defaults)
             forcings, ffrs = build_forcings_and_ffrs(params, defaults, dim_num, L)
             ic = get(params, "ic", defaults["ic"])
-            int_type = resolve_int_type(args, params, defaults)
-
             ic = get(params, "ic", defaults["ic"])
             
             dims = ntuple(i -> L, dim_num)
@@ -2068,6 +2151,9 @@ function main()
             
             param = FPDiffusive.setParam(γ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
                                          forcing_rate_scheme=forcing_rate_scheme)
+            density_int_type = resolve_density_int_type(args, params, defaults, param.N)
+            position_int_type = resolve_position_int_type(args, params, defaults, dims)
+            keep_directional_densities = get_keep_directional_densities(params, defaults)
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
@@ -2075,7 +2161,19 @@ function main()
             potential_plot_flag = !performance_mode
             potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=potential_plot_flag)
             
-            state = FPDiffusive.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
+            state = FPDiffusive.setState(
+                0,
+                rng,
+                param,
+                T,
+                potential,
+                forcings;
+                ic=ic,
+                int_type=density_int_type,
+                position_int_type=position_int_type,
+                keep_directional_densities=keep_directional_densities,
+                bond_pass_count_mode=bond_pass_count_mode,
+            )
         end
         
         defaults = get_default_params()
