@@ -58,6 +58,10 @@ module Potentials
         magnitude::Float64
     end
 
+    # JLD2 reconstructs abstract-typed fields via convert(AbstractType, value).
+    # Accept already-materialized concrete potentials when loading legacy states.
+    Base.convert(::Type{AbstractPotential}, x::AbstractPotential) = x
+
     # Utility: weighted sampling without dependencies
     function weighted_sample(rng::AbstractRNG, weights::Vector{Float64})
         total = sum(weights)

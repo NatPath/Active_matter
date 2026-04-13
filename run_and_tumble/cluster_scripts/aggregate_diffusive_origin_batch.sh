@@ -16,6 +16,9 @@ Usage:
 Options:
   --archive_subdir <name>   archive directory under aggregate_root (default: archive)
   --archive_stamp <token>   archive stamp for previous cumulative aggregate (default: batch_tag)
+  --previous_cumulative_state <path>
+                            Optional cumulative aggregate from a previous run to fold in
+  --run_info <path>         Optional run_info.txt to update with aggregate artifact paths
 
 Behavior:
   - resolves one raw production state per replica from raw_state_dir using:
@@ -54,6 +57,8 @@ batch_tag=""
 cumulative_tag=""
 archive_subdir="archive"
 archive_stamp=""
+previous_cumulative_state=""
+run_info_path=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -91,6 +96,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --archive_stamp)
             archive_stamp="${2:-}"
+            shift 2
+            ;;
+        --previous_cumulative_state)
+            previous_cumulative_state="${2:-}"
+            shift 2
+            ;;
+        --run_info)
+            run_info_path="${2:-}"
             shift 2
             ;;
         -h|--help)
@@ -136,6 +149,16 @@ if [[ -z "${archive_stamp}" ]]; then
 fi
 if ! [[ "${archive_stamp}" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "--archive_stamp must match [A-Za-z0-9._-]+. Got '${archive_stamp}'."
+    exit 1
+fi
+if [[ -n "${previous_cumulative_state}" && "${previous_cumulative_state}" != /* ]]; then
+    previous_cumulative_state="${REPO_ROOT}/${previous_cumulative_state}"
+fi
+if [[ -n "${run_info_path}" && "${run_info_path}" != /* ]]; then
+    run_info_path="${REPO_ROOT}/${run_info_path}"
+fi
+if [[ -n "${previous_cumulative_state}" && ! -f "${previous_cumulative_state}" ]]; then
+    echo "--previous_cumulative_state was provided but not found: ${previous_cumulative_state}"
     exit 1
 fi
 
@@ -214,6 +237,38 @@ aggregate_state_list() {
     printf "%s" "${output_state}"
 }
 
+upsert_run_info_value() {
+    local info_path="$1"
+    local key="$2"
+    local value="$3"
+    local tmp_path
+
+    [[ -n "${info_path}" ]] || return 0
+    mkdir -p "$(dirname "${info_path}")"
+    tmp_path="$(mktemp)"
+
+    if [[ -f "${info_path}" ]]; then
+        awk -v key="${key}" -v value="${value}" '
+            BEGIN { updated = 0 }
+            index($0, key "=") == 1 {
+                if (!updated) {
+                    print key "=" value
+                    updated = 1
+                }
+                next
+            }
+            { print }
+            END {
+                if (!updated) print key "=" value
+            }
+        ' "${info_path}" > "${tmp_path}"
+    else
+        printf "%s=%s\n" "${key}" "${value}" > "${tmp_path}"
+    fi
+
+    mv -f "${tmp_path}" "${info_path}"
+}
+
 batch_dir="${aggregate_root}/batches"
 current_dir="${aggregate_root}/current"
 archive_dir="${aggregate_root}/${archive_subdir}/${archive_stamp}"
@@ -245,12 +300,12 @@ echo "  batch_dir=${batch_dir}"
 batch_aggregate_state="$(aggregate_state_list "${batch_config}" "${batch_state_list}" "${batch_tag}" "${batch_dir}")"
 echo "Batch aggregate: ${batch_aggregate_state}"
 
-previous_cumulative_state="$(latest_cumulative_state "${current_dir}" "${cumulative_tag}")"
+local_previous_cumulative_state="$(latest_cumulative_state "${current_dir}" "${cumulative_tag}")"
 archived_previous_state=""
 restore_previous="false"
-if [[ -n "${previous_cumulative_state}" ]]; then
-    archived_previous_state="${archive_dir}/$(basename "${previous_cumulative_state}")"
-    mv -f "${previous_cumulative_state}" "${archived_previous_state}"
+if [[ -n "${local_previous_cumulative_state}" ]]; then
+    archived_previous_state="${archive_dir}/$(basename "${local_previous_cumulative_state}")"
+    mv -f "${local_previous_cumulative_state}" "${archived_previous_state}"
     restore_previous="true"
     echo "Archived previous cumulative aggregate: ${archived_previous_state}"
 fi
@@ -268,6 +323,8 @@ cumulative_state_list="${work_dir}/cumulative_states.txt"
 : > "${cumulative_state_list}"
 if [[ -n "${archived_previous_state}" ]]; then
     echo "${archived_previous_state}" >> "${cumulative_state_list}"
+elif [[ -n "${previous_cumulative_state}" ]]; then
+    echo "${previous_cumulative_state}" >> "${cumulative_state_list}"
 fi
 echo "${batch_aggregate_state}" >> "${cumulative_state_list}"
 
@@ -287,10 +344,19 @@ printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
     "${cumulative_tag}" \
     "${raw_state_dir}" \
     "${batch_aggregate_state}" \
-    "${previous_cumulative_state}" \
+    "${local_previous_cumulative_state:-${previous_cumulative_state}}" \
     "${archived_previous_state}" \
     "${cumulative_state}" \
     "${num_replicas}" >> "${lineage_file}"
+
+if [[ -n "${run_info_path}" ]]; then
+    upsert_run_info_value "${run_info_path}" "aggregate_root" "${aggregate_root}"
+    upsert_run_info_value "${run_info_path}" "cumulative_tag" "${cumulative_tag}"
+    upsert_run_info_value "${run_info_path}" "batch_aggregate_state" "${batch_aggregate_state}"
+    upsert_run_info_value "${run_info_path}" "aggregate_state" "${cumulative_state}"
+    upsert_run_info_value "${run_info_path}" "latest_cumulative_state" "${cumulative_state}"
+    upsert_run_info_value "${run_info_path}" "aggregate_lineage" "${lineage_file}"
+fi
 
 echo "Aggregation and cumulative accumulation completed."
 echo "Lineage: ${lineage_file}"

@@ -12,7 +12,7 @@ Core options:
   --latest                                Fetch latest run_id in selected run family (can combine with filters)
   --list                                  List run registry entries and exit
   --tail <N>                              Number of listed entries (default: 30)
-  --run_family <two_force_d|single_origin_bond|ssep|active_objects|auto>
+  --run_family <two_force_d|single_origin_bond|ssep|active_objects|diffusive_2d_origin_bond|auto>
                                           Registry family for --list/--latest (default: two_force_d)
 
 Run filters for --list / --latest:
@@ -51,6 +51,8 @@ Post-processing:
   --skip_per_state_sweep                  Pass --skip_per_state_sweep to load_and_plot.jl
   --baseline_j2 <value>                   Baseline override for two_force_d analysis
                                           (default when omitted: automatic rho0^2-based baseline from load_and_plot.jl)
+  --collapse_power <value>                Power n used for cut-based data-collapse plots
+  --collapse_indices <csv>                Comma-separated cut offsets for data collapse, e.g. 8,16,32
   --mode_plot <single|two_force_d>        load_and_plot mode; auto-selected from run family when omitted
 
 Examples:
@@ -60,6 +62,8 @@ Examples:
   bash copy_data_from_cluster.sh --run_id two_force_production_L128_rho100_ns1000000_d2-32-s2_nr8_dag_20260225-180000 --sync_scope aggregation
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
+  bash copy_data_from_cluster.sh --run_id diffusive_2d_origin_bond_L64_rho1000_f1_ffr1_prod_ns50000_nr600_20260412-021855 --plot
+  bash copy_data_from_cluster.sh --run_id diffusive_2d_origin_bond_L64_rho1000_f1_ffr1_prod_ns50000_nr600_20260412-021855 --plot --collapse_indices 4,8,12
   bash copy_data_from_cluster.sh --run_id two_force_warmup_production_L256_rho100_..._production_20260226-032016 --aggregated_saved_only --plot
 
 Notes:
@@ -112,6 +116,8 @@ state_glob=""
 state_glob_explicit="false"
 skip_per_state="false"
 baseline_j2=""
+collapse_power=""
+collapse_indices=""
 plot_mode="two_force_d"
 plot_mode_explicit="false"
 sample_count="0"
@@ -119,17 +125,53 @@ sample_count="0"
 ssh_control_dir=""
 ssh_control_path=""
 
-declare -A REGISTRY_REL_MAP
-declare -A RUN_ROOT_REL_MAP
-REGISTRY_REL_MAP["two_force_d"]="runs/two_force_d/run_registry.csv"
-REGISTRY_REL_MAP["single_origin_bond"]="runs/single_origin_bond/run_registry.csv"
-REGISTRY_REL_MAP["ssep"]="runs/ssep/single_center_bond/run_registry.csv"
-REGISTRY_REL_MAP["active_objects"]="runs/active_objects/steady_state_histograms/run_registry.csv"
-RUN_ROOT_REL_MAP["two_force_d"]="runs/two_force_d"
-RUN_ROOT_REL_MAP["single_origin_bond"]="runs/single_origin_bond"
-RUN_ROOT_REL_MAP["ssep"]="runs/ssep/single_center_bond"
-RUN_ROOT_REL_MAP["active_objects"]="runs/active_objects/steady_state_histograms"
-ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects")
+ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects" "diffusive_2d_origin_bond")
+
+registry_rel_path_for_family() {
+    case "$1" in
+        two_force_d) printf "runs/two_force_d/run_registry.csv" ;;
+        single_origin_bond) printf "runs/single_origin_bond/run_registry.csv" ;;
+        ssep) printf "runs/ssep/single_center_bond/run_registry.csv" ;;
+        active_objects) printf "runs/active_objects/steady_state_histograms/run_registry.csv" ;;
+        diffusive_2d_origin_bond) printf "runs/diffusive_2d_origin_bond/run_registry.csv" ;;
+        *) return 1 ;;
+    esac
+}
+
+run_root_rel_path_for_family() {
+    case "$1" in
+        two_force_d) printf "runs/two_force_d" ;;
+        single_origin_bond) printf "runs/single_origin_bond" ;;
+        ssep) printf "runs/ssep/single_center_bond" ;;
+        active_objects) printf "runs/active_objects/steady_state_histograms" ;;
+        diffusive_2d_origin_bond) printf "runs/diffusive_2d_origin_bond" ;;
+        *) return 1 ;;
+    esac
+}
+
+candidate_families_for_run_id() {
+    local run_id_value="$1"
+    case "${run_id_value}" in
+        diffusive_2d_origin_bond_*)
+            printf "%s\n" "diffusive_2d_origin_bond"
+            ;;
+        active_objects_*)
+            printf "%s\n" "active_objects"
+            ;;
+        ssep_*|ssep_ctmc_*)
+            printf "%s\n" "ssep"
+            ;;
+        single_origin_bond_*|single_*)
+            printf "%s\n" "single_origin_bond"
+            ;;
+        two_force_*)
+            printf "%s\n" "two_force_d"
+            ;;
+        *)
+            printf "%s\n" "${ALL_FAMILIES[@]}"
+            ;;
+    esac
+}
 
 cleanup_ssh_master() {
     if [[ -n "${ssh_control_path}" ]]; then
@@ -170,6 +212,21 @@ ssh_with_master() {
         -o ControlPersist=600 \
         -o ControlPath="${ssh_control_path}" \
         "$@"
+}
+
+remote_path_exists() {
+    local remote_path="$1"
+    ssh_with_master "${remote_user}@${remote_host}" "test -e $(printf '%q' "${remote_path}")"
+}
+
+read_lines_to_array() {
+    local array_name="$1"
+    local line quoted
+    eval "${array_name}=()"
+    while IFS= read -r line; do
+        quoted="$(printf '%q' "${line}")"
+        eval "${array_name}+=( ${quoted} )"
+    done
 }
 
 while [[ $# -gt 0 ]]; do
@@ -276,6 +333,14 @@ while [[ $# -gt 0 ]]; do
             baseline_j2="${2:-}"
             shift 2
             ;;
+        --collapse_power)
+            collapse_power="${2:-}"
+            shift 2
+            ;;
+        --collapse_indices)
+            collapse_indices="${2:-}"
+            shift 2
+            ;;
         --mode_plot)
             plot_mode="${2:-}"
             plot_mode_explicit="true"
@@ -301,8 +366,8 @@ if ! [[ "${tail_n}" =~ ^[0-9]+$ ]] || (( tail_n <= 0 )); then
     echo "--tail must be a positive integer. Got '${tail_n}'."
     exit 1
 fi
-if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "auto" ]]; then
-    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, or auto. Got '${run_family}'."
+if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "diffusive_2d_origin_bond" && "${run_family}" != "auto" ]]; then
+    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, diffusive_2d_origin_bond, or auto. Got '${run_family}'."
     exit 1
 fi
 if [[ "${sync_scope}" != "auto" && "${sync_scope}" != "aggregation" && "${sync_scope}" != "full" ]]; then
@@ -341,6 +406,10 @@ if [[ -n "${baseline_j2}" && ! "${baseline_j2}" =~ ^[-+]?[0-9]*\.?[0-9]+([eE][-+
     echo "--baseline_j2 must be numeric when provided. Got '${baseline_j2}'."
     exit 1
 fi
+if [[ -n "${collapse_power}" && ! "${collapse_power}" =~ ^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]]; then
+    echo "--collapse_power must be numeric when provided. Got '${collapse_power}'."
+    exit 1
+fi
 if [[ "${aggregated_saved_only}" == "true" ]]; then
     sync_scope="aggregation"
     if [[ "${state_glob_explicit}" != "true" ]]; then
@@ -367,7 +436,11 @@ sync_registry() {
     local family="$1"
     local remote_root_base="$2"
     local cache_label="$3"
-    local registry_rel="${REGISTRY_REL_MAP[$family]}"
+    local registry_rel
+    if ! registry_rel="$(registry_rel_path_for_family "${family}")"; then
+        echo "Unknown run family '${family}'." >&2
+        return 1
+    fi
     local local_registry="${local_root}/.registry_cache/${cache_label}/${registry_rel}"
 
     mkdir -p "$(dirname "${local_registry}")"
@@ -450,17 +523,17 @@ prune_local_aggregation_matches() {
     local pruned_count=0
     local dir file
 
-    local search_dirs=("${run_dir}/states/aggregated" "${run_dir}/states")
+    local search_dirs=("${run_dir}/aggregated/current" "${run_dir}/states/aggregated" "${run_dir}/states")
     if [[ "${aggregated_saved_only}" == "true" ]]; then
         if [[ -n "${state_subdir}" ]]; then
             search_dirs=("${run_dir}/states/${state_subdir}")
         else
-            search_dirs=("${run_dir}/aggregated" "${run_dir}/states/aggregated")
+            search_dirs=("${run_dir}/aggregated/current" "${run_dir}/aggregated" "${run_dir}/states/aggregated")
         fi
     elif [[ -n "${state_subdir}" ]]; then
-        search_dirs=("${run_dir}/states/${state_subdir}" "${run_dir}/aggregated" "${run_dir}/states/aggregated" "${run_dir}/states")
+        search_dirs=("${run_dir}/states/${state_subdir}" "${run_dir}/aggregated/current" "${run_dir}/aggregated" "${run_dir}/states/aggregated" "${run_dir}/states")
     else
-        search_dirs=("${run_dir}/aggregated" "${run_dir}/states/aggregated" "${run_dir}/states")
+        search_dirs=("${run_dir}/aggregated/current" "${run_dir}/aggregated" "${run_dir}/states/aggregated" "${run_dir}/states")
     fi
 
     for dir in "${search_dirs[@]}"; do
@@ -482,15 +555,16 @@ prune_local_aggregation_matches() {
 }
 
 select_latest_two_force_d_files() {
-    declare -A best_file=()
-    declare -A best_t=()
-    declare -A best_mtime=()
-    local file base d_val t_val mtime_val current_t current_mtime
+    local ranked_file passthrough_file
+    local file base d_val t_val mtime_val
+
+    ranked_file="$(mktemp)"
+    passthrough_file="$(mktemp)"
 
     for file in "$@"; do
         base="$(basename "${file}")"
         if [[ ! "${base}" =~ two_force_d([0-9]+)_ ]]; then
-            printf "%s\n" "${file}"
+            printf "%s\n" "${file}" >> "${passthrough_file}"
             continue
         fi
 
@@ -500,31 +574,17 @@ select_latest_two_force_d_files() {
         else
             t_val="-9223372036854775808"
         fi
-        mtime_val="$(stat -c %Y "${file}" 2>/dev/null || echo 0)"
-
-        if [[ -z "${best_file[$d_val]+x}" ]]; then
-            best_file["${d_val}"]="${file}"
-            best_t["${d_val}"]="${t_val}"
-            best_mtime["${d_val}"]="${mtime_val}"
-            continue
-        fi
-
-        current_t="${best_t[$d_val]}"
-        current_mtime="${best_mtime[$d_val]}"
-        if (( t_val > current_t )) || { (( t_val == current_t )) && (( mtime_val >= current_mtime )); }; then
-            best_file["${d_val}"]="${file}"
-            best_t["${d_val}"]="${t_val}"
-            best_mtime["${d_val}"]="${mtime_val}"
-        fi
+        mtime_val="$(stat -f %m "${file}" 2>/dev/null || stat -c %Y "${file}" 2>/dev/null || echo 0)"
+        printf "%s\t%s\t%s\t%s\n" "${d_val}" "${t_val}" "${mtime_val}" "${file}" >> "${ranked_file}"
     done
 
-    if (( ${#best_file[@]} == 0 )); then
-        return 0
+    if [[ -s "${passthrough_file}" ]]; then
+        cat "${passthrough_file}"
     fi
-
-    while IFS= read -r d_val; do
-        printf "%s\n" "${best_file[$d_val]}"
-    done < <(printf "%s\n" "${!best_file[@]}" | sort -n)
+    if [[ -s "${ranked_file}" ]]; then
+        sort -t "$(printf '\t')" -k1,1n -k2,2nr -k3,3nr "${ranked_file}" | awk -F "$(printf '\t')" '!seen[$1]++ { print $4 }'
+    fi
+    rm -f "${ranked_file}" "${passthrough_file}"
 }
 
 write_filtered_registry() {
@@ -636,11 +696,12 @@ else
     found_families=()
     found_registries=()
     found_roots=()
+    read_lines_to_array candidate_families < <(candidate_families_for_run_id "${run_id}")
 
     for root_idx in "${!SEARCH_REMOTE_ROOTS[@]}"; do
         registry_root="${SEARCH_REMOTE_ROOTS[$root_idx]}"
         cache_label="root$((root_idx + 1))"
-        for family in "${ALL_FAMILIES[@]}"; do
+        for family in "${candidate_families[@]}"; do
             if registry_path="$(sync_registry "${family}" "${registry_root}" "${cache_label}")"; then
                 row="$(find_row_by_run_id "${registry_path}" "${run_id}")"
                 if [[ -n "${row}" ]]; then
@@ -689,6 +750,8 @@ elif [[ "${resolved_family}" == "ssep" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
 elif [[ "${resolved_family}" == "active_objects" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_histogram_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
+elif [[ "${resolved_family}" == "diffusive_2d_origin_bond" ]]; then
+    IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
 else
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_cpus reg_mem reg_run_root reg_log_dir reg_state_dir reg_warmup_state_dir reg_ffr reg_force_strength <<< "${registry_row}"
 fi
@@ -698,13 +761,18 @@ if [[ "${mode_explicit}" == "true" && "${mode}" != "${reg_mode}" ]]; then
 fi
 mode="${reg_mode}"
 
+run_root_rel="$(run_root_rel_path_for_family "${resolved_family}")" || {
+    echo "Unsupported run family '${resolved_family}'."
+    exit 1
+}
+
 if [[ -n "${reg_run_root}" ]]; then
     remote_run_dir="${reg_run_root}"
 else
-    remote_run_dir="${resolved_remote_root}/${RUN_ROOT_REL_MAP[$resolved_family]}/${mode}/${run_id}"
+    remote_run_dir="${resolved_remote_root}/${run_root_rel}/${mode}/${run_id}"
 fi
 
-local_run_dir="${local_root}/${RUN_ROOT_REL_MAP[$resolved_family]}/${mode}/${run_id}"
+local_run_dir="${local_root}/${run_root_rel}/${mode}/${run_id}"
 mkdir -p "${local_run_dir}"
 
 echo "Fetching run:"
@@ -712,6 +780,9 @@ echo "  run_id=${run_id}"
 echo "  family=${resolved_family}"
 echo "  from=${remote_user}@${remote_host}:${remote_run_dir}"
 echo "  to=${local_run_dir}"
+if [[ "${resolved_family}" == "diffusive_2d_origin_bond" && -n "${reg_aggregate_root:-}" ]]; then
+    echo "  aggregate_from=${remote_user}@${remote_host}:${reg_aggregate_root}"
+fi
 
 sync_scope_effective="${sync_scope}"
 if [[ "${sync_scope_effective}" == "auto" ]]; then
@@ -731,6 +802,8 @@ if [[ "${state_glob_explicit}" == "true" ]]; then
     aggregation_glob="${state_glob}"
 elif [[ "${resolved_family}" == "active_objects" && -n "${reg_aggregate_run_id:-}" ]]; then
     aggregation_glob="${reg_aggregate_run_id}*_steady_state_hist.jld2"
+elif [[ "${resolved_family}" == "diffusive_2d_origin_bond" && -n "${reg_cumulative_tag:-}" ]]; then
+    aggregation_glob="*id-aggregated_${reg_cumulative_tag}.jld2"
 elif [[ "${resolved_family}" == "ssep" && -n "${reg_aggregate_run_id:-}" ]]; then
     aggregation_glob="*id-${reg_aggregate_run_id}.jld2"
 elif [[ -n "${state_glob}" ]]; then
@@ -752,8 +825,52 @@ if [[ "${sync_scope_effective}" == "aggregation" && "${resolved_family}" == "sse
     sync_latest_ssep_aggregate_only="true"
 fi
 
+sync_latest_diffusive_aggregate_only="false"
+if [[ "${sync_scope_effective}" == "aggregation" && "${resolved_family}" == "diffusive_2d_origin_bond" ]]; then
+    if [[ -z "${reg_aggregate_root:-}" ]]; then
+        echo "Diffusive registry entry is missing aggregate_root; cannot resolve cumulative aggregate."
+        exit 1
+    fi
+    sync_latest_diffusive_aggregate_only="true"
+fi
+
 if [[ "${sync_scope_effective}" == "aggregation" ]]; then
-    if [[ "${sync_latest_ssep_aggregate_only}" == "true" ]]; then
+    if [[ "${sync_latest_diffusive_aggregate_only}" == "true" ]]; then
+        local_aggregate_dir="${local_run_dir}/aggregated"
+        mkdir -p "${local_aggregate_dir}"
+
+        run_files_from="$(mktemp)"
+        {
+            echo "run_info.txt"
+            echo "manifest.csv"
+        } > "${run_files_from}"
+        rsync_with_master -av --progress --files-from="${run_files_from}" \
+            "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
+        rm -f "${run_files_from}"
+
+        remote_latest_cmd=$(
+            cat <<EOF
+cd $(printf '%q' "${reg_aggregate_root}") && if [[ -d current ]]; then find current -maxdepth 1 -type f -name $(printf '%q' "${aggregation_glob}") ! -path '*/archive/*' -printf '%T@ %p\n'; fi | sort -nr | head -n 1
+EOF
+        )
+        latest_remote_rel_path="$(
+            ssh_with_master "${remote_user}@${remote_host}" "${remote_latest_cmd}" | awk '{ $1=""; sub(/^ /,""); print }' | tail -n 1
+        )"
+        if [[ -z "${latest_remote_rel_path}" ]]; then
+            echo "No remote cumulative aggregate matched ${aggregation_glob} under current/; nothing to sync."
+        else
+            files_from="$(mktemp)"
+            {
+                if remote_path_exists "${reg_aggregate_root}/lineage.csv"; then
+                    echo "lineage.csv"
+                fi
+                echo "${latest_remote_rel_path}"
+            } > "${files_from}"
+            rsync_with_master -av --progress --files-from="${files_from}" \
+                "${remote_user}@${remote_host}:${reg_aggregate_root}/" "${local_aggregate_dir}/"
+            rm -f "${files_from}"
+        fi
+    elif [[ "${sync_latest_ssep_aggregate_only}" == "true" ]]; then
         remote_latest_cmd=$(
             cat <<EOF
 cd $(printf '%q' "${remote_run_dir}") && for dir in aggregated states/aggregated states; do if [[ -d "\${dir}" ]]; then find "\${dir}" -maxdepth 1 -type f -name $(printf '%q' "${aggregation_glob}") ! -path '*/archive/*' -printf '%T@ %p\n'; fi; done | sort -nr | head -n 1
@@ -782,7 +899,7 @@ EOF
 cd $(printf '%q' "${remote_state_dir}") && find . -maxdepth 1 -type f -name $(printf '%q' "${aggregation_glob}") -printf '%T@ %f\n' | sort -nr | head -n $(printf '%q' "${sample_count}")
 EOF
         )
-        mapfile -t sampled_remote_entries < <(
+        read_lines_to_array sampled_remote_entries < <(
             ssh_with_master "${remote_user}@${remote_host}" "${remote_list_cmd}" | awk '{ $1=""; sub(/^ /,""); print }'
         )
         if (( ${#sampled_remote_entries[@]} == 0 )); then
@@ -862,7 +979,7 @@ if [[ "${plot_after_sync}" == "true" ]]; then
             exit 0
         fi
 
-        mapfile -t histogram_files < <(find "${hist_dir}" -maxdepth 1 -type f -name "${aggregation_glob}" | sort)
+        read_lines_to_array histogram_files < <(find "${hist_dir}" -maxdepth 1 -type f -name "${aggregation_glob}" | sort)
         if (( ${#histogram_files[@]} == 0 )); then
             echo "No aggregated histogram files found in ${hist_dir} (pattern: ${aggregation_glob}); skipping plot."
             exit 0
@@ -904,18 +1021,23 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     }
 
     states_dir_custom="${local_run_dir}/states/${state_subdir}"
+    states_dir_current="${local_run_dir}/aggregated/current"
     states_dir_new_aggregated="${local_run_dir}/aggregated"
     states_dir_aggregated="${local_run_dir}/states/aggregated"
     states_dir_legacy="${local_run_dir}/states"
     states_dir="${states_dir_legacy}"
     if [[ "${aggregated_saved_only}" == "true" && -n "${state_subdir}" ]]; then
         states_dir="${states_dir_custom}"
+    elif [[ "${aggregated_saved_only}" == "true" && -d "${states_dir_current}" ]]; then
+        states_dir="${states_dir_current}"
     elif [[ "${aggregated_saved_only}" == "true" && -d "${states_dir_new_aggregated}" ]]; then
         states_dir="${states_dir_new_aggregated}"
     elif [[ "${aggregated_saved_only}" == "true" ]]; then
         states_dir="${states_dir_aggregated}"
     elif [[ "${sync_scope_effective}" == "aggregation" && -n "${state_subdir}" && -d "${states_dir_custom}" ]]; then
         states_dir="${states_dir_custom}"
+    elif [[ "${sync_scope_effective}" == "aggregation" && -d "${states_dir_current}" ]]; then
+        states_dir="${states_dir_current}"
     elif [[ "${sync_scope_effective}" == "aggregation" && -d "${states_dir_new_aggregated}" ]]; then
         states_dir="${states_dir_new_aggregated}"
     elif [[ "${sync_scope_effective}" == "aggregation" && -d "${states_dir_aggregated}" ]]; then
@@ -926,28 +1048,34 @@ if [[ "${plot_after_sync}" == "true" ]]; then
         exit 0
     fi
 
-    mapfile -t state_files < <(find_state_files "${states_dir}")
+    read_lines_to_array state_files < <(find_state_files "${states_dir}")
+    if [[ "${aggregated_saved_only}" != "true" ]] && (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_current}" && -d "${states_dir_current}" ]]; then
+        read_lines_to_array state_files < <(find_state_files "${states_dir_current}")
+        if (( ${#state_files[@]} > 0 )); then
+            states_dir="${states_dir_current}"
+        fi
+    fi
     if [[ "${aggregated_saved_only}" != "true" ]] && (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_new_aggregated}" && -d "${states_dir_new_aggregated}" ]]; then
-        mapfile -t state_files < <(find_state_files "${states_dir_new_aggregated}")
+        read_lines_to_array state_files < <(find_state_files "${states_dir_new_aggregated}")
         if (( ${#state_files[@]} > 0 )); then
             states_dir="${states_dir_new_aggregated}"
         fi
     fi
     if [[ "${aggregated_saved_only}" != "true" ]] && (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_aggregated}" && -d "${states_dir_aggregated}" ]]; then
-        mapfile -t state_files < <(find_state_files "${states_dir_aggregated}")
+        read_lines_to_array state_files < <(find_state_files "${states_dir_aggregated}")
         if (( ${#state_files[@]} > 0 )); then
             states_dir="${states_dir_aggregated}"
         fi
     fi
     if [[ "${aggregated_saved_only}" != "true" ]] && (( ${#state_files[@]} == 0 )) && [[ "${states_dir}" != "${states_dir_legacy}" && -d "${states_dir_legacy}" ]]; then
-        mapfile -t state_files < <(find_state_files "${states_dir_legacy}")
+        read_lines_to_array state_files < <(find_state_files "${states_dir_legacy}")
         if (( ${#state_files[@]} > 0 )); then
             states_dir="${states_dir_legacy}"
         fi
     fi
     if [[ "${aggregated_saved_only}" == "true" && "${resolved_family}" == "two_force_d" && ${#state_files[@]} -gt 0 ]]; then
         original_state_count="${#state_files[@]}"
-        mapfile -t latest_state_files < <(select_latest_two_force_d_files "${state_files[@]}")
+        read_lines_to_array latest_state_files < <(select_latest_two_force_d_files "${state_files[@]}")
         if (( ${#latest_state_files[@]} > 0 )); then
             state_files=("${latest_state_files[@]}")
         fi
@@ -968,6 +1096,12 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     cmd+=("--mode" "${plot_mode}" "--out_dir" "${out_dir}")
     if [[ -n "${baseline_j2}" ]]; then
         cmd+=("--baseline_j2" "${baseline_j2}")
+    fi
+    if [[ -n "${collapse_power}" ]]; then
+        cmd+=("--collapse_power" "${collapse_power}")
+    fi
+    if [[ -n "${collapse_indices}" ]]; then
+        cmd+=("--collapse_indices" "${collapse_indices}")
     fi
     if [[ "${skip_per_state}" == "true" ]]; then
         cmd+=("--skip_per_state_sweep")

@@ -6,7 +6,7 @@ using Plots
 using Printf
 using Statistics
 
-include(joinpath(@__DIR__, "src", "common", "potentials.jl"))
+isdefined(@__MODULE__, :Potentials) || include(joinpath(@__DIR__, "src", "common", "potentials.jl"))
 include(joinpath(@__DIR__, "src", "diffusive", "modules_diffusive_no_activity.jl"))
 include(joinpath(@__DIR__, "src", "ssep", "modules_ssep.jl"))
 include(joinpath(@__DIR__, "src", "common", "plot_utils.jl"))
@@ -72,16 +72,34 @@ const AGG_CONNECTED_FULL_EXACT_KEY = :agg_connected_corr_full_exact
 const RUN_FAMILY_TWO_FORCE_D = "two_force_d"
 const RUN_FAMILY_SINGLE_ORIGIN_BOND = "single_origin_bond"
 const RUN_FAMILY_SSEP = "ssep"
+const RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND = "diffusive_2d_origin_bond"
 const RUN_FAMILY_BASE_RELPATHS = Dict(
     RUN_FAMILY_TWO_FORCE_D => joinpath("runs", "two_force_d"),
     RUN_FAMILY_SINGLE_ORIGIN_BOND => joinpath("runs", "single_origin_bond"),
     RUN_FAMILY_SSEP => joinpath("runs", "ssep", "single_center_bond"),
+    RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND => joinpath("runs", "diffusive_2d_origin_bond"),
 )
 const RUN_ID_FAMILIES_IN_SEARCH_ORDER = [
     RUN_FAMILY_SSEP,
     RUN_FAMILY_TWO_FORCE_D,
     RUN_FAMILY_SINGLE_ORIGIN_BOND,
+    RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND,
 ]
+
+Base.@kwdef mutable struct LegacyPlotState
+    legacy_normalized::Bool = true
+    t::Int64 = 0
+    particles::Vector{Any} = Any[]
+    ρ::Any = nothing
+    ρ₊::Any = nothing
+    ρ₋::Any = nothing
+    ρ_avg::Any = nothing
+    ρ_matrix_avg_cuts::Any = nothing
+    bond_pass_stats::Dict{Symbol,Vector{Float64}} = Dict{Symbol,Vector{Float64}}()
+    T::Float64 = 0.0
+    potential::Any = nothing
+    forcing::Any = Any[]
+end
 
 function wildcard_to_regex(pattern::String)
     special = Set(['.', '^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\'])
@@ -223,11 +241,11 @@ function parse_commandline()
             arg_type = Float64
             default = 0.0
         "--collapse_power"
-            help = "Power n used for SSEP 1D data-collapse plots C(x,y)*y^n"
+            help = "Power n used for cut-based data-collapse plots C(x,y)*y^n"
             arg_type = Float64
             default = 2.0
         "--collapse_indices"
-            help = "Optional comma-separated subset of positive SSEP cut offsets to use for data collapse, e.g. 8,16,32"
+            help = "Optional comma-separated subset of positive cut offsets to use for data collapse, e.g. 8,16,32. Required for 2D x/diag cut collapse and for legacy/full-matrix 1D states without selected-cut metadata."
             default = ""
     end
     return parse_args(s)
@@ -365,6 +383,21 @@ function collect_ssep_files_from_run_dir(run_dir::AbstractString)
     error("No JLD2 files found for SSEP run in aggregated/ or states/ under: $(run_dir)")
 end
 
+function collect_diffusive_files_from_run_dir(run_dir::AbstractString)
+    candidate_dirs = [
+        joinpath(run_dir, "aggregated", "current"),
+        joinpath(run_dir, "aggregated"),
+        joinpath(run_dir, "states", "aggregated"),
+        joinpath(run_dir, "states", "raw"),
+        joinpath(run_dir, "states"),
+    ]
+    for dir in candidate_dirs
+        latest = latest_jld2_file_in_dir(dir)
+        latest === nothing || return [latest]
+    end
+    error("No JLD2 files found for diffusive run in aggregated/ or states/ under: $(run_dir)")
+end
+
 function collect_files_from_run_id(run_id::AbstractString, cluster_results_root::AbstractString, run_result_mode::AbstractString;
                                    preferred_families::AbstractVector{<:AbstractString}=String[])
     run_dir, resolved_mode, resolved_family = resolve_run_id_dir(
@@ -376,6 +409,8 @@ function collect_files_from_run_id(run_id::AbstractString, cluster_results_root:
 
     files = if resolved_family == RUN_FAMILY_SSEP
         collect_ssep_files_from_run_dir(run_dir)
+    elseif resolved_family == RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND
+        collect_diffusive_files_from_run_dir(run_dir)
     else
         states_dir = joinpath(run_dir, "states")
         isdir(states_dir) || error("States directory not found for run_id: $(states_dir)")
@@ -524,6 +559,65 @@ function canonicalize_loaded_param(param; state=nothing)
     )
 end
 
+function legacy_correlation_cuts_for_plot(state)
+    if has_prop(state, :ρ_matrix_avg_cuts)
+        cuts = get_prop(state, :ρ_matrix_avg_cuts)
+        if cuts isa AbstractDict
+            return cuts
+        end
+    end
+
+    if has_prop(state, :ρ_matrix_avg)
+        rho_matrix_avg = get_prop(state, :ρ_matrix_avg)
+        rho_matrix_avg === nothing || return Dict{Symbol,Any}(:full => Float64.(rho_matrix_avg))
+    end
+
+    return nothing
+end
+
+function canonicalize_loaded_state(state; potential=nothing)
+    cuts = legacy_correlation_cuts_for_plot(state)
+    if has_prop(state, :ρ_matrix_avg_cuts) || isnothing(cuts)
+        return state
+    end
+
+    rho_avg = get_prop(state, :ρ_avg, nothing)
+    rho_avg === nothing && return state
+
+    rho_inst = get_prop(state, :ρ, nothing)
+    if rho_inst === nothing
+        rho_inst = zeros(Int, size(rho_avg))
+    end
+
+    rho_plus = get_prop(state, :ρ₊, nothing)
+    rho_plus === nothing && (rho_plus = zeros(Int, size(rho_inst)))
+
+    rho_minus = get_prop(state, :ρ₋, nothing)
+    rho_minus === nothing && (rho_minus = zeros(Int, size(rho_inst)))
+
+    stats = get_prop(state, :bond_pass_stats, nothing)
+    if !(stats isa AbstractDict)
+        stats = Dict{Symbol,Vector{Float64}}()
+    end
+
+    potential_value = isnothing(potential) ? get_prop(state, :potential, nothing) : potential
+    forcing_value = has_prop(state, :forcing) ? get_prop(state, :forcing) : Any[]
+
+    return LegacyPlotState(
+        t=Int(get_prop(state, :t, 0)),
+        particles=get_prop(state, :particles, Any[]),
+        ρ=rho_inst,
+        ρ₊=rho_plus,
+        ρ₋=rho_minus,
+        ρ_avg=Float64.(rho_avg),
+        ρ_matrix_avg_cuts=cuts,
+        bond_pass_stats=stats,
+        T=Float64(get_prop(state, :T, 0.0)),
+        potential=potential_value,
+        forcing=forcing_value,
+    )
+end
+
 function has_loaded_key(data, key::AbstractString)
     return haskey(data, key) || haskey(data, Symbol(key))
 end
@@ -572,11 +666,16 @@ function load_state_bundle(saved_state::String)
     end
 
     param = canonicalize_loaded_param(param; state=state)
+    state = canonicalize_loaded_state(state; potential=potential)
     return state, param, potential
 end
 
 function param_module_name_for_plot(param)
     return loaded_module_name(param)
+end
+
+function is_legacy_normalized_state(state)
+    return Bool(get_prop(state, :legacy_normalized, false))
 end
 
 function is_ssep_state(state, param)
@@ -587,12 +686,10 @@ function is_common_diffusive_state(state, param)
     is_ssep_state(state, param) && return false
     rho_avg = get_prop(state, :ρ_avg, nothing)
     rho_matrix_avg_cuts = get_prop(state, :ρ_matrix_avg_cuts, nothing)
-    forcing = get_prop(state, :forcing, nothing)
     dims = get_prop(param, :dims, nothing)
 
     rho_avg === nothing && return false
     rho_matrix_avg_cuts === nothing && return false
-    forcing === nothing && return false
     dims === nothing && return false
     return dims isa Tuple || dims isa AbstractVector
 end
@@ -647,6 +744,101 @@ function resolve_collapse_indices(available_indices::Vector{Int}, requested_indi
         )
     end
     return requested_indices
+end
+
+function full_matrix_collapse_indices(param)
+    dims = get_prop(param, :dims, nothing)
+    if !(dims isa Tuple || dims isa AbstractVector) || length(dims) != 1
+        return Int[]
+    end
+    L = Int(dims[1])
+    L <= 1 && return Int[]
+    return collect(1:div(L, 2))
+end
+
+function resolve_1d_collapse_indices(state, param, requested_indices::Union{Nothing,Vector{Int}}, saved_state::AbstractString)
+    selected_indices = selected_cut_indices_from_state(state, param)
+    if !isempty(selected_indices)
+        return resolve_collapse_indices(selected_indices, requested_indices, saved_state), :selected_site_cuts
+    end
+
+    available_indices = full_matrix_collapse_indices(param)
+    if isempty(available_indices)
+        return Int[], :unsupported
+    end
+
+    if isnothing(requested_indices)
+        return Int[], :needs_explicit_indices
+    end
+
+    missing = [idx for idx in requested_indices if !(idx in available_indices)]
+    if !isempty(missing)
+        error(
+            "Requested collapse indices $(missing) are not valid for $(saved_state). " *
+            "Valid positive cut offsets for this 1D state are $(available_indices)."
+        )
+    end
+    return requested_indices, :full_matrix
+end
+
+function supports_1d_data_collapse(state, param)
+    dims = get_prop(param, :dims, nothing)
+    if !(dims isa Tuple || dims isa AbstractVector) || length(dims) != 1
+        return false
+    end
+
+    rho_avg = get_prop(state, :ρ_avg, nothing)
+    rho_matrix_avg_cuts = get_prop(state, :ρ_matrix_avg_cuts, nothing)
+    rho_avg === nothing && return false
+    rho_matrix_avg_cuts isa AbstractDict || return false
+
+    return PlotUtils.has_selected_site_cuts_for_plot(state) || haskey(rho_matrix_avg_cuts, :full)
+end
+
+function available_2d_cut_collapse_indices(param)
+    dims = get_prop(param, :dims, nothing)
+    if !(dims isa Tuple || dims isa AbstractVector) || length(dims) != 2
+        return Int[]
+    end
+
+    Lx = Int(dims[1])
+    Lx <= 1 && return Int[]
+    return collect(1:div(Lx, 2))
+end
+
+function resolve_2d_cut_collapse_indices(param, requested_indices::Union{Nothing,Vector{Int}}, saved_state::AbstractString)
+    available_indices = available_2d_cut_collapse_indices(param)
+    if isempty(available_indices)
+        return Int[], :unsupported
+    end
+
+    if isnothing(requested_indices)
+        return Int[], :needs_explicit_indices
+    end
+
+    missing = [idx for idx in requested_indices if !(idx in available_indices)]
+    if !isempty(missing)
+        error(
+            "Requested collapse indices $(missing) are not valid for $(saved_state). " *
+            "Valid positive cut offsets for this 2D state are $(available_indices)."
+        )
+    end
+    return requested_indices, :requested
+end
+
+function supports_2d_cut_data_collapse(state, param)
+    dims = get_prop(param, :dims, nothing)
+    if !(dims isa Tuple || dims isa AbstractVector) || length(dims) != 2
+        return false
+    end
+
+    rho_avg = get_prop(state, :ρ_avg, nothing)
+    rho_matrix_avg_cuts = get_prop(state, :ρ_matrix_avg_cuts, nothing)
+    rho_avg === nothing && return false
+    rho_matrix_avg_cuts isa AbstractDict || return false
+
+    return haskey(rho_matrix_avg_cuts, :full) ||
+           (haskey(rho_matrix_avg_cuts, :x_cut) && haskey(rho_matrix_avg_cuts, :diag_cut))
 end
 
 function bond_pass_stats_dict(state)
@@ -2024,18 +2216,20 @@ function save_diffusive_sweep_components(saved_state::String, state, param, out_
             println("Saved ", output_file)
         end
 
-        p_varj_ref = plot_single_origin_varj_reference_slopes(state, param)
-        if !isnothing(p_varj_ref)
-            output_file = joinpath(state_dir, "10_symmetrized_varj_reference_slopes.png")
-            savefig(p_varj_ref, output_file)
-            println("Saved ", output_file)
-        end
+        if has_prop(state, :forcing)
+            p_varj_ref = plot_single_origin_varj_reference_slopes(state, param)
+            if !isnothing(p_varj_ref)
+                output_file = joinpath(state_dir, "10_symmetrized_varj_reference_slopes.png")
+                savefig(p_varj_ref, output_file)
+                println("Saved ", output_file)
+            end
 
-        p_varj_fit = plot_single_origin_varj_loglog_fit(state, param)
-        if !isnothing(p_varj_fit)
-            output_file = joinpath(state_dir, "11_symmetrized_varj_loglog_fit.png")
-            savefig(p_varj_fit, output_file)
-            println("Saved ", output_file)
+            p_varj_fit = plot_single_origin_varj_loglog_fit(state, param)
+            if !isnothing(p_varj_fit)
+                output_file = joinpath(state_dir, "11_symmetrized_varj_loglog_fit.png")
+                savefig(p_varj_fit, output_file)
+                println("Saved ", output_file)
+            end
         end
     else
         PlotUtils.plot_sweep(state.t, state, param)
@@ -2062,12 +2256,34 @@ function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir
         placeholder_title="SSEP sweep plot unavailable",
     )
 
-    available_indices = selected_cut_indices_from_state(state, param)
-    if isempty(available_indices)
-        println("Skipping SSEP data collapse for ", saved_state, ": no positive selected cut indices were found.")
-        return
+    save_1d_data_collapse_if_possible(
+        saved_state,
+        state,
+        param,
+        out_dir;
+        collapse_power=collapse_power,
+        requested_collapse_indices=requested_collapse_indices,
+    )
+end
+
+function save_1d_data_collapse_if_possible(saved_state::String, state, param, out_dir::String;
+                                           collapse_power::Float64=2.0,
+                                           requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing)
+    supports_1d_data_collapse(state, param) || return false
+
+    base_name = replace(basename(saved_state), ".jld2" => "")
+    collapse_dir = joinpath(out_dir, base_name, "data_collapse")
+    mkpath(collapse_dir)
+
+    indices, source = resolve_1d_collapse_indices(state, param, requested_collapse_indices, saved_state)
+    if isempty(indices)
+        if source == :selected_site_cuts
+            println("Skipping 1D data collapse for ", saved_state, ": no positive selected cut indices were found.")
+        elseif source == :needs_explicit_indices
+            println("Skipping 1D data collapse for ", saved_state, ": pass --collapse_indices for legacy/full-matrix 1D states.")
+        end
+        return false
     end
-    indices = resolve_collapse_indices(available_indices, requested_collapse_indices, saved_state)
 
     PlotUtils.plot_data_colapse(
         [(state, param, base_name)],
@@ -2076,7 +2292,36 @@ function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir
         collapse_dir,
         true,
     )
-    println("Saved SSEP data collapse using indices ", indices, " under ", collapse_dir)
+    println("Saved 1D data collapse using indices ", indices, " under ", collapse_dir, " (source=", source, ")")
+    return true
+end
+
+function save_2d_cut_data_collapse_if_possible(saved_state::String, state, param, out_dir::String;
+                                               collapse_power::Float64=2.0,
+                                               requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing)
+    supports_2d_cut_data_collapse(state, param) || return false
+
+    base_name = replace(basename(saved_state), ".jld2" => "")
+    collapse_dir = joinpath(out_dir, base_name, "data_collapse")
+    mkpath(collapse_dir)
+
+    indices, source = resolve_2d_cut_collapse_indices(param, requested_collapse_indices, saved_state)
+    if isempty(indices)
+        if source == :needs_explicit_indices
+            println("Skipping 2D cut data collapse for ", saved_state, ": pass --collapse_indices to choose x/diag cut offsets.")
+        end
+        return false
+    end
+
+    PlotUtils.plot_data_colapse(
+        [(state, param, base_name)],
+        collapse_power,
+        indices,
+        collapse_dir,
+        true,
+    )
+    println("Saved 2D cut data collapse using indices ", indices, " under ", collapse_dir, " (source=", source, ")")
+    return true
 end
 
 function save_legacy_sweep_plot(saved_state::String, state, param, out_dir::String)
@@ -3059,6 +3304,16 @@ function main()
                         collapse_power=collapse_power,
                         requested_collapse_indices=requested_collapse_indices,
                     )
+                elseif is_legacy_normalized_state(state)
+                    save_legacy_sweep_plot(saved_state, state, param, out_dir)
+                    save_1d_data_collapse_if_possible(
+                        saved_state,
+                        state,
+                        param,
+                        out_dir;
+                        collapse_power=collapse_power,
+                        requested_collapse_indices=requested_collapse_indices,
+                    )
                 elseif is_common_diffusive_state(state, param)
                     save_diffusive_sweep_components(
                         saved_state,
@@ -3069,8 +3324,32 @@ function main()
                         keep_diagonal_in_multiforce_cut=keep_diag,
                         corr_model_c=corr_model_c,
                     )
+                    save_1d_data_collapse_if_possible(
+                        saved_state,
+                        state,
+                        param,
+                        out_dir;
+                        collapse_power=collapse_power,
+                        requested_collapse_indices=requested_collapse_indices,
+                    )
+                    save_2d_cut_data_collapse_if_possible(
+                        saved_state,
+                        state,
+                        param,
+                        out_dir;
+                        collapse_power=collapse_power,
+                        requested_collapse_indices=requested_collapse_indices,
+                    )
                 else
                     save_legacy_sweep_plot(saved_state, state, param, out_dir)
+                    save_1d_data_collapse_if_possible(
+                        saved_state,
+                        state,
+                        param,
+                        out_dir;
+                        collapse_power=collapse_power,
+                        requested_collapse_indices=requested_collapse_indices,
+                    )
                 end
             catch e
                 println("Failed to export sweep plots for ", saved_state, ": ", e)

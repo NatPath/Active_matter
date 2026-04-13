@@ -4,7 +4,7 @@ using LsqFit
 # using BenchmarkTools
 include(joinpath(@__DIR__, "..", "common", "plot_utils.jl"))
 using .PlotUtils
-include(joinpath(@__DIR__, "..", "common", "potentials.jl"))
+isdefined(@__MODULE__, :Potentials) || include(joinpath(@__DIR__, "..", "common", "potentials.jl"))
 
 #Wrap everything with a module to allow redefinition of type
 module FP
