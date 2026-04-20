@@ -149,7 +149,7 @@ forcing_type: "center_bond_x"
 forcing_magnitude: 1.0
 ffr: 1.0
 forcing_direction_flags: [true]
-forcing_rate_scheme: "legacy_penalty"
+forcing_rate_scheme: "symmetric_normalized"
 bond_pass_count_mode: "all_forcing_bonds"
 
 show_times: []
@@ -197,6 +197,7 @@ Notes for this 2D mode:
 - `forcing_type: "center_bond_x"` means the force is applied on the horizontal bond through the center. For even `L` this is `([L/2, L/2] -> [L/2 + 1, L/2])`.
 - Use `forcing_type: "center_bond_y"` if you want the vertical center bond instead.
 - If you want pure diffusion with no forcing, keep the runner the same and set `forcing_magnitude: 0.0` and `ffr: 0.0`.
+- If `forcing_rate_scheme` is omitted in `run_diffusive_no_activity.jl`, the default is now `symmetric_normalized`.
 
 ### Forcing options in 2D
 
@@ -229,13 +230,14 @@ That signed forcing is then converted into a hop-rate prefactor.
   Prefactor: `(D + signed_force) / (D + f_max)`, where `f_max` is the largest total forcing magnitude on any bond.
   Essence: the two directions are treated symmetrically through a `D ± f` form, then normalized by `D + f_max` so the overall update scale stays bounded.
   For a single forced bond with no potential, this gives `1` in the active direction and `(D - f) / (D + f)` in the opposite direction.
+  This is the default scheme for `run_diffusive_no_activity.jl`.
 
 If you also have a nonzero potential, the same prefactor is multiplied by the usual Metropolis factor `min(1, exp(-ΔV/T))`.
 
 Practical guidance:
 
-- Use `legacy_penalty` when you want backward compatibility with older runs or older intuition in this codebase.
-- Use `symmetric_normalized` when you want the force to enter as a more explicit `D ± f` bias.
+- Use `legacy_penalty` when you explicitly want backward compatibility with older diffusive runs.
+- Use `symmetric_normalized` when you want the default current diffusive behavior and a more explicit `D ± f` bias.
 - Keeping `forcing_magnitude <= D` is the clearest regime. If `f > D`, one of the directional rates can go negative before the code clamps probabilities back into `[0, 1]`.
 
 ## Important compatibility note

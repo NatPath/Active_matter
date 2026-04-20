@@ -79,7 +79,7 @@ module FPDiffusive
 
     #constructor
     function setParam(γ, dims, ρ₀, D, potential_type,fluctuation_type, potential_magnitude,ffr=0.0;
-                      forcing_rate_scheme=LEGACY_FORCING_RATE_SCHEME)
+                      forcing_rate_scheme=SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME)
         ffrs = if ffr isa AbstractVector
             Float64.(collect(ffr))
         else
@@ -101,7 +101,7 @@ module FPDiffusive
         if hasfield(typeof(param), :forcing_rate_scheme)
             return normalize_forcing_rate_scheme(getfield(param, :forcing_rate_scheme))
         end
-        return LEGACY_FORCING_RATE_SCHEME
+        return SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME
     end
 
     struct Particle{D,I<:Signed}
@@ -950,7 +950,7 @@ module FPDiffusive
     function calculate_jump_probability(D,ΔV,T,exp_table::ExpLookupTable;
                                         directed_bond_forcing=0.0,
                                         rate_normalization=1.0,
-                                        forcing_rate_scheme=LEGACY_FORCING_RATE_SCHEME)
+                                        forcing_rate_scheme=SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME)
         exp_arg = -ΔV / T
         exp_val = lookup_exp(exp_table, exp_arg)
         p = bond_rate_prefactor(D, directed_bond_forcing, rate_normalization, forcing_rate_scheme) * min(1,exp_val)

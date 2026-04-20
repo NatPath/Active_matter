@@ -429,7 +429,7 @@ end
         "forcing_magnitude" => 1.0,
         "forcing_magnitudes" => [1.0],
         "forcing_direction_flags" => [true],
-        "forcing_rate_scheme" => "legacy_penalty",
+        "forcing_rate_scheme" => "symmetric_normalized",
         "bond_pass_count_mode" => "nonzero_magnitude",
         "ic" => "random",
         "int_type" => "auto",
@@ -1579,7 +1579,7 @@ function forcing_rate_scheme_from_param(param)
     if loaded_param_has_field(param, :forcing_rate_scheme)
         return String(loaded_param_field(param, :forcing_rate_scheme))
     end
-    return FPDiffusive.LEGACY_FORCING_RATE_SCHEME
+    return FPDiffusive.SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME
 end
 
 function canonicalize_loaded_param(param)
