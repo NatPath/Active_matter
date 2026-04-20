@@ -7,7 +7,20 @@ module FPDiffusive
     # using ..PlotUtils: plot_sweep 
     using ..Potentials: AbstractPotential, potential_update!, Potential, MultiPotential, IndependentFluctuatingPoints, BondForce, bondforce_update!
     using LinearAlgebra
-    export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics, reset_statistics!, configure_bond_passage_tracking!, latest_bond_passage_counts
+    export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics, reset_statistics!, configure_bond_passage_tracking!, latest_bond_passage_counts, normalize_simulation_backend, loaded_state_backend, occupancy_sampler_mode_name
+
+    const PARTICLE_SIMULATION_BACKEND = "particles"
+    const OCCUPANCY_SIMULATION_BACKEND = "occupancy"
+
+    function normalize_simulation_backend(raw_backend)
+        backend = lowercase(strip(String(raw_backend)))
+        if backend in ("particles", "particle")
+            return PARTICLE_SIMULATION_BACKEND
+        elseif backend in ("occupancy", "occupancies", "lumped", "lumps")
+            return OCCUPANCY_SIMULATION_BACKEND
+        end
+        throw(ArgumentError("Unsupported simulation_backend: $raw_backend. Use \"particles\" or \"occupancy\"."))
+    end
 
     const STATE_RUNTIME_SCRATCH = IdDict{Any, Dict{Symbol,Any}}()
     
@@ -100,6 +113,7 @@ module FPDiffusive
     end
 
     function particle_position_type_from_particles(particles, fallback::Type{<:Signed}=Int32)
+        particles === nothing && return fallback
         if isempty(particles)
             return fallback
         end
@@ -151,6 +165,27 @@ module FPDiffusive
         end
         return converted
     end
+
+    function particles_from_density_array(ρ::AbstractArray{<:Integer,N}, ::Type{I}) where {N,I<:Signed}
+        total_particles = Int(sum(Int64.(ρ)))
+        particles = Vector{Particle{N,I}}(undef, total_particles)
+        next_idx = 1
+        for cart_idx in CartesianIndices(ρ)
+            count = Int(ρ[cart_idx])
+            count < 0 && throw(ArgumentError("Density array contains a negative occupancy at $(Tuple(cart_idx))."))
+            if count == 0
+                continue
+            end
+            pos_tuple = ntuple(i -> convert(I, cart_idx[i]), N)
+            @inbounds for _ in 1:count
+                particles[next_idx] = Particle{N,I}(pos_tuple)
+                next_idx += 1
+            end
+        end
+        return particles
+    end
+
+    loaded_state_backend(state) = state isa OccupancyState ? OCCUPANCY_SIMULATION_BACKEND : PARTICLE_SIMULATION_BACKEND
 
     @inline function has_directional_densities(state)
         return !(getfield(state, :ρ₊) === nothing || getfield(state, :ρ₋) === nothing)
@@ -219,6 +254,7 @@ module FPDiffusive
     const BOND_PASS_TOTAL_SQ_AVG_KEY = :bond_pass_total_sq_avg
     const BOND_PASS_SAMPLE_COUNT_KEY = :bond_pass_sample_count
     const BOND_PASS_TRACK_MASK_KEY = :bond_pass_track_mask
+    const BOND_PASS_COLLECTION_ENABLED_KEY = :bond_pass_collection_enabled
     const BOND_PASS_SPATIAL_F_AVG_KEY = :bond_pass_spatial_f_avg
     const BOND_PASS_SPATIAL_F2_AVG_KEY = :bond_pass_spatial_f2_avg
     const BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY = :bond_pass_spatial_sample_count
@@ -228,22 +264,32 @@ module FPDiffusive
             return ones(Float64, length(forcings))
         elseif mode == "nonzero_magnitude"
             return [abs(force.magnitude) > 0.0 ? 1.0 : 0.0 for force in forcings]
+        elseif mode == "none"
+            return zeros(Float64, length(forcings))
         else
-            throw(ArgumentError("Unsupported bond_pass_count_mode: $mode. Use \"nonzero_magnitude\" or \"all_forcing_bonds\"."))
+            throw(ArgumentError("Unsupported bond_pass_count_mode: $mode. Use \"none\", \"nonzero_magnitude\", or \"all_forcing_bonds\"."))
         end
     end
 
-    function initialize_bond_passage_stats!(bond_pass_stats, n_forces::Int; track_mask=nothing)
+    @inline function bond_passage_collection_enabled(stats)
+        return !haskey(stats, BOND_PASS_COLLECTION_ENABLED_KEY) ||
+               isempty(stats[BOND_PASS_COLLECTION_ENABLED_KEY]) ||
+               stats[BOND_PASS_COLLECTION_ENABLED_KEY][1] > 0.5
+    end
+
+    function initialize_bond_passage_stats!(bond_pass_stats, n_forces::Int; track_mask=nothing,
+                                            collection_enabled::Bool=true)
         bond_pass_stats[BOND_PASS_FORWARD_AVG_KEY] = zeros(Float64, n_forces)
         bond_pass_stats[BOND_PASS_REVERSE_AVG_KEY] = zeros(Float64, n_forces)
         bond_pass_stats[BOND_PASS_TOTAL_AVG_KEY] = zeros(Float64, n_forces)
         bond_pass_stats[BOND_PASS_TOTAL_SQ_AVG_KEY] = zeros(Float64, n_forces)
         bond_pass_stats[BOND_PASS_SAMPLE_COUNT_KEY] = [0.0]
+        bond_pass_stats[BOND_PASS_COLLECTION_ENABLED_KEY] = [collection_enabled ? 1.0 : 0.0]
         if track_mask === nothing
             if haskey(bond_pass_stats, BOND_PASS_TRACK_MASK_KEY) && length(bond_pass_stats[BOND_PASS_TRACK_MASK_KEY]) == n_forces
                 bond_pass_stats[BOND_PASS_TRACK_MASK_KEY] = Float64.(bond_pass_stats[BOND_PASS_TRACK_MASK_KEY])
             else
-                bond_pass_stats[BOND_PASS_TRACK_MASK_KEY] = ones(Float64, n_forces)
+                bond_pass_stats[BOND_PASS_TRACK_MASK_KEY] = collection_enabled ? ones(Float64, n_forces) : zeros(Float64, n_forces)
             end
         else
             if length(track_mask) != n_forces
@@ -251,10 +297,16 @@ module FPDiffusive
             end
             bond_pass_stats[BOND_PASS_TRACK_MASK_KEY] = Float64.(track_mask)
         end
+        if !collection_enabled
+            delete!(bond_pass_stats, BOND_PASS_SPATIAL_F_AVG_KEY)
+            delete!(bond_pass_stats, BOND_PASS_SPATIAL_F2_AVG_KEY)
+            delete!(bond_pass_stats, BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY)
+        end
         return nothing
     end
 
     function initialize_spatial_bond_passage_stats!(bond_pass_stats, L::Int)
+        bond_passage_collection_enabled(bond_pass_stats) || return nothing
         bond_pass_stats[BOND_PASS_SPATIAL_F_AVG_KEY] = zeros(Float64, L)
         bond_pass_stats[BOND_PASS_SPATIAL_F2_AVG_KEY] = zeros(Float64, L)
         bond_pass_stats[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY] = [0.0]
@@ -263,7 +315,8 @@ module FPDiffusive
 
     function setDummyState(state_to_imitate, ρ_avg, ρ_matrix_avg_cuts, t, bond_pass_stats=nothing;
                            density_int_type=nothing, position_int_type=nothing,
-                           keep_directional_densities::Bool=false)
+                           keep_directional_densities::Bool=false,
+                           simulation_backend=nothing)
         stats_to_use = if isnothing(bond_pass_stats)
             if hasfield(typeof(state_to_imitate), :bond_pass_stats)
                 getfield(state_to_imitate, :bond_pass_stats)
@@ -280,19 +333,22 @@ module FPDiffusive
             bond_pass_stats
         end
         raw_ρ = loaded_object_field(state_to_imitate, :ρ)
-        raw_particles = loaded_object_field(state_to_imitate, :particles)
         raw_T = loaded_object_field(state_to_imitate, :T)
         raw_potential = loaded_object_field(state_to_imitate, :potential)
         raw_forcing = loaded_object_field(state_to_imitate, :forcing)
         raw_exp_table = loaded_object_field(state_to_imitate, :exp_table)
         dim_num = ndims(raw_ρ)
         density_type = isnothing(density_int_type) ? eltype(raw_ρ) : density_int_type
+        raw_particles = try
+            loaded_object_field(state_to_imitate, :particles)
+        catch
+            nothing
+        end
         position_type = isnothing(position_int_type) ?
             particle_position_type_from_particles(raw_particles, Int32) :
             position_int_type
         density_type <: Signed || throw(ArgumentError("density_int_type must be signed. Got $(density_type)."))
         position_type <: Signed || throw(ArgumentError("position_int_type must be signed. Got $(position_type)."))
-        particles = convert_particles(raw_particles, position_type, dim_num)
         ρ = convert_density_array(raw_ρ, density_type)
         ρ₊ = nothing
         ρ₋ = nothing
@@ -312,14 +368,32 @@ module FPDiffusive
                 ρ₋ = convert_density_array(raw_ρ₋, density_type)
             end
         end
+        backend = isnothing(simulation_backend) ? loaded_state_backend(state_to_imitate) : normalize_simulation_backend(simulation_backend)
+        if backend == OCCUPANCY_SIMULATION_BACKEND
+            return occupancy_state_from_components(
+                t,
+                ρ,
+                ρ₊,
+                ρ₋,
+                ρ_avg,
+                ρ_matrix_avg_cuts,
+                stats_to_use,
+                raw_T,
+                raw_potential,
+                raw_forcing,
+                raw_exp_table,
+            )
+        end
+
+        particles = particles_from_density_array(ρ, position_type)
         max_site_occupancy = Int64(maximum(ρ))
-        dummy_state = State(
-            t, 
+        return State(
+            t,
             particles,
             ρ,
             ρ₊,
             ρ₋,
-            ρ_avg, 
+            ρ_avg,
             ρ_matrix_avg_cuts,
             stats_to_use,
             max_site_occupancy,
@@ -328,7 +402,6 @@ module FPDiffusive
             raw_forcing,
             raw_exp_table
         )
-        return dummy_state
     end
 
     function populate_densities!(
@@ -384,7 +457,24 @@ module FPDiffusive
                       ic ="random", full_corr_tensor=false, int_type::Type{<:Signed}=Int32,
                       position_int_type::Type{<:Signed}=Int32,
                       keep_directional_densities::Bool=false,
-                      bond_pass_count_mode::AbstractString="nonzero_magnitude")
+                      bond_pass_count_mode::AbstractString="nonzero_magnitude",
+                      simulation_backend::AbstractString=PARTICLE_SIMULATION_BACKEND)
+        backend = normalize_simulation_backend(simulation_backend)
+        if backend == OCCUPANCY_SIMULATION_BACKEND
+            return setOccupancyState(
+                t,
+                rng,
+                param,
+                T,
+                potential,
+                bond_force;
+                ic=ic,
+                full_corr_tensor=full_corr_tensor,
+                int_type=int_type,
+                keep_directional_densities=keep_directional_densities,
+                bond_pass_count_mode=bond_pass_count_mode,
+            )
+        end
         N = param.N
         dim = length(param.dims)
         if N > typemax(int_type)
@@ -460,7 +550,9 @@ module FPDiffusive
             throw(ArgumentError("bond_force must be BondForce or Vector{BondForce}"))
         end
         track_mask = bond_pass_track_mask_for_forcings(bond_forces, String(bond_pass_count_mode))
-        initialize_bond_passage_stats!(bond_pass_stats, length(bond_forces); track_mask=track_mask)
+        initialize_bond_passage_stats!(bond_pass_stats, length(bond_forces);
+                                       track_mask=track_mask,
+                                       collection_enabled=String(bond_pass_count_mode) != "none")
         if dim == 1
             initialize_spatial_bond_passage_stats!(bond_pass_stats, param.dims[1])
         end
@@ -503,7 +595,10 @@ module FPDiffusive
         else
             bond_pass_track_mask_for_forcings(forcings, "nonzero_magnitude")
         end
-        initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings); track_mask=existing_mask)
+        collection_enabled = bond_passage_collection_enabled(state.bond_pass_stats)
+        initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings);
+                                       track_mask=existing_mask,
+                                       collection_enabled=collection_enabled)
         if dim == 1
             initialize_spatial_bond_passage_stats!(state.bond_pass_stats, size(state.ρ, 1))
         end
@@ -513,7 +608,9 @@ module FPDiffusive
     function configure_bond_passage_tracking!(state, mode::AbstractString="nonzero_magnitude")
         forcings = get_state_forcings!(state)
         track_mask = bond_pass_track_mask_for_forcings(forcings, String(mode))
-        initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings); track_mask=track_mask)
+        initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings);
+                                       track_mask=track_mask,
+                                       collection_enabled=String(mode) != "none")
         if ndims(state.ρ) == 1
             initialize_spatial_bond_passage_stats!(state.bond_pass_stats, size(state.ρ, 1))
         end
@@ -633,11 +730,15 @@ module FPDiffusive
         if !haskey(stats, BOND_PASS_SAMPLE_COUNT_KEY) || length(stats[BOND_PASS_SAMPLE_COUNT_KEY]) != 1
             stats[BOND_PASS_SAMPLE_COUNT_KEY] = [0.0]
         end
+        if !haskey(stats, BOND_PASS_COLLECTION_ENABLED_KEY) || length(stats[BOND_PASS_COLLECTION_ENABLED_KEY]) != 1
+            stats[BOND_PASS_COLLECTION_ENABLED_KEY] = [1.0]
+        end
         if !haskey(stats, BOND_PASS_TRACK_MASK_KEY) || length(stats[BOND_PASS_TRACK_MASK_KEY]) != n_forces
             if forcings === nothing
-                stats[BOND_PASS_TRACK_MASK_KEY] = ones(Float64, n_forces)
+                stats[BOND_PASS_TRACK_MASK_KEY] = bond_passage_collection_enabled(stats) ? ones(Float64, n_forces) : zeros(Float64, n_forces)
             else
-                stats[BOND_PASS_TRACK_MASK_KEY] = bond_pass_track_mask_for_forcings(forcings, "nonzero_magnitude")
+                default_mode = bond_passage_collection_enabled(stats) ? "nonzero_magnitude" : "none"
+                stats[BOND_PASS_TRACK_MASK_KEY] = bond_pass_track_mask_for_forcings(forcings, default_mode)
             end
         end
         return nothing
@@ -645,6 +746,7 @@ module FPDiffusive
 
     function tracked_force_indices_from_state(state, n_forces::Int)
         stats = state.bond_pass_stats
+        bond_passage_collection_enabled(stats) || return Int[]
         if !haskey(stats, BOND_PASS_TRACK_MASK_KEY) || length(stats[BOND_PASS_TRACK_MASK_KEY]) != n_forces
             return collect(1:n_forces)
         end
@@ -654,6 +756,7 @@ module FPDiffusive
 
     function ensure_spatial_bond_passage_stats!(state, L::Int)
         stats = state.bond_pass_stats
+        bond_passage_collection_enabled(stats) || return nothing
         if !haskey(stats, BOND_PASS_SPATIAL_F_AVG_KEY) || length(stats[BOND_PASS_SPATIAL_F_AVG_KEY]) != L
             stats[BOND_PASS_SPATIAL_F_AVG_KEY] = zeros(Float64, L)
         end
@@ -706,6 +809,7 @@ module FPDiffusive
 
         ensure_bond_passage_stats!(state, n_forces)
         stats = state.bond_pass_stats
+        bond_passage_collection_enabled(stats) || return nothing
 
         n_prev = stats[BOND_PASS_SAMPLE_COUNT_KEY][1]
         n_new = n_prev + 1.0
@@ -738,6 +842,7 @@ module FPDiffusive
 
         ensure_spatial_bond_passage_stats!(state, L)
         stats = state.bond_pass_stats
+        bond_passage_collection_enabled(stats) || return nothing
 
         n_prev = stats[BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY][1]
         n_new = n_prev + 1.0
@@ -922,13 +1027,18 @@ module FPDiffusive
             L = param.dims[1]
             scratch = runtime_scratch!(state)
             left_neighbors, right_neighbors = periodic_neighbors_1d!(state, L)
-            ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
+            track_bond_passages = bond_passage_collection_enabled(state.bond_pass_stats)
+            if track_bond_passages
+                ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
+            end
             tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-            sweep_forward_counts = cached_int_buffer!(scratch, :bond_forward_counts_1d, n_forces)
-            sweep_reverse_counts = cached_int_buffer!(scratch, :bond_reverse_counts_1d, n_forces)
-            ensure_spatial_bond_passage_stats!(state, L)
-            sweep_spatial_forward_counts = cached_int_buffer!(scratch, :spatial_forward_counts_1d, L)
-            sweep_spatial_reverse_counts = cached_int_buffer!(scratch, :spatial_reverse_counts_1d, L)
+            sweep_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_forward_counts_1d, n_forces) : Int64[]
+            sweep_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_reverse_counts_1d, n_forces) : Int64[]
+            if track_bond_passages
+                ensure_spatial_bond_passage_stats!(state, L)
+            end
+            sweep_spatial_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :spatial_forward_counts_1d, L) : Int64[]
+            sweep_spatial_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :spatial_reverse_counts_1d, L) : Int64[]
             Δt=1
             t_end = state.t + Δt
             t= state.t
@@ -1013,9 +1123,9 @@ module FPDiffusive
                                                     forcings, tracked_force_indices,
                                                     spot_index, candidate_spot_index)
                         end
-                        if action_index == 2 && candidate_spot_index == right_index
+                        if track_bond_passages && action_index == 2 && candidate_spot_index == right_index
                             sweep_spatial_forward_counts[spot_index] += 1
-                        elseif action_index == 1 && candidate_spot_index == left_index
+                        elseif track_bond_passages && action_index == 1 && candidate_spot_index == left_index
                             # Left jump i->i-1 crosses bond (i-1,i) in reverse orientation.
                             sweep_spatial_reverse_counts[left_index] += 1
                         end
@@ -1065,7 +1175,7 @@ module FPDiffusive
                 
                 t += 1/param.N
             end
-            if collect_statistics
+            if collect_statistics && track_bond_passages
                 update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
                 update_spatial_bond_passage_averages!(state, sweep_spatial_forward_counts, sweep_spatial_reverse_counts)
             end
@@ -1083,10 +1193,13 @@ module FPDiffusive
             Lx, Ly = param.dims
             scratch = runtime_scratch!(state)
             left_x, right_x, down_y, up_y = periodic_neighbors_2d!(state, Lx, Ly)
-            ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
+            track_bond_passages = bond_passage_collection_enabled(state.bond_pass_stats)
+            if track_bond_passages
+                ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
+            end
             tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-            sweep_forward_counts = cached_int_buffer!(scratch, :bond_forward_counts_2d, n_forces)
-            sweep_reverse_counts = cached_int_buffer!(scratch, :bond_reverse_counts_2d, n_forces)
+            sweep_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_forward_counts_2d, n_forces) : Int64[]
+            sweep_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_reverse_counts_2d, n_forces) : Int64[]
             Δt = 1
             t_end = state.t + Δt
             t = state.t
@@ -1224,7 +1337,7 @@ module FPDiffusive
                 
                 t += 1 / param.N
             end
-            if collect_statistics
+            if collect_statistics && track_bond_passages
                 update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
             end
         else
@@ -1238,9 +1351,10 @@ module FPDiffusive
         end
     end
 
+    include(joinpath(@__DIR__, "modules_diffusive_no_activity_occupancy.jl"))
+
     function tower_sampling(weights, w_sum, rng)
-        #key = w_sum*rand(rng)
-        key = w_sum*rand()
+        key = w_sum * rand(rng)
 
         selected = 1
         gathered = weights[selected]
@@ -1254,8 +1368,7 @@ module FPDiffusive
 
     @inline function tower_sampling(w1::Real, w2::Real, rng)
         w_sum = w1 + w2
-        # Keep RNG source consistent with the existing vector-based tower sampling.
-        key = w_sum * rand()
+        key = w_sum * rand(rng)
         return key <= w1 ? 1 : 2
     end
 end

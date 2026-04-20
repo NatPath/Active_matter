@@ -15,12 +15,12 @@ module Potentials
 
     function display_vector_plot(values)
         ensure_plots_loaded!()
-        display(Plots.plot(values))
+        display(Base.invokelatest(Plots.plot, values))
     end
 
     function display_heatmap_plot(values; kwargs...)
         ensure_plots_loaded!()
-        display(Plots.heatmap(values; kwargs...))
+        display(Base.invokelatest(Plots.heatmap, values; kwargs...))
     end
 
     # Abstract type for polymorphism
@@ -167,7 +167,7 @@ module Potentials
         println("Profile frequencies: ", counts ./ sum(counts))
     end
 
-    function choose_potential(v_args,dims; boundary_walls = false, fluctuation_type="plus-minus",rng, plot_flag=true)
+    function choose_potential(v_args,dims; boundary_walls = false, fluctuation_type="plus-minus",rng, plot_flag=false)
         # if get(v_args, "fluctuation_type", "") == "profile_switch"
         #     profiles = get(v_args, "profiles", error("'profiles' key required for profile_switch"))
         #     probs    = get(v_args, "profile_probs", nothing)
@@ -181,7 +181,7 @@ module Potentials
             base_args = deepcopy(v_args)
             delete!(base_args,"multi")
             delete!(base_args,"n")
-            potentials = [choose_potential(base_args, dims; boundary_walls, fluctuation_type) for _ in 1:n]
+            potentials = [choose_potential(base_args, dims; boundary_walls, fluctuation_type, rng=rng, plot_flag=plot_flag) for _ in 1:n]
             return setMultiPotential(potentials)
         end
         V = zeros(Float64, dims)
@@ -320,7 +320,7 @@ module Potentials
                     error("'potentials_profiles' key required for profile_switch")
                 end
                 probs    = get(v_args, "profile_probs", nothing)
-                pots = [choose_potential(pa, dims; boundary_walls=boundary_walls, fluctuation_type="zero-potential", rng=rng)
+                pots = [choose_potential(pa, dims; boundary_walls=boundary_walls, fluctuation_type="zero-potential", rng=rng, plot_flag=plot_flag)
                         for pa in profiles]
                 potential = setProfileSwitchPotential(pots; probs=probs, rng=rng)
                 #check_potential_switch(potential,rng)
@@ -483,7 +483,7 @@ module Potentials
                     error("'potentials_profiles' key required for profile_switch")
                 end
                 probs    = get(v_args, "profile_probs", nothing)
-                pots = [choose_potential(pa, dims; boundary_walls=boundary_walls, fluctuation_type="zero-potential", rng=rng)
+                pots = [choose_potential(pa, dims; boundary_walls=boundary_walls, fluctuation_type="zero-potential", rng=rng, plot_flag=plot_flag)
                         for pa in profiles]
                 potential = setProfileSwitchPotential(pots; probs=probs, rng=rng)
                 #check_potential_switch(potential,rng)

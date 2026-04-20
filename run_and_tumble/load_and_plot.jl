@@ -733,6 +733,26 @@ function parse_requested_collapse_indices(raw_value)::Union{Nothing,Vector{Int}}
     return requested
 end
 
+function collapse_power_dir_token(collapse_power::Real)
+    rounded = round(Float64(collapse_power); digits=6)
+    if isinteger(rounded)
+        return string(Int(rounded))
+    end
+    token = @sprintf("%.6f", rounded)
+    token = replace(token, r"0+$" => "")
+    token = replace(token, r"\.$" => "")
+    return replace(token, "." => "p")
+end
+
+function collapse_indices_dir_token(indices::AbstractVector{<:Integer})
+    isempty(indices) && return "idx-none"
+    return "idx-" * join(Int.(indices), "-")
+end
+
+function collapse_dir_name(collapse_power::Real, indices::AbstractVector{<:Integer})
+    return "data_collapse_y" * collapse_power_dir_token(collapse_power) * "_" * collapse_indices_dir_token(indices)
+end
+
 function resolve_collapse_indices(available_indices::Vector{Int}, requested_indices::Union{Nothing,Vector{Int}}, saved_state::AbstractString)
     isnothing(requested_indices) && return available_indices
 
@@ -2245,9 +2265,7 @@ function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir
     base_name = replace(basename(saved_state), ".jld2" => "")
     state_dir = joinpath(out_dir, base_name)
     sweep_dir = joinpath(state_dir, "current_sweep_statistics")
-    collapse_dir = joinpath(state_dir, "data_collapse")
     mkpath(sweep_dir)
-    mkpath(collapse_dir)
 
     p_sweep = PlotUtils.plot_sweep(state.t, state, param)
     savefig_or_placeholder(
@@ -2272,9 +2290,6 @@ function save_1d_data_collapse_if_possible(saved_state::String, state, param, ou
     supports_1d_data_collapse(state, param) || return false
 
     base_name = replace(basename(saved_state), ".jld2" => "")
-    collapse_dir = joinpath(out_dir, base_name, "data_collapse")
-    mkpath(collapse_dir)
-
     indices, source = resolve_1d_collapse_indices(state, param, requested_collapse_indices, saved_state)
     if isempty(indices)
         if source == :selected_site_cuts
@@ -2284,6 +2299,8 @@ function save_1d_data_collapse_if_possible(saved_state::String, state, param, ou
         end
         return false
     end
+    collapse_dir = joinpath(out_dir, base_name, collapse_dir_name(collapse_power, indices))
+    mkpath(collapse_dir)
 
     PlotUtils.plot_data_colapse(
         [(state, param, base_name)],
@@ -2302,9 +2319,6 @@ function save_2d_cut_data_collapse_if_possible(saved_state::String, state, param
     supports_2d_cut_data_collapse(state, param) || return false
 
     base_name = replace(basename(saved_state), ".jld2" => "")
-    collapse_dir = joinpath(out_dir, base_name, "data_collapse")
-    mkpath(collapse_dir)
-
     indices, source = resolve_2d_cut_collapse_indices(param, requested_collapse_indices, saved_state)
     if isempty(indices)
         if source == :needs_explicit_indices
@@ -2312,6 +2326,8 @@ function save_2d_cut_data_collapse_if_possible(saved_state::String, state, param
         end
         return false
     end
+    collapse_dir = joinpath(out_dir, base_name, collapse_dir_name(collapse_power, indices))
+    mkpath(collapse_dir)
 
     PlotUtils.plot_data_colapse(
         [(state, param, base_name)],

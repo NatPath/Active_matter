@@ -33,7 +33,9 @@ Paths / connection:
   --sync_scope <auto|aggregation|full>    Data sync scope:
                                           auto (default): if run_id looks aggregated (_nr...), fetch aggregated artifacts only
                                           aggregation: fetch aggregated state files + run metadata
-                                          (prefers aggregated/, then states/aggregated, with legacy fallback;
+                                          (for diffusive_2d_origin_bond run_ids, fetches the run-specific
+                                          batch aggregate from aggregate_root/batches;
+                                          otherwise prefers aggregated/, then states/aggregated, with legacy fallback;
                                           excludes aggregated/archive and states/aggregated/archive)
                                           full: fetch full run directory
 
@@ -802,8 +804,8 @@ if [[ "${state_glob_explicit}" == "true" ]]; then
     aggregation_glob="${state_glob}"
 elif [[ "${resolved_family}" == "active_objects" && -n "${reg_aggregate_run_id:-}" ]]; then
     aggregation_glob="${reg_aggregate_run_id}*_steady_state_hist.jld2"
-elif [[ "${resolved_family}" == "diffusive_2d_origin_bond" && -n "${reg_cumulative_tag:-}" ]]; then
-    aggregation_glob="*id-aggregated_${reg_cumulative_tag}.jld2"
+elif [[ "${resolved_family}" == "diffusive_2d_origin_bond" ]]; then
+    aggregation_glob="*id-aggregated_batch_${run_id}.jld2"
 elif [[ "${resolved_family}" == "ssep" && -n "${reg_aggregate_run_id:-}" ]]; then
     aggregation_glob="*id-${reg_aggregate_run_id}.jld2"
 elif [[ -n "${state_glob}" ]]; then
@@ -850,25 +852,20 @@ if [[ "${sync_scope_effective}" == "aggregation" ]]; then
 
         remote_latest_cmd=$(
             cat <<EOF
-cd $(printf '%q' "${reg_aggregate_root}") && if [[ -d current ]]; then find current -maxdepth 1 -type f -name $(printf '%q' "${aggregation_glob}") ! -path '*/archive/*' -printf '%T@ %p\n'; fi | sort -nr | head -n 1
+cd $(printf '%q' "${reg_aggregate_root}") && if [[ -d batches ]]; then find batches -maxdepth 1 -type f -name $(printf '%q' "${aggregation_glob}") ! -path '*/archive/*' -printf '%T@ %p\n'; fi | sort -nr | head -n 1
 EOF
         )
         latest_remote_rel_path="$(
             ssh_with_master "${remote_user}@${remote_host}" "${remote_latest_cmd}" | awk '{ $1=""; sub(/^ /,""); print }' | tail -n 1
         )"
         if [[ -z "${latest_remote_rel_path}" ]]; then
-            echo "No remote cumulative aggregate matched ${aggregation_glob} under current/; nothing to sync."
+            echo "No remote diffusive batch aggregate matched ${aggregation_glob} under batches/; nothing to sync."
         else
-            files_from="$(mktemp)"
-            {
-                if remote_path_exists "${reg_aggregate_root}/lineage.csv"; then
-                    echo "lineage.csv"
-                fi
-                echo "${latest_remote_rel_path}"
-            } > "${files_from}"
-            rsync_with_master -av --progress --files-from="${files_from}" \
-                "${remote_user}@${remote_host}:${reg_aggregate_root}/" "${local_aggregate_dir}/"
-            rm -f "${files_from}"
+            batch_basename="$(basename "${latest_remote_rel_path}")"
+            scp_with_master "${remote_user}@${remote_host}:${reg_aggregate_root}/${latest_remote_rel_path}" "${local_aggregate_dir}/${batch_basename}"
+            if remote_path_exists "${reg_aggregate_root}/lineage.csv"; then
+                scp_with_master "${remote_user}@${remote_host}:${reg_aggregate_root}/lineage.csv" "${local_aggregate_dir}/lineage.csv"
+            fi
         fi
     elif [[ "${sync_latest_ssep_aggregate_only}" == "true" ]]; then
         remote_latest_cmd=$(
