@@ -23,6 +23,8 @@ Source options:
   --source_state_dir <dir>     Directory holding initial-state files
   --source_tag_prefix <prefix> Prefix for source state id tags, e.g. warmup_<run_id>_r
   --source_run_info <path>     Legacy/debug path; run_info.txt from a source batch
+  --previous_cumulative_state <path>
+                               Optional explicit cumulative aggregate to seed from
 
 Physical options:
   --L <int>                    Even 2D lattice size (default: 64)
@@ -42,7 +44,7 @@ Cluster/options:
   --aggregate_retries <int>    DAG retry count for aggregate node (default: 1)
   --dag_maxjobs <int>          Optional DAGMan replica throttle, 0 disables (default: 0)
   --batch_name <name>          Condor batch_name (default: run id)
-  --aggregate_root <dir>       Shared cumulative aggregate root
+  --aggregate_root <dir>       Aggregate root override (default: runs/.../<run_id>/aggregated)
   --cumulative_tag <tag>       Stable cumulative id tag (default: physical-parameter tag)
   --no_submit                  Generate files only; do not call condor_submit_dag
   -h, --help                   Show this help
@@ -50,8 +52,10 @@ Cluster/options:
 Behavior:
   - Resolves one terminal source state per replica.
   - Starts each production replica with --initial_state, so statistics are reset.
-  - Adds a DAG child job that aggregates the production batch and folds it into
-    aggregate_root/current, archiving the previous cumulative state if present.
+  - Adds a DAG child job that aggregates the production batch under the run folder
+    and folds it into aggregate_root/current.
+  - When continuing from a previous production batch, it seeds the new cumulative
+    aggregate from the previous run's recorded aggregate state.
   - For the next manual production-batch DAG, pass this production run_id as
     --source_run_id.
 EOF
@@ -144,11 +148,69 @@ latest_state_for_id_tag() {
     printf "%s" "${best_path}"
 }
 
+latest_cumulative_state_for_root() {
+    local aggregate_root_path="$1"
+    local id_tag="$2"
+    local best_path=""
+    local best_mtime=0
+    local candidate mtime current_dir
+
+    if [[ "${aggregate_root_path}" != /* ]]; then
+        aggregate_root_path="${REPO_ROOT}/${aggregate_root_path}"
+    fi
+
+    for current_dir in "${aggregate_root_path}/current" "${aggregate_root_path}"; do
+        [[ -d "${current_dir}" ]] || continue
+        while IFS= read -r -d '' candidate; do
+            mtime="$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)"
+            if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= best_mtime )); then
+                best_mtime="${mtime}"
+                best_path="${candidate}"
+            fi
+        done < <(find "${current_dir}" -maxdepth 1 -type f -name "*_id-aggregated_${id_tag}.jld2" ! -size 0 -print0 2>/dev/null)
+        if [[ -n "${best_path}" ]]; then
+            break
+        fi
+    done
+
+    printf "%s" "${best_path}"
+}
+
+resolve_previous_cumulative_state_from_run_info() {
+    local run_info_path="$1"
+    local fallback_tag="${2:-}"
+    local aggregate_state aggregate_root_from_info cumulative_tag_from_info
+
+    [[ -f "${run_info_path}" ]] || { printf ""; return 0; }
+
+    aggregate_state="$(read_run_info_value "${run_info_path}" "aggregate_state")"
+    if [[ -n "${aggregate_state}" ]]; then
+        if [[ "${aggregate_state}" != /* ]]; then
+            aggregate_state="${REPO_ROOT}/${aggregate_state}"
+        fi
+        if [[ -f "${aggregate_state}" ]]; then
+            printf "%s" "${aggregate_state}"
+            return 0
+        fi
+    fi
+
+    aggregate_root_from_info="$(read_run_info_value "${run_info_path}" "aggregate_root")"
+    cumulative_tag_from_info="$(read_run_info_value "${run_info_path}" "cumulative_tag")"
+    cumulative_tag_from_info="${cumulative_tag_from_info:-${fallback_tag}}"
+    if [[ -n "${aggregate_root_from_info}" && -n "${cumulative_tag_from_info}" ]]; then
+        latest_cumulative_state_for_root "${aggregate_root_from_info}" "${cumulative_tag_from_info}"
+        return 0
+    fi
+
+    printf ""
+}
+
 source_run_id=""
 source_kind="auto"
 source_run_info=""
 source_state_dir=""
 source_tag_prefix=""
+previous_cumulative_state=""
 L=""
 rho=""
 force_strength=""
@@ -188,6 +250,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --source_tag_prefix)
             source_tag_prefix="${2:-}"
+            shift 2
+            ;;
+        --previous_cumulative_state)
+            previous_cumulative_state="${2:-}"
             shift 2
             ;;
         --L)
@@ -288,7 +354,6 @@ if [[ -n "${source_run_info}" ]]; then
     rho="${rho:-$(read_run_info_value "${source_run_info}" rho0)}"
     force_strength="${force_strength:-$(read_run_info_value "${source_run_info}" force_strength)}"
     ffr="${ffr:-$(read_run_info_value "${source_run_info}" ffr)}"
-    aggregate_root="${aggregate_root:-$(read_run_info_value "${source_run_info}" aggregate_root)}"
     cumulative_tag="${cumulative_tag:-$(read_run_info_value "${source_run_info}" cumulative_tag)}"
 fi
 
@@ -375,6 +440,9 @@ if [[ -n "${source_run_id}" ]]; then
         fi
         source_state_dir="${source_state_dir:-${warmup_root}/states}"
         source_tag_prefix="${source_tag_prefix:-warmup_${resolved_source_run_id}_r}"
+        if [[ -z "${source_run_info}" && -f "${warmup_root}/run_info.txt" ]]; then
+            source_run_info="${warmup_root}/run_info.txt"
+        fi
     else
         if [[ -z "${production_root}" ]]; then
             if [[ -d "${production_root_exact}" ]]; then
@@ -395,6 +463,9 @@ if [[ -n "${source_run_id}" ]]; then
         fi
         source_state_dir="${source_state_dir:-${production_root}/states/raw}"
         source_tag_prefix="${source_tag_prefix:-prod_${resolved_source_run_id}_r}"
+        if [[ -z "${source_run_info}" && -f "${production_root}/run_info.txt" ]]; then
+            source_run_info="${production_root}/run_info.txt"
+        fi
     fi
     source_run_id="${resolved_source_run_id}"
     source_kind="${resolved_source_kind}"
@@ -448,15 +519,20 @@ rho_slug="$(slugify "${rho_display}")"
 force_slug="$(slugify "${force_display}")"
 ffr_slug="$(slugify "${ffr_display}")"
 
-if [[ -z "${aggregate_root}" ]]; then
-    aggregate_root="${REPO_ROOT}/saved_states/diffusive_2d_origin_bond/L${L}_rho${rho_slug}_f${force_slug}_ffr${ffr_slug}/production_aggregates"
-elif [[ "${aggregate_root}" != /* ]]; then
-    aggregate_root="${REPO_ROOT}/${aggregate_root}"
-fi
 if [[ -z "${cumulative_tag}" ]]; then
     cumulative_tag="cumulative_L${L}_rho${rho_slug}_f${force_slug}_ffr${ffr_slug}"
 else
     cumulative_tag="$(slugify "${cumulative_tag}")"
+fi
+if [[ -n "${previous_cumulative_state}" && "${previous_cumulative_state}" != /* ]]; then
+    previous_cumulative_state="${REPO_ROOT}/${previous_cumulative_state}"
+fi
+if [[ -z "${previous_cumulative_state}" && "${source_kind}" == "production" && -n "${source_run_info}" ]]; then
+    previous_cumulative_state="$(resolve_previous_cumulative_state_from_run_info "${source_run_info}" "${cumulative_tag}")"
+fi
+if [[ -n "${previous_cumulative_state}" && ! -f "${previous_cumulative_state}" ]]; then
+    echo "previous_cumulative_state not found: ${previous_cumulative_state}"
+    exit 1
 fi
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
@@ -468,6 +544,11 @@ fi
 job_batch_name="${batch_name:-${run_id}}"
 
 run_root="${REPO_ROOT}/runs/diffusive_2d_origin_bond/production/${run_id}"
+if [[ -z "${aggregate_root}" ]]; then
+    aggregate_root="${run_root}/aggregated"
+elif [[ "${aggregate_root}" != /* ]]; then
+    aggregate_root="${REPO_ROOT}/${aggregate_root}"
+fi
 config_dir="${run_root}/configs"
 submit_dir="${run_root}/submit"
 log_dir="${run_root}/logs"
@@ -588,7 +669,10 @@ EOF
         >> "${manifest}"
 done < "${initial_states_file}"
 
-aggregate_arguments="${AGGREGATE_SCRIPT} --config ${runtime_config} --raw_state_dir ${raw_state_dir} --num_replicas ${num_replicas} --raw_tag_prefix ${save_tag_prefix} --aggregate_root ${aggregate_root} --batch_tag ${batch_tag} --cumulative_tag ${cumulative_tag} --archive_stamp ${archive_stamp}"
+aggregate_arguments="${AGGREGATE_SCRIPT} --config ${runtime_config} --raw_state_dir ${raw_state_dir} --num_replicas ${num_replicas} --raw_tag_prefix ${save_tag_prefix} --aggregate_root ${aggregate_root} --batch_tag ${batch_tag} --cumulative_tag ${cumulative_tag} --archive_stamp ${archive_stamp} --run_info ${run_info}"
+if [[ -n "${previous_cumulative_state}" ]]; then
+    aggregate_arguments="${aggregate_arguments} --previous_cumulative_state ${previous_cumulative_state}"
+fi
 cat > "${aggregate_submit_file}" <<EOF
 Universe   = vanilla
 Executable = /bin/bash
@@ -653,6 +737,7 @@ source_kind=${source_kind}
 source_run_info=${source_run_info}
 source_state_dir=${source_state_dir}
 source_tag_prefix=${source_tag_prefix}
+previous_cumulative_state=${previous_cumulative_state}
 initial_states_file=${initial_states_file}
 run_root=${run_root}
 config_dir=${config_dir}
@@ -690,4 +775,5 @@ echo "  run_info=${run_info}"
 echo "  raw_states=${raw_state_dir}"
 echo "  aggregate_root=${aggregate_root}"
 echo "  cumulative_tag=${cumulative_tag}"
+echo "  previous_cumulative_state=${previous_cumulative_state}"
 echo "  next batch source_run_id=${run_id}"
