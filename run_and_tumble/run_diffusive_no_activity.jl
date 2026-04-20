@@ -202,6 +202,10 @@ function parse_commandline()
             help = "Particle-position integer type (signed; e.g., Int16, Int32, Int64, or auto)"
             arg_type = String
             required = false
+        "--simulation_backend"
+            help = "Diffusive simulation backend: particles or occupancy"
+            arg_type = String
+            required = false
         "--save_tag"
             help = "Optional save tag override (mainly used for aggregated multi-run outputs)"
             arg_type = String
@@ -315,6 +319,41 @@ end
     end
     return to_bool(get(defaults, "keep_directional_densities", false), "keep_directional_densities")
 end
+
+@everywhere function get_simulation_backend(params, defaults, cli_value=nothing)
+    if !isnothing(cli_value)
+        return FPDiffusive.normalize_simulation_backend(cli_value)
+    end
+    if haskey(params, "simulation_backend")
+        return FPDiffusive.normalize_simulation_backend(params["simulation_backend"])
+    end
+    return FPDiffusive.normalize_simulation_backend(get(defaults, "simulation_backend", "particles"))
+end
+
+function rebuild_state_for_runtime(state, param, args, params, defaults; preserve_statistics::Bool=true)
+    state_bond_pass_stats = if preserve_statistics && hasfield(typeof(state), :bond_pass_stats)
+        deepcopy(getfield(state, :bond_pass_stats))
+    else
+        Dict{Symbol,Vector{Float64}}()
+    end
+    density_int_type = resolve_density_int_type(args, params, defaults, param.N)
+    position_int_type = resolve_position_int_type(args, params, defaults, param.dims)
+    keep_directional_densities = get_keep_directional_densities(params, defaults)
+    simulation_backend = get_simulation_backend(params, defaults, get(args, "simulation_backend", nothing))
+    rebuilt_state = FPDiffusive.setDummyState(
+        state,
+        state.ρ_avg,
+        state.ρ_matrix_avg_cuts,
+        state.t,
+        state_bond_pass_stats;
+        density_int_type=density_int_type,
+        position_int_type=position_int_type,
+        keep_directional_densities=keep_directional_densities,
+        simulation_backend=simulation_backend,
+    )
+    return rebuilt_state, simulation_backend
+end
+
 # Load a saved state and reset its statistics so it can be used as a fresh initial condition.
 function load_initial_state(path)
     println("Loading initial state from $path")
@@ -396,6 +435,7 @@ end
         "int_type" => "auto",
         "position_int_type" => "auto",
         "keep_directional_densities" => false,
+        "simulation_backend" => "particles",
     )
 end
 
@@ -789,28 +829,21 @@ function reconcile_loaded_state_with_config!(state, loaded_param, args, params, 
         ffrs;
         forcing_rate_scheme=forcing_rate_scheme,
     )
-    density_int_type = resolve_density_int_type(args, params, defaults, reconciled_param.N)
-    position_int_type = resolve_position_int_type(args, params, defaults, dims)
-    keep_directional_densities = get_keep_directional_densities(params, defaults)
-    state = FPDiffusive.setDummyState(
-        state,
-        state.ρ_avg,
-        state.ρ_matrix_avg_cuts,
-        state.t,
-        state.bond_pass_stats;
-        density_int_type=density_int_type,
-        position_int_type=position_int_type,
-        keep_directional_densities=keep_directional_densities,
-    )
+    state, simulation_backend = rebuild_state_for_runtime(state, reconciled_param, args, params, defaults)
     FPDiffusive.configure_bond_passage_tracking!(state, bond_pass_count_mode)
 
     println("Reconciled initial_state with config:")
     println("  dims=$(dims)")
     println("  forcing_rate_scheme=$(forcing_rate_scheme)")
     println("  bond_pass_count_mode=$(bond_pass_count_mode)")
-    println("  density_int_type=$(density_int_type)")
-    println("  position_int_type=$(position_int_type)")
-    println("  keep_directional_densities=$(keep_directional_densities)")
+    println("  density_int_type=$(eltype(state.ρ))")
+    position_int_type_display = get(params, "position_int_type", defaults["position_int_type"])
+    println("  position_int_type=$(position_int_type_display)")
+    println("  keep_directional_densities=$(FPDiffusive.has_directional_densities(state))")
+    println("  simulation_backend=$(simulation_backend)")
+    if simulation_backend == "occupancy"
+        println("  occupancy_sampler=$(FPDiffusive.occupancy_sampler_mode_name(state))")
+    end
     println("  num_forces=$(length(config_forcings))")
     for (i, force) in enumerate(config_forcings)
         println("    force[$i] bond=$(force.bond_indices) magnitude=$(force.magnitude) direction=$(force.direction_flag) ffr=$(i <= length(ffrs) ? ffrs[i] : NaN)")
@@ -902,7 +935,7 @@ end
         elseif key == :bond_pass_spatial_sample_count
             sample_total = sum(!isempty(vec) ? Float64(vec[1]) : 0.0 for vec in vectors)
             averaged[key] = [sample_total > 0 ? sample_total : sum(spatial_weights)]
-        elseif key == :bond_pass_track_mask
+        elseif key in (:bond_pass_track_mask, :bond_pass_collection_enabled)
             averaged[key] = Float64.(vectors[1])
         else
             weights = if key in (:bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg)
@@ -1894,6 +1927,7 @@ end
     density_int_type = resolve_density_int_type(args, params, defaults, param.N)
     position_int_type = resolve_position_int_type(args, params, defaults, dims)
     keep_directional_densities = get_keep_directional_densities(params, defaults)
+    simulation_backend = get_simulation_backend(params, defaults, get(args, "simulation_backend", nothing))
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
     potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type, rng=rng, plot_flag=!performance_mode)
     state = FPDiffusive.setState(
@@ -1908,7 +1942,11 @@ end
         position_int_type=position_int_type,
         keep_directional_densities=keep_directional_densities,
         bond_pass_count_mode=bond_pass_count_mode,
+        simulation_backend=simulation_backend,
     )
+    if simulation_backend == "occupancy"
+        println("Occupancy sampler: $(FPDiffusive.occupancy_sampler_mode_name(state))")
+    end
    
     if estimate_runtime
         estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
@@ -1980,6 +2018,7 @@ function main()
             end
             param = maybe_override_forcing_rate_scheme(param, args, params)
             defaults = get_default_params()
+            state, simulation_backend = rebuild_state_for_runtime(state, param, args, params, defaults)
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
                 n_sweeps = args["continue_sweeps"]
                 println("Continuing for specified $n_sweeps sweeps")
@@ -1992,6 +2031,10 @@ function main()
             estimate_runtime = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
             estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
             run_description = get_description(params, defaults)
+            println("Restart backend: $(simulation_backend)")
+            if simulation_backend == "occupancy"
+                println("Restart occupancy sampler: $(FPDiffusive.occupancy_sampler_mode_name(state))")
+            end
             println("Warmup sweeps per restarted run: $warmup_sweeps")
             results = pmap(seed -> run_one_simulation_from_state(
                     param,
@@ -2080,6 +2123,7 @@ function main()
             param = maybe_override_forcing_rate_scheme(param, args, params)
             ic = get(params, "ic", get_default_params()["ic"])
             defaults = get_default_params()
+            state, simulation_backend = rebuild_state_for_runtime(state, param, args, params, defaults)
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
                 n_sweeps = args["continue_sweeps"]
                 println("Continuing for specified $n_sweeps sweeps")
@@ -2092,6 +2136,10 @@ function main()
             estimate_runtime = get(args, "estimate_runtime", false) || get_estimate_runtime(params, defaults)
             estimate_sample_size = get_estimate_sample_size(params, defaults, get(args, "estimate_sample_size", nothing))
             description = get_description(params, defaults)
+            println("Restart backend: $(simulation_backend)")
+            if simulation_backend == "occupancy"
+                println("Restart occupancy sampler: $(FPDiffusive.occupancy_sampler_mode_name(state))")
+            end
             seed = rand(1:2^30)
             rng = MersenneTwister(seed)
         elseif using_initial_state
@@ -2154,6 +2202,7 @@ function main()
             density_int_type = resolve_density_int_type(args, params, defaults, param.N)
             position_int_type = resolve_position_int_type(args, params, defaults, dims)
             keep_directional_densities = get_keep_directional_densities(params, defaults)
+            simulation_backend = get_simulation_backend(params, defaults, get(args, "simulation_backend", nothing))
             v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
@@ -2173,7 +2222,11 @@ function main()
                 position_int_type=position_int_type,
                 keep_directional_densities=keep_directional_densities,
                 bond_pass_count_mode=bond_pass_count_mode,
+                simulation_backend=simulation_backend,
             )
+            if simulation_backend == "occupancy"
+                println("Occupancy sampler: $(FPDiffusive.occupancy_sampler_mode_name(state))")
+            end
         end
         
         defaults = get_default_params()
@@ -2274,4 +2327,6 @@ function main()
    end
 end
 
-main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

@@ -484,7 +484,7 @@ end
     param = FP.setParam(α, γ, ϵ, dims, ρ₀, D, potential_type, fluctuation_type, potential_magnitude, ffrs;
                         forcing_rate_scheme=forcing_rate_scheme)
     v_args = Potentials.potential_args(potential_type, dims; magnitude=potential_magnitude)
-    potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng)
+    potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type, rng=rng, plot_flag=false)
     state = FP.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
    
     #estimate run time
