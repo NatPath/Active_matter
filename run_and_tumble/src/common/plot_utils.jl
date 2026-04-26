@@ -117,11 +117,19 @@ end
 end
 
 function connected_correlation_matrix_1d(state, param)
-    if haskey(state.ρ_matrix_avg_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
-        return Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY]) .+ connected_correlation_fix_term(param)
+    if haskey(state.ρ_matrix_avg_cuts, :full)
+        rho_avg = Float64.(state.ρ_avg)
+        derived_connected = Float64.(state.ρ_matrix_avg_cuts[:full]) .- (rho_avg * transpose(rho_avg))
+        if haskey(state.ρ_matrix_avg_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
+            stored_exact = Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY])
+            if maximum(abs, stored_exact) <= 1e-12 && maximum(abs, derived_connected) > 1e-12
+                return derived_connected
+            end
+            return stored_exact
+        end
+        return derived_connected
     end
-    rho_avg = Float64.(state.ρ_avg)
-    return Float64.(state.ρ_matrix_avg_cuts[:full]) .- (rho_avg * transpose(rho_avg)) .+ connected_correlation_fix_term(param)
+    return Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY])
 end
 
 function finite_curve_ylims(curves...; pad_fraction::Float64=0.08, min_pad::Float64=1e-6)
@@ -187,6 +195,9 @@ function add_powerlaw_series!(p, distances, values, n; label="", add_reference=f
     end
     d = distances[mask]
     v = abs.(values[mask])
+    order = sortperm(d)
+    d = d[order]
+    v = v[order]
     plot!(p, d, v; label=label, lw=2)
     if add_reference || (add_extra_reference && extra_reference_exponent !== nothing)
         x_ref = [minimum(d), maximum(d)]
@@ -270,8 +281,9 @@ function collapse_curve_label(label::AbstractString, offset::Int, state_count::I
 end
 
 function data_collapse_plot(title::AbstractString, xlabel::AbstractString, ylabel::AbstractString;
-                            powerlaw::Bool=false, legend_position=:topright)
-    size = powerlaw ? (920, 680) : (980, 700)
+                            powerlaw::Bool=false, legend_position=:outerright)
+    size = powerlaw ? (1180, 680) : (1240, 700)
+    right_margin = powerlaw ? 26Plots.mm : 32Plots.mm
     return plot(
         title=title,
         xlabel=xlabel,
@@ -287,7 +299,7 @@ function data_collapse_plot(title::AbstractString, xlabel::AbstractString, ylabe
         top_margin=10Plots.mm,
         bottom_margin=8Plots.mm,
         left_margin=8Plots.mm,
-        right_margin=8Plots.mm,
+        right_margin=right_margin,
         gridalpha=0.18,
     )
 end
@@ -566,7 +578,7 @@ function connected_selected_site_cut_1d(
     L = length(pair_avg_row)
     ref_site = mod1(Int(cut_site), L)
     rho_avg = Float64.(state.ρ_avg)
-    cut = Float64.(pair_avg_row) .- rho_avg[ref_site] .* rho_avg .+ connected_correlation_fix_term(param)
+    cut = Float64.(pair_avg_row) .- rho_avg[ref_site] .* rho_avg
     smooth_diagonal && smooth_periodic_cut_site!(cut, ref_site)
     return cut
 end
@@ -730,15 +742,43 @@ function plot_selected_site_cuts_1d(
         vline!(p_avg_density, [cut_site], color=colors[mod1(cut_idx, length(colors))], linestyle=:dash, alpha=0.4, lw=1.3, label=false)
     end
 
-    p_inst_density = plot(x_range, Float64.(state.ρ),
-                          title="Instantaneous density",
-                          xlabel="Site",
-                          ylabel="ρ(x,t)",
-                          lw=2.0,
-                          color=:steelblue,
-                          legend=false,
-                          framestyle=:box,
-                          grid=:y)
+    p_inst_density = if hasfield(typeof(state), :particles) && !isnothing(getfield(state, :particles))
+        particles = getfield(state, :particles)
+        positions = sort!(Int[mod1(Int(getfield(particle, :position)[1]), L) for particle in particles])
+        site_counts = zeros(Int, L)
+        stack_levels = Vector{Int}(undef, length(positions))
+        @inbounds for idx in eachindex(positions)
+            site = positions[idx]
+            site_counts[site] += 1
+            stack_levels[idx] = site_counts[site]
+        end
+        scatter(
+            positions,
+            stack_levels;
+            title="Instantaneous particle positions",
+            xlabel="Site",
+            ylabel="Particle stack",
+            xlim=(1, L),
+            ylim=(0, isempty(stack_levels) ? 1 : maximum(stack_levels) + 1),
+            legend=false,
+            color=:black,
+            markersize=1.8,
+            markerstrokewidth=0,
+            alpha=0.5,
+            framestyle=:box,
+            grid=:y,
+        )
+    else
+        plot(x_range, Float64.(state.ρ),
+             title="Instantaneous density",
+             xlabel="Site",
+             ylabel="ρ(x,t)",
+             lw=2.0,
+             color=:steelblue,
+             legend=false,
+             framestyle=:box,
+             grid=:y)
+    end
     annotate_force_markers_minimal_1d!(p_inst_density, bonds; direction_flags=direction_flags, colors=colors)
     for (cut_idx, cut_site) in enumerate(selected_sites)
         vline!(p_inst_density, [cut_site], color=colors[mod1(cut_idx, length(colors))], linestyle=:dash, alpha=0.4, lw=1.3, label=false)
@@ -1495,32 +1535,59 @@ end
 function plot_instantaneous_state_1d(state, param)
     L = param.dims[1]
     bonds, direction_flags, _ = force_bond_sites_1d(state, L)
-    occupied_sites = findall(!iszero, vec(state.ρ))
+    if hasfield(typeof(state), :particles) && !isnothing(getfield(state, :particles))
+        particles = getfield(state, :particles)
+        positions = sort!(Int[mod1(Int(getfield(particle, :position)[1]), L) for particle in particles])
+        site_counts = zeros(Int, L)
+        stack_levels = Vector{Int}(undef, length(positions))
+        @inbounds for idx in eachindex(positions)
+            site = positions[idx]
+            site_counts[site] += 1
+            stack_levels[idx] = site_counts[site]
+        end
 
-    p = plot(1:L, zeros(L),
-             title="Instantaneous particles and forces",
-             xlabel="Site",
-             ylabel="Occupation",
-             xlim=(1, L),
-             ylim=(-0.05, 1.35),
-             yticks=([0.0, 1.0], ["empty", "occupied"]),
-             legend=false,
-             color=:black,
-             lw=1,
-             alpha=0.15,
-             framestyle=:box,
-             grid=:y)
-
-    if !isempty(occupied_sites)
-        scatter!(p, occupied_sites, ones(length(occupied_sites)),
+        p = scatter(
+            positions,
+            stack_levels;
+            title="Instantaneous particle positions and forces",
+            xlabel="Site",
+            ylabel="Particle stack",
+            xlim=(1, L),
+            ylim=(0, isempty(stack_levels) ? 1 : maximum(stack_levels) + 1),
+            legend=false,
+            color=:black,
+            markersize=1.8,
+            markerstrokewidth=0,
+            alpha=0.5,
+            framestyle=:box,
+            grid=:y,
+        )
+    else
+        occupied_sites = findall(!iszero, vec(state.ρ))
+        p = plot(1:L, zeros(L),
+                 title="Instantaneous particles and forces",
+                 xlabel="Site",
+                 ylabel="Occupation",
+                 xlim=(1, L),
+                 ylim=(-0.05, 1.35),
+                 yticks=([0.0, 1.0], ["empty", "occupied"]),
+                 legend=false,
                  color=:black,
-                 markersize=5,
-                 markerstrokewidth=0.5,
-                 label=false)
+                 lw=1,
+                 alpha=0.15,
+                 framestyle=:box,
+                 grid=:y)
+        if !isempty(occupied_sites)
+            scatter!(p, occupied_sites, ones(length(occupied_sites)),
+                     color=:black,
+                     markersize=5,
+                     markerstrokewidth=0.5,
+                     label=false)
+        end
     end
 
     if !isempty(bonds)
-        annotate_force_directions_1d!(p, bonds, direction_flags; label_prefix="f")
+        annotate_force_markers_minimal_1d!(p, bonds; direction_flags=direction_flags)
     end
     return p
 end
@@ -1615,16 +1682,43 @@ function plot_sweep_1d_multiforce(
         vline!(p_avg_density, [b1, b2], color=color, linestyle=:dash, alpha=0.25, lw=1.2, label=false)
     end
 
-    inst_density = Float64.(state.ρ)
-    p_inst_density = plot(x_range, inst_density,
-                          title="Instantaneous density (bond markers)",
-                          xlabel="Site",
-                          ylabel="ρ(x,t)",
-                          lw=2.0,
-                          color=:steelblue,
-                          legend=false,
-                          framestyle=:box,
-                          grid=:y)
+    p_inst_density = if hasfield(typeof(state), :particles) && !isnothing(getfield(state, :particles))
+        particles = getfield(state, :particles)
+        positions = sort!(Int[mod1(Int(getfield(particle, :position)[1]), L) for particle in particles])
+        site_counts = zeros(Int, L)
+        stack_levels = Vector{Int}(undef, length(positions))
+        @inbounds for idx in eachindex(positions)
+            site = positions[idx]
+            site_counts[site] += 1
+            stack_levels[idx] = site_counts[site]
+        end
+        scatter(
+            positions,
+            stack_levels;
+            title="Instantaneous particle positions (bond markers)",
+            xlabel="Site",
+            ylabel="Particle stack",
+            xlim=(1, L),
+            ylim=(0, isempty(stack_levels) ? 1 : maximum(stack_levels) + 1),
+            legend=false,
+            color=:black,
+            markersize=1.8,
+            markerstrokewidth=0,
+            alpha=0.5,
+            framestyle=:box,
+            grid=:y,
+        )
+    else
+        plot(x_range, Float64.(state.ρ),
+             title="Instantaneous density (bond markers)",
+             xlabel="Site",
+             ylabel="ρ(x,t)",
+             lw=2.0,
+             color=:steelblue,
+             legend=false,
+             framestyle=:box,
+             grid=:y)
+    end
     annotate_force_markers_minimal_1d!(p_inst_density, bonds; direction_flags=direction_flags, colors=colors)
 
     p_force_averages = plot_force_passage_averages_1d(state, param)
@@ -2008,6 +2102,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
         if dim_num == 1
             L = param.dims[1]
             N = param.N
+            fix_term = connected_correlation_fix_term(param)
             # Setup output directories
             full_dir = "$(results_dir)/full_data"
             antisym_dir = "$(results_dir)/antisymmetric"
@@ -2057,6 +2152,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 else
                     connected_correlation_cut_1d(state, param, point_to_look_at; smooth_diagonal=false)
                 end
+                full_cut_raw = Float64.(full_cut_raw) .+ fix_term
                 full_data = copy(full_cut_raw)
                 smooth_periodic_cut_site!(full_data, point_to_look_at)
 
@@ -2067,10 +2163,13 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 smooth_periodic_cut_site!(sym_data, point_to_look_at)
                 smooth_periodic_cut_site!(sym_data, reflected_site)
 
-                x_positions = 1:length(full_data)
-                x_scaled = (x_positions .- middle_spot) ./ (i)
+                x_rel, perm = centered_periodic_axis(L, middle_spot)
+                x_scaled = Float64.(x_rel) ./ Float64(i)
+                full_data_centered = full_data[perm]
+                antisym_data_centered = antisym_data[perm]
+                sym_data_centered = sym_data[perm]
 
-                for (data, p_combined_plot, key) in zip((full_data, antisym_data, sym_data), (p_full_combined, p_antisym_combined, p_sym_combined), (:full, :antisym, :sym))
+                for (data, p_combined_plot, key) in zip((full_data_centered, antisym_data_centered, sym_data_centered), (p_full_combined, p_antisym_combined, p_sym_combined), (:full, :antisym, :sym))
                     y_scaled = data .* i^n
                     mask = (-5 .<= x_scaled .<= 5)
                     x_filtered = x_scaled[mask]
@@ -2083,7 +2182,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                     end
                 end
 
-                y_scaled = full_data .* i^n
+                y_scaled = full_data_centered .* i^n
                 mask = (-5 .<= x_scaled .<= 5)
                 x_filtered = x_scaled[mask]
                 y_filtered = y_scaled[mask]
@@ -2094,11 +2193,11 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                     ref_dim_added[:combined] = add_dimension_reference!(p_combined, dim_num, x_filtered, y_filtered)
                 end
                 if show_powerlaw
-                    distances = abs.(x_positions .- middle_spot)
+                    distances = abs.(Float64.(x_rel))
                     curve_label = collapse_curve_label(label, i, state_count)
-                    ref_added_full |= add_powerlaw_series!(p_full_powerlaw, distances, full_data, n; label=curve_label, add_reference=!ref_added_full, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_full_extra)
-                    ref_added_antisym |= add_powerlaw_series!(p_antisym_powerlaw, distances, antisym_data, n; label=curve_label, add_reference=!ref_added_antisym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_antisym_extra)
-                    ref_added_sym |= add_powerlaw_series!(p_sym_powerlaw, distances, sym_data, n; label=curve_label, add_reference=!ref_added_sym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_sym_extra)
+                    ref_added_full |= add_powerlaw_series!(p_full_powerlaw, distances, full_data_centered, n; label=curve_label, add_reference=!ref_added_full, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_full_extra)
+                    ref_added_antisym |= add_powerlaw_series!(p_antisym_powerlaw, distances, antisym_data_centered, n; label=curve_label, add_reference=!ref_added_antisym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_antisym_extra)
+                    ref_added_sym |= add_powerlaw_series!(p_sym_powerlaw, distances, sym_data_centered, n; label=curve_label, add_reference=!ref_added_sym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_sym_extra)
                     ref_added_full_extra = true
                     ref_added_antisym_extra = true
                     ref_added_sym_extra = true

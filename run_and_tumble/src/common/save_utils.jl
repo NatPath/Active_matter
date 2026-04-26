@@ -107,17 +107,6 @@ function sanitize_filename_token(value::AbstractString)
     return token
 end
 
-function description_prefix(description)
-    if isnothing(description)
-        return ""
-    end
-    desc = strip(String(description))
-    isempty(desc) && return ""
-    token = sanitize_filename_token(desc)
-    isempty(token) && return ""
-    return token * "_"
-end
-
 function truncate_token(token::AbstractString, max_chars::Int)
     max_chars <= 0 && return ""
     s = String(token)
@@ -128,9 +117,33 @@ function filename_component_too_long(path::AbstractString)
     return ncodeunits(basename(path)) > MAX_FILENAME_COMPONENT_BYTES
 end
 
+function state_elapsed_sweeps(state)
+    if has_named_property(state, :t)
+        return max(Int(round(Float64(get_named_property(state, :t)))), 0)
+    end
+    return 0
+end
+
+function state_statistics_sweeps(state)
+    stats_keys = (:bond_pass_stats, :ρ_matrix_avg_cuts)
+    for container_key in stats_keys
+        has_named_property(state, container_key) || continue
+        stats = get_named_property(state, container_key)
+        stats isa AbstractDict || continue
+        for key in (:statistics_sample_count, :bond_pass_sample_count)
+            if haskey(stats, key) && !isempty(stats[key])
+                count = Int(round(Float64(stats[key][1])))
+                if count > 0
+                    return count
+                end
+            end
+        end
+    end
+    return state_elapsed_sweeps(state)
+end
+
 function choose_safe_state_filename(
     save_dir::AbstractString;
-    description_tag::AbstractString,
     dim::Int,
     potential_type::AbstractString,
     potential_magnitude::Real,
@@ -146,25 +159,27 @@ function choose_safe_state_filename(
     force_distance_suffix::AbstractString,
     ic_tag::AbstractString,
     t_val::Integer,
+    tstats_val::Integer,
     run_id::AbstractString,
 )
     candidates = String[]
-
-    push!(candidates, @sprintf("%s/%s%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_ic-%s_t-%d_id-%s.jld2",
-        save_dir, description_tag, dim, potential_type, potential_magnitude, fluctuation_type, activity,
-        L, rho0, alpha, gamma, D, forcing_magnitude, ffr, force_distance_suffix, ic_tag, t_val, run_id))
-
-    desc_short = truncate_token(description_tag, 20)
+    potential_tag = truncate_token(sanitize_filename_token(potential_type), 24)
+    fluctuation_tag = truncate_token(sanitize_filename_token(fluctuation_type), 24)
     ic_short = truncate_token(ic_tag, 24)
-    push!(candidates, @sprintf("%s/%s%dD_L%d_rho%.1e_a%.2f_g%.3f_D%.1f_f%.1f_ffr%.4f%s_ic-%s_t%d_id-%s.jld2",
-        save_dir, desc_short, dim, L, rho0, alpha, gamma, D, forcing_magnitude, ffr, force_distance_suffix, ic_short, t_val, run_id))
 
-    desc_tiny = truncate_token(description_tag, 12)
-    push!(candidates, @sprintf("%s/%s%dD_L%d_rho%.1e_t%d_ic-%s_id-%s.jld2",
-        save_dir, desc_tiny, dim, L, rho0, t_val, ic_short, run_id))
+    push!(candidates, @sprintf("%s/%dD_pot-%s_fluc-%s_L%d_rho%.1e_eps%.2f_a%.2f_g%.3f_D%.1f_V%.1f_f%.1f_ffr%.4f%s_ic-%s_t%d_tstats%d_id-%s.jld2",
+        save_dir, dim, potential_tag, fluctuation_tag, L, rho0, activity, alpha, gamma, D, potential_magnitude,
+        forcing_magnitude, ffr, force_distance_suffix, ic_short, t_val, tstats_val, run_id))
 
-    push!(candidates, @sprintf("%s/%dD_L%d_t%d_id-%s.jld2",
-        save_dir, dim, L, t_val, run_id))
+    push!(candidates, @sprintf("%s/%dD_L%d_rho%.1e_a%.2f_g%.3f_D%.1f_V%.1f_f%.1f_ffr%.4f%s_ic-%s_t%d_tstats%d_id-%s.jld2",
+        save_dir, dim, L, rho0, alpha, gamma, D, potential_magnitude, forcing_magnitude, ffr,
+        force_distance_suffix, ic_short, t_val, tstats_val, run_id))
+
+    push!(candidates, @sprintf("%s/%dD_L%d_ic-%s_t%d_tstats%d_id-%s.jld2",
+        save_dir, dim, L, ic_short, t_val, tstats_val, run_id))
+
+    push!(candidates, @sprintf("%s/%dD_t%d_tstats%d_id-%s.jld2",
+        save_dir, dim, t_val, tstats_val, run_id))
 
     for (idx, candidate) in enumerate(candidates)
         if !filename_component_too_long(candidate)
@@ -230,25 +245,27 @@ function save_aggregation(agg_res,param,total_sweeps,save_dir; description=nothi
     activity = param_activity(param)
     alpha = param_alpha(param)
     force_distance_suffix = two_force_distance_suffix(state, param)
-    description_tag = description_prefix(description)
     dim = length(param.dims)
-    filename = @sprintf("%s/%s%dD_potential-%s_Vscale-%.1f_fluctuation-%s_activity-%.2f_L-%d_rho-%.1e_alpha-%.2f_gamma-%.3f_D-%.1f_f_-%.1f_ffr-%.4f%s_t-%d.jld2",
-        save_dir,
-        description_tag,
-        dim,
-        param.potential_type,
-        param.potential_magnitude,
-        param.fluctuation_type,
-        activity,
-        param.dims[1],
-        param.ρ₀,
-        alpha,
-        γ,
-        param.D,
-        forcing_magnitude,
-        ffr,
-        force_distance_suffix,
-        total_sweeps)
+    filename = choose_safe_state_filename(
+        save_dir;
+        dim=dim,
+        potential_type=param.potential_type,
+        potential_magnitude=param.potential_magnitude,
+        fluctuation_type=param.fluctuation_type,
+        activity=activity,
+        L=param.dims[1],
+        rho0=param.ρ₀,
+        alpha=alpha,
+        gamma=γ,
+        D=param.D,
+        forcing_magnitude=forcing_magnitude,
+        ffr=ffr,
+        force_distance_suffix=force_distance_suffix,
+        ic_tag="aggregated",
+        t_val=max(Int(round(total_sweeps)), 0),
+        tstats_val=state_statistics_sweeps(state),
+        run_id=Dates.format(now(), "yyyymmdd-HHMMSS"),
+    )
     potential = state.potential 
     atomic_jld2_save(filename, state, param, potential)
     return filename
@@ -263,7 +280,6 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     activity = param_activity(param)
     alpha = param_alpha(param)
     force_distance_suffix = two_force_distance_suffix(state, param)
-    description_tag = description_prefix(description)
     dim = length(param.dims)
     hostname = Sockets.gethostname()
     host_tag = split(hostname, '.')[1]
@@ -275,7 +291,6 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
     end
     filename = choose_safe_state_filename(
         save_dir;
-        description_tag=description_tag,
         dim=dim,
         potential_type=param.potential_type,
         potential_magnitude=param.potential_magnitude,
@@ -290,7 +305,8 @@ function save_state(state, param, save_dir; tag=nothing, ic=nothing, relaxed_ic:
         ffr=ffr,
         force_distance_suffix=force_distance_suffix,
         ic_tag=ic_tag,
-        t_val=state.t,
+        t_val=state_elapsed_sweeps(state),
+        tstats_val=state_statistics_sweeps(state),
         run_id=run_id,
     )
     potential = state.potential 

@@ -11,7 +11,8 @@ Usage:
       --raw_tag_prefix <prefix> \
       --aggregate_root <dir> \
       --batch_tag <tag> \
-      --cumulative_tag <tag>
+      --cumulative_tag <tag> \
+      [--merge_mode <accumulate|replace_current>]
 
 Options:
   --archive_subdir <name>   archive directory under aggregate_root (default: archive)
@@ -19,16 +20,21 @@ Options:
   --previous_cumulative_state <path>
                             Optional cumulative aggregate from a previous run to fold in
   --run_info <path>         Optional run_info.txt to update with aggregate artifact paths
+  --merge_mode <mode>       accumulate or replace_current (default: accumulate)
 
 Behavior:
   - resolves one raw production state per replica from raw_state_dir using:
       *_id-${raw_tag_prefix}<replica_index>.jld2
   - aggregates the current batch into:
       <aggregate_root>/batches/
-  - accumulates the batch aggregate onto the latest cumulative aggregate in:
-      <aggregate_root>/current/
-    and archives the previous cumulative aggregate under:
-      <aggregate_root>/<archive_subdir>/<archive_stamp>/
+  - merge_mode=accumulate:
+      accumulates the batch aggregate onto the latest cumulative aggregate in:
+        <aggregate_root>/current/
+      and archives the previous cumulative aggregate under:
+        <aggregate_root>/<archive_subdir>/<archive_stamp>/
+  - merge_mode=replace_current:
+      archives the previous latest aggregate in <aggregate_root>/current/
+      and replaces it with an aggregate of the newest raw production states
 EOF
 }
 
@@ -59,6 +65,7 @@ archive_subdir="archive"
 archive_stamp=""
 previous_cumulative_state=""
 run_info_path=""
+merge_mode="accumulate"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -106,6 +113,10 @@ while [[ $# -gt 0 ]]; do
             run_info_path="${2:-}"
             shift 2
             ;;
+        --merge_mode)
+            merge_mode="${2:-}"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -144,6 +155,14 @@ for token_name in batch_tag cumulative_tag archive_subdir; do
         exit 1
     fi
 done
+case "${merge_mode}" in
+    accumulate|replace_current)
+        ;;
+    *)
+        echo "--merge_mode must be accumulate or replace_current. Got '${merge_mode}'."
+        exit 1
+        ;;
+esac
 if [[ -z "${archive_stamp}" ]]; then
     archive_stamp="${batch_tag}"
 fi
@@ -195,6 +214,24 @@ latest_cumulative_state() {
             best_path="${candidate}"
         fi
     done < <(find "${current_dir}" -maxdepth 1 -type f -name "*_id-aggregated_${id_tag}.jld2" ! -size 0 -print0 2>/dev/null)
+
+    printf "%s" "${best_path}"
+}
+
+latest_any_state() {
+    local root_dir="$1"
+    local best_path=""
+    local best_mtime=0
+    local candidate mtime
+    [[ -d "${root_dir}" ]] || { printf ""; return 0; }
+
+    while IFS= read -r -d '' candidate; do
+        mtime="$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)"
+        if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= best_mtime )); then
+            best_mtime="${mtime}"
+            best_path="${candidate}"
+        fi
+    done < <(find "${root_dir}" -maxdepth 1 -type f -name "*.jld2" ! -size 0 -print0 2>/dev/null)
 
     printf "%s" "${best_path}"
 }
@@ -300,7 +337,12 @@ echo "  batch_dir=${batch_dir}"
 batch_aggregate_state="$(aggregate_state_list "${batch_config}" "${batch_state_list}" "${batch_tag}" "${batch_dir}")"
 echo "Batch aggregate: ${batch_aggregate_state}"
 
-local_previous_cumulative_state="$(latest_cumulative_state "${current_dir}" "${cumulative_tag}")"
+local_previous_cumulative_state=""
+if [[ "${merge_mode}" == "replace_current" ]]; then
+    local_previous_cumulative_state="$(latest_any_state "${current_dir}")"
+else
+    local_previous_cumulative_state="$(latest_cumulative_state "${current_dir}" "${cumulative_tag}")"
+fi
 archived_previous_state=""
 restore_previous="false"
 if [[ -n "${local_previous_cumulative_state}" ]]; then
@@ -319,21 +361,30 @@ restore_on_failure() {
 }
 trap restore_on_failure ERR
 
-cumulative_state_list="${work_dir}/cumulative_states.txt"
-: > "${cumulative_state_list}"
-if [[ -n "${archived_previous_state}" ]]; then
-    echo "${archived_previous_state}" >> "${cumulative_state_list}"
-elif [[ -n "${previous_cumulative_state}" ]]; then
-    echo "${previous_cumulative_state}" >> "${cumulative_state_list}"
-fi
-echo "${batch_aggregate_state}" >> "${cumulative_state_list}"
+cumulative_state=""
+if [[ "${merge_mode}" == "replace_current" ]]; then
+    cumulative_state="${current_dir}/$(basename "${batch_aggregate_state}")"
+    cp -f "${batch_aggregate_state}" "${cumulative_state}"
+    restore_previous="false"
+    trap - ERR
+    echo "Replaced live latest aggregate: ${cumulative_state}"
+else
+    cumulative_state_list="${work_dir}/cumulative_states.txt"
+    : > "${cumulative_state_list}"
+    if [[ -n "${archived_previous_state}" ]]; then
+        echo "${archived_previous_state}" >> "${cumulative_state_list}"
+    elif [[ -n "${previous_cumulative_state}" ]]; then
+        echo "${previous_cumulative_state}" >> "${cumulative_state_list}"
+    fi
+    echo "${batch_aggregate_state}" >> "${cumulative_state_list}"
 
-echo "Accumulating batch aggregate into cumulative aggregate:"
-echo "  current_dir=${current_dir}"
-cumulative_state="$(aggregate_state_list "${cumulative_config}" "${cumulative_state_list}" "${cumulative_tag}" "${current_dir}")"
-restore_previous="false"
-trap - ERR
-echo "Cumulative aggregate: ${cumulative_state}"
+    echo "Accumulating batch aggregate into cumulative aggregate:"
+    echo "  current_dir=${current_dir}"
+    cumulative_state="$(aggregate_state_list "${cumulative_config}" "${cumulative_state_list}" "${cumulative_tag}" "${current_dir}")"
+    restore_previous="false"
+    trap - ERR
+    echo "Cumulative aggregate: ${cumulative_state}"
+fi
 
 if [[ ! -f "${lineage_file}" ]]; then
     echo "timestamp,batch_tag,cumulative_tag,raw_state_dir,batch_aggregate_state,previous_cumulative_state,archived_previous_state,cumulative_state,num_replicas" > "${lineage_file}"
@@ -356,7 +407,8 @@ if [[ -n "${run_info_path}" ]]; then
     upsert_run_info_value "${run_info_path}" "aggregate_state" "${cumulative_state}"
     upsert_run_info_value "${run_info_path}" "latest_cumulative_state" "${cumulative_state}"
     upsert_run_info_value "${run_info_path}" "aggregate_lineage" "${lineage_file}"
+    upsert_run_info_value "${run_info_path}" "aggregate_merge_mode" "${merge_mode}"
 fi
 
-echo "Aggregation and cumulative accumulation completed."
+echo "Aggregation merge completed (merge_mode=${merge_mode})."
 echo "Lineage: ${lineage_file}"

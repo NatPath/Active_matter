@@ -4,12 +4,12 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  bash submit_diffusive_2d_origin_bond_production_batch.sh \
+  bash submit_diffusive_1d_pmlr_production_batch.sh \
       --source_run_id <warmup_or_previous_production_run_id> \
       --L <int> --rho <float> --n_sweeps <int> --nr <int> [options]
 
 Alternative source form:
-  bash submit_diffusive_2d_origin_bond_production_batch.sh \
+  bash submit_diffusive_1d_pmlr_production_batch.sh \
       --source_state_dir <dir> \
       --source_tag_prefix <prefix> \
       --L <int> --rho <float> --n_sweeps <int> --nr <int> [options]
@@ -26,17 +26,17 @@ Source options:
   --continuation_mode <mode>   auto, initial_state, or continue (default: auto)
 
 Physical options:
-  --L <int>                    Even 2D lattice size (default: 64)
-  --rho <float>                Density rho0 (default: 1000)
-  --force_strength <float>     Bond force magnitude (default: 1.0)
-  --ffr <float>                Fluctuating forcing rate (default: 1.0)
+  --L <int>                    Even 1D lattice size (default: 512)
+  --rho <float>                Density rho0 (default: 100)
+  --gamma <float>              Potential fluctuation rate gamma (default: 1.0)
+  --potential_strength <float> ratchet_PmLr potential magnitude (default: 16.0)
   --nr <int>                   Number of production replicas (default: 600)
   --num_replicas <int>         Alias for --nr
 
 Cluster/options:
   --run_id <id>                Explicit run id
   --request_cpus <int>         Replica request_cpus (default: 1)
-  --request_memory <value>     Replica request_memory (default: "6 GB")
+  --request_memory <value>     Replica request_memory (default: "3 GB")
   --aggregate_request_cpus <int>     Aggregate request_cpus (default: 1)
   --aggregate_request_memory <value> Aggregate request_memory (default: request_memory)
   --replica_retries <int>      DAG retry count for replica nodes (default: 2)
@@ -71,7 +71,7 @@ else
 fi
 
 RUNNER_SCRIPT="${SCRIPT_DIR}/run_diffusive_no_activity_from_config.sh"
-AGGREGATE_SCRIPT="${SCRIPT_DIR}/aggregate_diffusive_origin_batch.sh"
+AGGREGATE_SCRIPT="${SCRIPT_DIR}/aggregate_diffusive_1d_pmlr_batch.sh"
 DAG_NOTIFY_UTILS="${SCRIPT_DIR}/dag_notification_utils.sh"
 for required_script in "${RUNNER_SCRIPT}" "${AGGREGATE_SCRIPT}" "${DAG_NOTIFY_UTILS}"; do
     if [[ ! -f "${required_script}" ]]; then
@@ -163,13 +163,13 @@ source_tag_prefix=""
 continuation_mode="auto"
 L=""
 rho=""
-force_strength=""
-ffr=""
+gamma=""
+potential_strength=""
 n_sweeps=""
 num_replicas=""
 run_id=""
 request_cpus="1"
-request_memory="6 GB"
+request_memory="3 GB"
 aggregate_request_cpus="1"
 aggregate_request_memory=""
 replica_retries="2"
@@ -214,12 +214,12 @@ while [[ $# -gt 0 ]]; do
             rho="${2:-}"
             shift 2
             ;;
-        --force_strength)
-            force_strength="${2:-}"
+        --gamma)
+            gamma="${2:-}"
             shift 2
             ;;
-        --ffr)
-            ffr="${2:-}"
+        --potential_strength)
+            potential_strength="${2:-}"
             shift 2
             ;;
         --n_sweeps)
@@ -298,12 +298,11 @@ if [[ -n "${source_run_info}" ]]; then
     source_state_dir="${source_state_dir:-$(read_run_info_value "${source_run_info}" raw_state_dir)}"
     source_state_dir="${source_state_dir:-$(read_run_info_value "${source_run_info}" state_dir)}"
     source_tag_prefix="${source_tag_prefix:-$(read_run_info_value "${source_run_info}" save_tag_prefix)}"
-    source_tag_prefix="${source_tag_prefix:-$(read_run_info_value "${source_run_info}" replica_tag_prefix)}"
     num_replicas="${num_replicas:-$(read_run_info_value "${source_run_info}" num_replicas)}"
     L="${L:-$(read_run_info_value "${source_run_info}" L)}"
     rho="${rho:-$(read_run_info_value "${source_run_info}" rho0)}"
-    force_strength="${force_strength:-$(read_run_info_value "${source_run_info}" force_strength)}"
-    ffr="${ffr:-$(read_run_info_value "${source_run_info}" ffr)}"
+    gamma="${gamma:-$(read_run_info_value "${source_run_info}" gamma)}"
+    potential_strength="${potential_strength:-$(read_run_info_value "${source_run_info}" potential_strength)}"
     aggregate_root="${aggregate_root:-$(read_run_info_value "${source_run_info}" aggregate_root)}"
     cumulative_tag="${cumulative_tag:-$(read_run_info_value "${source_run_info}" cumulative_tag)}"
 fi
@@ -330,10 +329,10 @@ if [[ -n "${source_run_id}" ]]; then
     source_run_id_exact="${source_run_id}"
     source_run_id_slug="$(slugify "${source_run_id}")"
     resolved_source_run_id=""
-    warmup_root_exact="${REPO_ROOT}/runs/diffusive_2d_origin_bond/warmup/${source_run_id_exact}"
-    production_root_exact="${REPO_ROOT}/runs/diffusive_2d_origin_bond/production/${source_run_id_exact}"
-    warmup_root_slug="${REPO_ROOT}/runs/diffusive_2d_origin_bond/warmup/${source_run_id_slug}"
-    production_root_slug="${REPO_ROOT}/runs/diffusive_2d_origin_bond/production/${source_run_id_slug}"
+    warmup_root_exact="${REPO_ROOT}/runs/diffusive_1d_pmlr/warmup/${source_run_id_exact}"
+    production_root_exact="${REPO_ROOT}/runs/diffusive_1d_pmlr/production/${source_run_id_exact}"
+    warmup_root_slug="${REPO_ROOT}/runs/diffusive_1d_pmlr/warmup/${source_run_id_slug}"
+    production_root_slug="${REPO_ROOT}/runs/diffusive_1d_pmlr/production/${source_run_id_slug}"
     warmup_root=""
     production_root=""
     resolved_source_kind=""
@@ -375,7 +374,7 @@ if [[ -n "${source_run_id}" ]]; then
         elif [[ "${production_exists}" == "true" ]]; then
             resolved_source_kind="production"
         else
-            echo "Could not find source_run_id '${source_run_id_exact}' under runs/diffusive_2d_origin_bond/{warmup,production}."
+            echo "Could not find source_run_id '${source_run_id_exact}' under runs/diffusive_1d_pmlr/{warmup,production}."
             exit 1
         fi
     fi
@@ -446,10 +445,10 @@ if [[ "${resolved_continuation_mode}" == "continue" ]]; then
     aggregate_merge_mode="replace_current"
 fi
 
-L="${L:-64}"
-rho="${rho:-1000}"
-force_strength="${force_strength:-1.0}"
-ffr="${ffr:-1.0}"
+L="${L:-512}"
+rho="${rho:-100}"
+gamma="${gamma:-1.0}"
+potential_strength="${potential_strength:-16.0}"
 num_replicas="${num_replicas:-600}"
 aggregate_request_memory="${aggregate_request_memory:-${request_memory}}"
 
@@ -480,40 +479,40 @@ require_nonnegative_int "replica_retries" "${replica_retries}"
 require_nonnegative_int "aggregate_retries" "${aggregate_retries}"
 require_nonnegative_int "dag_maxjobs" "${dag_maxjobs}"
 require_positive_float "rho" "${rho}"
-require_positive_float "force_strength" "${force_strength}"
-require_positive_float "ffr" "${ffr}"
+require_positive_float "gamma" "${gamma}"
+require_positive_float "potential_strength" "${potential_strength}"
 if (( L % 2 != 0 )); then
-    echo "--L must be even so the origin bond maps to [L/2,L/2] -> [L/2+1,L/2]. Got L=${L}."
+    echo "--L must be even so the zero-force placeholder bond lands on the central bond. Got L=${L}."
     exit 1
 fi
 
 rho_display="$(format_float "${rho}")"
-force_display="$(format_float "${force_strength}")"
-ffr_display="$(format_float "${ffr}")"
+gamma_display="$(format_float "${gamma}")"
+potential_display="$(format_float "${potential_strength}")"
 rho_slug="$(slugify "${rho_display}")"
-force_slug="$(slugify "${force_display}")"
-ffr_slug="$(slugify "${ffr_display}")"
+gamma_slug="$(slugify "${gamma_display}")"
+potential_slug="$(slugify "${potential_display}")"
 
 if [[ -z "${aggregate_root}" ]]; then
-    aggregate_root="${REPO_ROOT}/saved_states/diffusive_2d_origin_bond/L${L}_rho${rho_slug}_f${force_slug}_ffr${ffr_slug}/production_aggregates"
+    aggregate_root="${REPO_ROOT}/saved_states/diffusive_1d_pmlr/L${L}_rho${rho_slug}_gamma${gamma_slug}_V${potential_slug}/production_aggregates"
 elif [[ "${aggregate_root}" != /* ]]; then
     aggregate_root="${REPO_ROOT}/${aggregate_root}"
 fi
 if [[ -z "${cumulative_tag}" ]]; then
-    cumulative_tag="cumulative_L${L}_rho${rho_slug}_f${force_slug}_ffr${ffr_slug}"
+    cumulative_tag="cumulative_L${L}_rho${rho_slug}_gamma${gamma_slug}_V${potential_slug}"
 else
     cumulative_tag="$(slugify "${cumulative_tag}")"
 fi
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
 if [[ -z "${run_id}" ]]; then
-    run_id="diffusive_2d_origin_bond_L${L}_rho${rho_slug}_f${force_slug}_ffr${ffr_slug}_prod_ns${n_sweeps}_nr${num_replicas}_${timestamp}"
+    run_id="diffusive_1d_pmlr_L${L}_rho${rho_slug}_gamma${gamma_slug}_V${potential_slug}_prod_ns${n_sweeps}_nr${num_replicas}_${timestamp}"
 else
     run_id="$(slugify "${run_id}")"
 fi
 job_batch_name="${batch_name:-${run_id}}"
 
-run_root="${REPO_ROOT}/runs/diffusive_2d_origin_bond/production/${run_id}"
+run_root="${REPO_ROOT}/runs/diffusive_1d_pmlr/production/${run_id}"
 config_dir="${run_root}/configs"
 submit_dir="${run_root}/submit"
 log_dir="${run_root}/logs"
@@ -521,7 +520,7 @@ raw_state_dir="${run_root}/states/raw"
 run_info="${run_root}/run_info.txt"
 manifest="${run_root}/manifest.csv"
 initial_states_file="${run_root}/initial_states.txt"
-registry_file="${REPO_ROOT}/runs/diffusive_2d_origin_bond/run_registry.csv"
+registry_file="${REPO_ROOT}/runs/diffusive_1d_pmlr/run_registry.csv"
 
 mkdir -p "${config_dir}" "${submit_dir}" "${log_dir}" "${raw_state_dir}" "${aggregate_root}"
 ensure_cluster_shared_dir_permissions "${run_root}" 755
@@ -532,17 +531,17 @@ ensure_cluster_shared_dir_permissions "${raw_state_dir}" 1777
 ensure_cluster_shared_dir_permissions "${aggregate_root}" 1777
 
 center=$(( L / 2 ))
-next_x=$(( center + 1 ))
-description_name="diffusive_2d_origin_xbond_L${L}_rho${rho_slug}_f${force_slug}_ffr${ffr_slug}_production"
-runtime_config="${config_dir}/diffusive_2d_origin_bond_production.yaml"
+next_site=$(( center + 1 ))
+description_name="diffusive_1d_pmlr_L${L}_rho${rho_slug}_gamma${gamma_slug}_V${potential_slug}_production"
+runtime_config="${config_dir}/diffusive_1d_pmlr_production.yaml"
 cat > "${runtime_config}" <<EOF
-# Generated by cluster_scripts/submit_diffusive_2d_origin_bond_production_batch.sh
-dim_num: 2
+# Generated by cluster_scripts/submit_diffusive_1d_pmlr_production_batch.sh
+dim_num: 1
 L: ${L}
 ρ₀: ${rho_display}
 D: 1.0
 T: 1.0
-γ: 0.0
+γ: ${gamma_display}
 n_sweeps: ${n_sweeps}
 warmup_sweeps: 0
 performance_mode: true
@@ -551,19 +550,18 @@ int_type: "auto"
 position_int_type: "auto"
 keep_directional_densities: false
 
-potential_type: "zero"
-fluctuation_type: "no-fluctuation"
-potential_magnitude: 0.0
+potential_type: "ratchet_PmLr"
+fluctuation_type: "profile_switch"
+potential_magnitude: ${potential_display}
 ic: "random"
 
 forcing_bond_pairs:
-  - [[${center}, ${center}], [${next_x}, ${center}]]
-forcing_magnitudes: [${force_display}]
-ffrs: [${ffr_display}]
+  - [${center}, ${next_site}]
+forcing_magnitudes: [0.0]
+ffrs: [0.0]
 forcing_direction_flags: [true]
-forcing_fluctuation_type: "alternating_direction"
 forcing_rate_scheme: "symmetric_normalized"
-bond_pass_count_mode: "all_forcing_bonds"
+bond_pass_count_mode: "none"
 
 show_times: []
 save_times: []
@@ -585,7 +583,7 @@ done
 save_tag_prefix="p${timestamp}_r"
 batch_tag="batch_${timestamp}"
 archive_stamp="${run_id}"
-dag_file="${submit_dir}/diffusive_2d_origin_bond_production.dag"
+dag_file="${submit_dir}/diffusive_1d_pmlr_production.dag"
 aggregate_submit_file="${submit_dir}/production_batch_aggregate.sub"
 aggregate_output_file="${log_dir}/production_batch_aggregate.out"
 aggregate_error_file="${log_dir}/production_batch_aggregate.err"
@@ -666,7 +664,7 @@ printf "aggregate,AGG,%s,%s,%s,%s,%s,%s\n" \
     "${aggregate_submit_file}" "${aggregate_output_file}" "${aggregate_error_file}" "${aggregate_log_file}" "${batch_tag}" "" \
     >> "${manifest}"
 
-dag_append_final_notification_node "${dag_file}" "${submit_dir}" "${log_dir}" "${run_root}" "${run_id}" "diffusive_2d_origin_bond_production" "${REPO_ROOT}"
+dag_append_final_notification_node "${dag_file}" "${submit_dir}" "${log_dir}" "${run_root}" "${run_id}" "diffusive_1d_pmlr_production" "${REPO_ROOT}"
 
 cluster_id=""
 if [[ "${no_submit}" == "true" ]]; then
@@ -683,13 +681,17 @@ cat > "${run_info}" <<EOF
 run_id=${run_id}
 timestamp=${timestamp}
 mode=production
-simulation=diffusive_2d_origin_bond
-dim_num=2
+simulation=diffusive_1d_pmlr
+dim_num=1
 L=${L}
 rho0=${rho_display}
 D=1.0
-force_strength=${force_display}
-ffr=${ffr_display}
+gamma=${gamma_display}
+potential_type=ratchet_PmLr
+fluctuation_type=profile_switch
+potential_strength=${potential_display}
+forcing_magnitude=0.0
+ffr=0.0
 forcing_rate_scheme=symmetric_normalized
 n_sweeps=${n_sweeps}
 num_replicas=${num_replicas}
@@ -725,20 +727,20 @@ aggregate_root=${aggregate_root}
 archive_stamp=${archive_stamp}
 dag_notification_status_log=${DAG_NOTIFICATION_STATUS_LOG:-}
 cluster_id=${cluster_id}
-next_step_hint=bash cluster_scripts/submit_diffusive_2d_origin_bond_production_batch.sh --source_run_id ${run_id} --L ${L} --rho ${rho_display} --n_sweeps ${n_sweeps} --nr ${num_replicas}
+next_step_hint=bash cluster_scripts/submit_diffusive_1d_pmlr_production_batch.sh --source_run_id ${run_id} --L ${L} --rho ${rho_display} --gamma ${gamma_display} --potential_strength ${potential_display} --n_sweeps ${n_sweeps} --nr ${num_replicas}
 EOF
 
 mkdir -p "$(dirname "${registry_file}")"
 if [[ ! -f "${registry_file}" ]]; then
-    echo "timestamp,run_id,mode,L,rho0,n_sweeps,num_replicas,request_cpus,request_memory,run_root,submit_dir,log_dir,state_dir,config_path,save_tag_prefix,aggregate_root,cumulative_tag" > "${registry_file}"
+    echo "timestamp,run_id,mode,L,rho0,gamma,potential_strength,n_sweeps,num_replicas,request_cpus,request_memory,run_root,submit_dir,log_dir,state_dir,config_path,save_tag_prefix,aggregate_root,cumulative_tag" > "${registry_file}"
 fi
-printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
-    "${timestamp}" "${run_id}" "production" "${L}" "${rho_display}" "${n_sweeps}" "${num_replicas}" \
+printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+    "${timestamp}" "${run_id}" "production" "${L}" "${rho_display}" "${gamma_display}" "${potential_display}" "${n_sweeps}" "${num_replicas}" \
     "${request_cpus}" "${request_memory}" "${run_root}" "${submit_dir}" "${log_dir}" "${raw_state_dir}" "${runtime_config}" \
     "${save_tag_prefix}" "${aggregate_root}" "${cumulative_tag}" \
     >> "${registry_file}"
 
-echo "Prepared diffusive 2D origin-bond production DAG."
+echo "Prepared diffusive 1D PmLr production DAG."
 echo "  run_id=${run_id}"
 echo "  dag_file=${dag_file}"
 echo "  run_info=${run_info}"

@@ -363,7 +363,7 @@ function load_initial_state(path)
         if hasfield(typeof(state), :ρ_matrix_avg_cuts)
             legacy_cuts = getfield(state, :ρ_matrix_avg_cuts)
             for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
-                        :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                        :bond_pass_total_sq_avg, :bond_pass_sample_count, FPDiffusive.STATISTICS_SAMPLE_COUNT_KEY, :bond_pass_track_mask,
                         :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
                 if haskey(legacy_cuts, key)
                     legacy_stats[key] = Float64.(legacy_cuts[key])
@@ -421,16 +421,16 @@ end
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         # "show_times" => [i for i in 1:1:1000000],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
-        "forcing_type" => "center_bond_x",
-        "forcing_types" => ["center_bond_x"],
-        "ffr" => 1.0,
-        "ffrs" => [1.0],
+        "forcing_type" => "none",
+        "forcing_types" => String[],
+        "ffr" => 0.0,
+        "ffrs" => Float64[],
         "forcing_fluctuation_type" => "alternating_direction",
-        "forcing_magnitude" => 1.0,
-        "forcing_magnitudes" => [1.0],
-        "forcing_direction_flags" => [true],
-        "forcing_rate_scheme" => "legacy_penalty",
-        "bond_pass_count_mode" => "nonzero_magnitude",
+        "forcing_magnitude" => 0.0,
+        "forcing_magnitudes" => Float64[],
+        "forcing_direction_flags" => Bool[],
+        "forcing_rate_scheme" => "symmetric_normalized",
+        "bond_pass_count_mode" => "none",
         "ic" => "random",
         "int_type" => "auto",
         "position_int_type" => "auto",
@@ -642,22 +642,55 @@ end
     candidate_lengths = Int[]
 
     if haskey(params, "forcing_magnitudes")
-        push!(candidate_lengths, length(to_float_vector(params["forcing_magnitudes"], "forcing_magnitudes")))
+        values = to_float_vector(params["forcing_magnitudes"], "forcing_magnitudes")
+        isempty(values) || push!(candidate_lengths, length(values))
     elseif haskey(params, "forcing_magnitude")
         push!(candidate_lengths, 1)
     end
 
     if haskey(params, "ffrs")
-        push!(candidate_lengths, length(to_float_vector(params["ffrs"], "ffrs")))
+        values = to_float_vector(params["ffrs"], "ffrs")
+        isempty(values) || push!(candidate_lengths, length(values))
     elseif haskey(params, "ffr")
         push!(candidate_lengths, 1)
     end
 
     if haskey(params, "forcing_direction_flags")
-        push!(candidate_lengths, length(to_bool_vector(params["forcing_direction_flags"], "forcing_direction_flags")))
+        values = to_bool_vector(params["forcing_direction_flags"], "forcing_direction_flags")
+        isempty(values) || push!(candidate_lengths, length(values))
     end
 
     return isempty(candidate_lengths) ? 1 : maximum(candidate_lengths)
+end
+
+@everywhere function has_nonempty_config_value(params, key::AbstractString)
+    haskey(params, key) || return false
+    value = params[key]
+    if value isa AbstractVector
+        return !isempty(value)
+    end
+    return true
+end
+
+@everywhere function forcing_value_specified(params)
+    return has_nonempty_config_value(params, "forcing_magnitudes") ||
+           has_nonempty_config_value(params, "forcing_magnitude") ||
+           has_nonempty_config_value(params, "ffrs") ||
+           has_nonempty_config_value(params, "ffr") ||
+           has_nonempty_config_value(params, "forcing_direction_flags")
+end
+
+@everywhere function explicit_forcing_types(params)
+    if haskey(params, "forcing_types")
+        raw_types = params["forcing_types"]
+        types = to_string_vector(raw_types, "forcing_types")
+    elseif haskey(params, "forcing_type")
+        raw_type = params["forcing_type"]
+        types = to_string_vector(raw_type, "forcing_type")
+    else
+        return String[]
+    end
+    return [String(strip(t)) for t in types if lowercase(strip(t)) != "none"]
 end
 
 @everywhere function inferred_bond_indices_list(params, defaults, dim_num::Int, L::Int)
@@ -703,10 +736,20 @@ end
     bond_indices_list = Tuple{Vector{Int}, Vector{Int}}[]
 
     has_distance = haskey(params, "distance_between_forces") || haskey(params, "forcing_distance_d")
+    has_explicit_pairs = haskey(params, "forcing_bond_pairs")
+    has_explicit_types = haskey(params, "forcing_types") || haskey(params, "forcing_type")
+    has_force_location_spec = has_explicit_pairs || has_distance || has_explicit_types
 
-    if haskey(params, "forcing_bond_pairs") && has_distance
+    if !has_force_location_spec
+        if forcing_value_specified(params)
+            error("Forcing parameters were provided without forcing locations. Specify forcing_bond_pairs, forcing_type(s), or distance_between_forces. Leave all forcing_* keys unset for no forcing.")
+        end
+        return Potentials.BondForce[], Float64[]
+    end
+
+    if has_explicit_pairs && has_distance
         error("Use either forcing_bond_pairs or distance_between_forces, not both.")
-    elseif haskey(params, "forcing_bond_pairs")
+    elseif has_explicit_pairs
         raw_pairs = params["forcing_bond_pairs"]
         if !(raw_pairs isa AbstractVector)
             error("forcing_bond_pairs must be a list of bond pairs.")
@@ -716,14 +759,11 @@ end
         end
     elseif has_distance
         append!(bond_indices_list, inferred_bond_indices_list(params, defaults, dim_num, L))
-    elseif haskey(params, "forcing_types") || haskey(params, "forcing_type")
-        forcing_types_raw = haskey(params, "forcing_types") ? params["forcing_types"] : get(params, "forcing_type", defaults["forcing_type"])
-        forcing_types = to_string_vector(forcing_types_raw, "forcing_types")
+    elseif has_explicit_types
+        forcing_types = explicit_forcing_types(params)
         for forcing_type in forcing_types
             push!(bond_indices_list, forcing_bond_indices_from_type(forcing_type, dim_num, L))
         end
-    else
-        append!(bond_indices_list, inferred_bond_indices_list(params, defaults, dim_num, L))
     end
 
     n_forces = length(bond_indices_list)
@@ -862,15 +902,29 @@ end
 end
 
 @everywhere function raw_sweep_weight(state)
+    function positive_sample_count(stats, keys)
+        for key in keys
+            if haskey(stats, key) && !isempty(stats[key])
+                sample_count = Float64(stats[key][1])
+                if sample_count > 0
+                    return sample_count
+                end
+            end
+        end
+        return 0.0
+    end
+
     if hasfield(typeof(state), :bond_pass_stats)
         stats = getfield(state, :bond_pass_stats)
-        if haskey(stats, :bond_pass_sample_count) && !isempty(stats[:bond_pass_sample_count])
-            return max(Float64(stats[:bond_pass_sample_count][1]), 1.0)
+        sample_count = positive_sample_count(stats, (FPDiffusive.STATISTICS_SAMPLE_COUNT_KEY, :bond_pass_sample_count))
+        if sample_count > 0
+            return sample_count
         end
     elseif hasfield(typeof(state), :ρ_matrix_avg_cuts)
         raw_cuts = getfield(state, :ρ_matrix_avg_cuts)
-        if haskey(raw_cuts, :bond_pass_sample_count) && !isempty(raw_cuts[:bond_pass_sample_count])
-            return max(Float64(raw_cuts[:bond_pass_sample_count][1]), 1.0)
+        sample_count = positive_sample_count(raw_cuts, (FPDiffusive.STATISTICS_SAMPLE_COUNT_KEY, :bond_pass_sample_count))
+        if sample_count > 0
+            return sample_count
         end
     end
     if hasfield(typeof(state), :t)
@@ -889,7 +943,7 @@ end
     elseif hasfield(typeof(state), :ρ_matrix_avg_cuts)
         raw_cuts = getfield(state, :ρ_matrix_avg_cuts)
         for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
-                    :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                    :bond_pass_total_sq_avg, :bond_pass_sample_count, FPDiffusive.STATISTICS_SAMPLE_COUNT_KEY, :bond_pass_track_mask,
                     :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
             if haskey(raw_cuts, key)
                 stats_dict[key] = Float64.(raw_cuts[key])
@@ -929,7 +983,7 @@ end
         if isempty(vectors)
             continue
         end
-        if key == :bond_pass_sample_count
+        if key in (:bond_pass_sample_count, FPDiffusive.STATISTICS_SAMPLE_COUNT_KEY)
             sample_total = sum(!isempty(vec) ? Float64(vec[1]) : 0.0 for vec in vectors)
             averaged[key] = [sample_total > 0 ? sample_total : sum(bond_weights)]
         elseif key == :bond_pass_spatial_sample_count
@@ -1185,15 +1239,20 @@ function exact_connected_corr_full(state)
         return nothing
     end
     corr_cuts = getfield(state, :ρ_matrix_avg_cuts)
-    if haskey(corr_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
-        return Float64.(corr_cuts[AGG_CONNECTED_FULL_EXACT_KEY])
-    end
     if !haskey(corr_cuts, :full)
-        return nothing
+        return haskey(corr_cuts, AGG_CONNECTED_FULL_EXACT_KEY) ? Float64.(corr_cuts[AGG_CONNECTED_FULL_EXACT_KEY]) : nothing
     end
     rho_avg = Float64.(getfield(state, :ρ_avg))
     full_corr = Float64.(corr_cuts[:full])
-    return full_corr .- rho_outer_from_avg(rho_avg)
+    derived = full_corr .- rho_outer_from_avg(rho_avg)
+    if haskey(corr_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
+        stored_exact = Float64.(corr_cuts[AGG_CONNECTED_FULL_EXACT_KEY])
+        if maximum(abs, stored_exact) <= 1e-12 && maximum(abs, derived) > 1e-12
+            return derived
+        end
+        return stored_exact
+    end
+    return derived
 end
 
 function extract_two_force_replica_metrics(state)
@@ -1631,7 +1690,7 @@ function legacy_bond_pass_stats(state)
     if hasfield(typeof(state), :ρ_matrix_avg_cuts)
         legacy_cuts = getfield(state, :ρ_matrix_avg_cuts)
         for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
-                    :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                    :bond_pass_total_sq_avg, :bond_pass_sample_count, FPDiffusive.STATISTICS_SAMPLE_COUNT_KEY, :bond_pass_track_mask,
                     :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
             if haskey(legacy_cuts, key)
                 legacy_stats[key] = Float64.(legacy_cuts[key])
@@ -1999,7 +2058,7 @@ function main()
                 if hasfield(typeof(state), :ρ_matrix_avg_cuts)
                     legacy_cuts = getfield(state, :ρ_matrix_avg_cuts)
                     for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
-                                :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                                :bond_pass_total_sq_avg, :bond_pass_sample_count, FPDiffusive.STATISTICS_SAMPLE_COUNT_KEY, :bond_pass_track_mask,
                                 :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
                         if haskey(legacy_cuts, key)
                             legacy_stats[key] = Float64.(legacy_cuts[key])
@@ -2019,6 +2078,8 @@ function main()
             param = maybe_override_forcing_rate_scheme(param, args, params)
             defaults = get_default_params()
             state, simulation_backend = rebuild_state_for_runtime(state, param, args, params, defaults)
+            bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
+            FPDiffusive.configure_bond_passage_tracking!(state, bond_pass_count_mode)
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
                 n_sweeps = args["continue_sweeps"]
                 println("Continuing for specified $n_sweeps sweeps")
@@ -2103,7 +2164,7 @@ function main()
                 if hasfield(typeof(state), :ρ_matrix_avg_cuts)
                     legacy_cuts = getfield(state, :ρ_matrix_avg_cuts)
                     for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
-                                :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                                :bond_pass_total_sq_avg, :bond_pass_sample_count, FPDiffusive.STATISTICS_SAMPLE_COUNT_KEY, :bond_pass_track_mask,
                                 :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
                         if haskey(legacy_cuts, key)
                             legacy_stats[key] = Float64.(legacy_cuts[key])
@@ -2124,6 +2185,8 @@ function main()
             ic = get(params, "ic", get_default_params()["ic"])
             defaults = get_default_params()
             state, simulation_backend = rebuild_state_for_runtime(state, param, args, params, defaults)
+            bond_pass_count_mode = String(get(params, "bond_pass_count_mode", defaults["bond_pass_count_mode"]))
+            FPDiffusive.configure_bond_passage_tracking!(state, bond_pass_count_mode)
             if haskey(args, "continue_sweeps") && !isnothing(args["continue_sweeps"])
                 n_sweeps = args["continue_sweeps"]
                 println("Continuing for specified $n_sweeps sweeps")

@@ -72,17 +72,20 @@ const AGG_CONNECTED_FULL_EXACT_KEY = :agg_connected_corr_full_exact
 const RUN_FAMILY_TWO_FORCE_D = "two_force_d"
 const RUN_FAMILY_SINGLE_ORIGIN_BOND = "single_origin_bond"
 const RUN_FAMILY_SSEP = "ssep"
+const RUN_FAMILY_DIFFUSIVE_1D_PMLR = "diffusive_1d_pmlr"
 const RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND = "diffusive_2d_origin_bond"
 const RUN_FAMILY_BASE_RELPATHS = Dict(
     RUN_FAMILY_TWO_FORCE_D => joinpath("runs", "two_force_d"),
     RUN_FAMILY_SINGLE_ORIGIN_BOND => joinpath("runs", "single_origin_bond"),
     RUN_FAMILY_SSEP => joinpath("runs", "ssep", "single_center_bond"),
+    RUN_FAMILY_DIFFUSIVE_1D_PMLR => joinpath("runs", "diffusive_1d_pmlr"),
     RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND => joinpath("runs", "diffusive_2d_origin_bond"),
 )
 const RUN_ID_FAMILIES_IN_SEARCH_ORDER = [
     RUN_FAMILY_SSEP,
     RUN_FAMILY_TWO_FORCE_D,
     RUN_FAMILY_SINGLE_ORIGIN_BOND,
+    RUN_FAMILY_DIFFUSIVE_1D_PMLR,
     RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND,
 ]
 
@@ -206,7 +209,7 @@ function parse_commandline()
             help = "Run folder name under supported runs/<family>/.../<run_id> folders"
             default = ""
         "--run_result_mode"
-            help = "When using --run_id: warmup, production, local_warmup, local_production, or auto"
+            help = "When using --run_id: managed, warmup, production, local_warmup, local_production, or auto"
             default = "auto"
         "--cluster_results_root"
             help = "Root directory containing fetched cluster run folders and fitting outputs"
@@ -245,7 +248,7 @@ function parse_commandline()
             arg_type = Float64
             default = 2.0
         "--collapse_indices"
-            help = "Optional comma-separated subset of positive cut offsets to use for data collapse, e.g. 8,16,32. Required for 2D x/diag cut collapse and for legacy/full-matrix 1D states without selected-cut metadata."
+            help = "Optional subset of positive cut offsets to use for data collapse, e.g. 8,16,32 or 20:10:80. Required for 2D x/diag cut collapse and for legacy/full-matrix 1D states without selected-cut metadata."
             default = ""
     end
     return parse_args(s)
@@ -270,7 +273,9 @@ end
 
 function run_result_mode_rel_paths(run_result_mode::AbstractString)
     run_result_mode_str = String(run_result_mode)
-    if run_result_mode_str == "warmup"
+    if run_result_mode_str == "managed"
+        return [("managed", "managed")]
+    elseif run_result_mode_str == "warmup"
         return [("warmup", "warmup"), (joinpath("local", "warmup"), "local_warmup")]
     elseif run_result_mode_str == "production"
         return [("production", "production"), (joinpath("local", "production"), "local_production")]
@@ -280,13 +285,14 @@ function run_result_mode_rel_paths(run_result_mode::AbstractString)
         return [(joinpath("local", "production"), "local_production")]
     elseif run_result_mode_str == "auto"
         return [
+            ("managed", "managed"),
             ("warmup", "warmup"),
             ("production", "production"),
             (joinpath("local", "warmup"), "local_warmup"),
             (joinpath("local", "production"), "local_production"),
         ]
     end
-    error("--run_result_mode must be warmup, production, local_warmup, local_production, or auto. Got '$run_result_mode_str'.")
+    error("--run_result_mode must be managed, warmup, production, local_warmup, local_production, or auto. Got '$run_result_mode_str'.")
 end
 
 function resolve_run_id_dir(run_id::AbstractString, cluster_results_root::AbstractString, run_result_mode::AbstractString;
@@ -409,7 +415,7 @@ function collect_files_from_run_id(run_id::AbstractString, cluster_results_root:
 
     files = if resolved_family == RUN_FAMILY_SSEP
         collect_ssep_files_from_run_dir(run_dir)
-    elseif resolved_family == RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND
+    elseif resolved_family in (RUN_FAMILY_DIFFUSIVE_1D_PMLR, RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND)
         collect_diffusive_files_from_run_dir(run_dir)
     else
         states_dir = joinpath(run_dir, "states")
@@ -717,15 +723,60 @@ function parse_requested_collapse_indices(raw_value)::Union{Nothing,Vector{Int}}
     for chunk in split(value, ',')
         token = strip(chunk)
         isempty(token) && continue
-        parsed = try
-            parse(Int, token)
-        catch
-            error("Invalid --collapse_indices entry '$token'. Use a comma-separated list of positive integers, e.g. 8,16,32.")
-        end
-        parsed > 0 || error("--collapse_indices entries must be positive. Got $parsed.")
-        if !(parsed in seen)
-            push!(requested, parsed)
-            push!(seen, parsed)
+        if occursin(':', token)
+            parts = split(token, ':')
+            if length(parts) == 2
+                start_val = try
+                    parse(Int, strip(parts[1]))
+                catch
+                    error("Invalid --collapse_indices range '$token'. Use start:stop or start:step:stop with positive integers.")
+                end
+                step_val = 1
+                stop_val = try
+                    parse(Int, strip(parts[2]))
+                catch
+                    error("Invalid --collapse_indices range '$token'. Use start:stop or start:step:stop with positive integers.")
+                end
+            elseif length(parts) == 3
+                start_val = try
+                    parse(Int, strip(parts[1]))
+                catch
+                    error("Invalid --collapse_indices range '$token'. Use start:stop or start:step:stop with positive integers.")
+                end
+                step_val = try
+                    parse(Int, strip(parts[2]))
+                catch
+                    error("Invalid --collapse_indices range '$token'. Use start:stop or start:step:stop with positive integers.")
+                end
+                stop_val = try
+                    parse(Int, strip(parts[3]))
+                catch
+                    error("Invalid --collapse_indices range '$token'. Use start:stop or start:step:stop with positive integers.")
+                end
+            else
+                error("Invalid --collapse_indices range '$token'. Use start:stop or start:step:stop with positive integers.")
+            end
+
+            start_val > 0 || error("--collapse_indices entries must be positive. Got $start_val in '$token'.")
+            step_val > 0 || error("--collapse_indices step must be positive. Got $step_val in '$token'.")
+            stop_val >= start_val || error("--collapse_indices range stop must be >= start. Got '$token'.")
+            for parsed in start_val:step_val:stop_val
+                if !(parsed in seen)
+                    push!(requested, parsed)
+                    push!(seen, parsed)
+                end
+            end
+        else
+            parsed = try
+                parse(Int, token)
+            catch
+                error("Invalid --collapse_indices entry '$token'. Use positive integers or ranges like 20:10:80.")
+            end
+            parsed > 0 || error("--collapse_indices entries must be positive. Got $parsed.")
+            if !(parsed in seen)
+                push!(requested, parsed)
+                push!(seen, parsed)
+            end
         end
     end
 
@@ -873,7 +924,7 @@ function bond_pass_stats_dict(state)
         if cuts isa AbstractDict
             legacy = Dict{Symbol,Vector{Float64}}()
             for key in (:bond_pass_forward_avg, :bond_pass_reverse_avg, :bond_pass_total_avg,
-                        :bond_pass_total_sq_avg, :bond_pass_sample_count, :bond_pass_track_mask,
+                        :bond_pass_total_sq_avg, :bond_pass_sample_count, :statistics_sample_count, :bond_pass_track_mask,
                         :bond_pass_spatial_f_avg, :bond_pass_spatial_f2_avg, :bond_pass_spatial_sample_count)
                 if haskey(cuts, key)
                     legacy[key] = Float64.(cuts[key])
@@ -916,12 +967,21 @@ function tracked_force_indices(state, magnitudes::AbstractVector{<:Real})
     return [i for i in 1:n_forces if abs(Float64(magnitudes[i])) > 0]
 end
 
-function connected_corr_mat_1d(state)
-    if haskey(state.ρ_matrix_avg_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
-        return Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY])
+function connected_corr_mat_1d(state, param)
+    fix_term = PlotUtils.connected_correlation_fix_term(param)
+    if haskey(state.ρ_matrix_avg_cuts, :full)
+        rho_avg = Float64.(state.ρ_avg)
+        derived = Float64.(state.ρ_matrix_avg_cuts[:full]) .- (rho_avg * transpose(rho_avg)) .+ fix_term
+        if haskey(state.ρ_matrix_avg_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
+            stored_exact = Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY]) .+ fix_term
+            if maximum(abs, stored_exact) <= 1e-12 && maximum(abs, derived) > 1e-12
+                return derived
+            end
+            return stored_exact
+        end
+        return derived
     end
-    outer_prod_ρ = state.ρ_avg * transpose(state.ρ_avg)
-    return state.ρ_matrix_avg_cuts[:full] .- outer_prod_ρ
+    return Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY]) .+ fix_term
 end
 
 function bond_centered_cut_1d(corr_mat::AbstractMatrix{<:Real}, b1::Int, b2::Int; smooth_diagonal::Bool=true)
@@ -2110,7 +2170,7 @@ function plot_bond_cut_model_fits_1d(state, param; smooth_diagonal::Bool=true, c
         return plot(title="Bond cut fit unavailable", axis=false, legend=false)
     end
 
-    corr_mat = connected_corr_mat_1d(state)
+    corr_mat = connected_corr_mat_1d(state, param)
     colors = [:red, :orange, :green, :blue, :magenta, :cyan, :black]
     centers = Dict{Int,Float64}()
     for idx in tracked
@@ -2209,47 +2269,19 @@ function save_diffusive_sweep_components(saved_state::String, state, param, out_
             include_abs_mean_in_spatial_f_plot=include_abs_mean_in_spatial_f_plot,
             return_components=true,
         )
-        p_bond_model_fit = plot_bond_cut_model_fits_1d(
-            state,
-            param;
-            smooth_diagonal=!keep_diagonal_in_multiforce_cut,
-            corr_model_c=corr_model_c,
-        )
 
+        # Keep 1D output lean: the detailed correlation/J panels remain visible in
+        # the composite, while separate files are limited to the density views.
         panel_map = [
             ("00_composite", components.final_plot),
             ("01_avg_density", components.avg_density),
             ("02_inst_density", components.inst_density),
-            ("03_force_averages", components.force_averages),
-            ("04_spatial_j_stats", components.spatial_f_stats),
-            ("04b_spatial_j_stats_linear", components.spatial_f_stats_linear),
-            ("05_corr_origin_bond", components.corr_origin_cut),
-            ("06_corr_fluctuating_bonds", components.corr_fluctuating_bond_cuts),
-            ("07_corr_heat", components.corr_heat),
-            ("08_bond_center_variance", components.density_variance_bond_sites),
-            ("09_corr_fluctuating_bonds_model_fit", p_bond_model_fit),
         ]
 
         for (name, plt) in panel_map
             output_file = joinpath(state_dir, string(name, ".png"))
             savefig(plt, output_file)
             println("Saved ", output_file)
-        end
-
-        if has_prop(state, :forcing)
-            p_varj_ref = plot_single_origin_varj_reference_slopes(state, param)
-            if !isnothing(p_varj_ref)
-                output_file = joinpath(state_dir, "10_symmetrized_varj_reference_slopes.png")
-                savefig(p_varj_ref, output_file)
-                println("Saved ", output_file)
-            end
-
-            p_varj_fit = plot_single_origin_varj_loglog_fit(state, param)
-            if !isnothing(p_varj_fit)
-                output_file = joinpath(state_dir, "11_symmetrized_varj_loglog_fit.png")
-                savefig(p_varj_fit, output_file)
-                println("Saved ", output_file)
-            end
         end
     else
         PlotUtils.plot_sweep(state.t, state, param)
@@ -3035,7 +3067,7 @@ function analyze_two_force_d(files::Vector{String}, out_dir::String;
                 tracked = collect(1:length(bonds))
             end
 
-            corr_mat = connected_corr_mat_1d(state)
+            corr_mat = connected_corr_mat_1d(state, param)
             var_vals_smoothed = [bond_center_value(corr_mat, bonds[i][1], bonds[i][2]; smooth_diagonal=true) for i in tracked]
             var_vals_raw = [bond_center_value(corr_mat, bonds[i][1], bonds[i][2]; smooth_diagonal=false) for i in tracked]
 

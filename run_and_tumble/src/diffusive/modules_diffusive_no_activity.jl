@@ -7,7 +7,7 @@ module FPDiffusive
     # using ..PlotUtils: plot_sweep 
     using ..Potentials: AbstractPotential, potential_update!, Potential, MultiPotential, IndependentFluctuatingPoints, BondForce, bondforce_update!
     using LinearAlgebra
-    export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics, reset_statistics!, configure_bond_passage_tracking!, latest_bond_passage_counts, normalize_simulation_backend, loaded_state_backend, occupancy_sampler_mode_name
+    export Param, setParam, Particle, setParticle, setDummyState, setState, calculate_statistics, reset_statistics!, start_statistics_now!, configure_bond_passage_tracking!, latest_bond_passage_counts, normalize_simulation_backend, loaded_state_backend, occupancy_sampler_mode_name
 
     const PARTICLE_SIMULATION_BACKEND = "particles"
     const OCCUPANCY_SIMULATION_BACKEND = "occupancy"
@@ -253,6 +253,7 @@ module FPDiffusive
     const BOND_PASS_TOTAL_AVG_KEY = :bond_pass_total_avg
     const BOND_PASS_TOTAL_SQ_AVG_KEY = :bond_pass_total_sq_avg
     const BOND_PASS_SAMPLE_COUNT_KEY = :bond_pass_sample_count
+    const STATISTICS_SAMPLE_COUNT_KEY = :statistics_sample_count
     const BOND_PASS_TRACK_MASK_KEY = :bond_pass_track_mask
     const BOND_PASS_COLLECTION_ENABLED_KEY = :bond_pass_collection_enabled
     const BOND_PASS_SPATIAL_F_AVG_KEY = :bond_pass_spatial_f_avg
@@ -271,6 +272,13 @@ module FPDiffusive
         end
     end
 
+    function validate_bond_passage_mode(forcings::Vector{BondForce}, mode::AbstractString)
+        if mode != "none" && isempty(forcings)
+            throw(ArgumentError("bond_pass_count_mode=\"$mode\" requires explicit forcing bonds. Specify forcing_bond_pairs or forcing_type(s), or leave bond_pass_count_mode unset to disable bond statistics."))
+        end
+        return nothing
+    end
+
     @inline function bond_passage_collection_enabled(stats)
         return !haskey(stats, BOND_PASS_COLLECTION_ENABLED_KEY) ||
                isempty(stats[BOND_PASS_COLLECTION_ENABLED_KEY]) ||
@@ -284,6 +292,7 @@ module FPDiffusive
         bond_pass_stats[BOND_PASS_TOTAL_AVG_KEY] = zeros(Float64, n_forces)
         bond_pass_stats[BOND_PASS_TOTAL_SQ_AVG_KEY] = zeros(Float64, n_forces)
         bond_pass_stats[BOND_PASS_SAMPLE_COUNT_KEY] = [0.0]
+        bond_pass_stats[STATISTICS_SAMPLE_COUNT_KEY] = [0.0]
         bond_pass_stats[BOND_PASS_COLLECTION_ENABLED_KEY] = [collection_enabled ? 1.0 : 0.0]
         if track_mask === nothing
             if haskey(bond_pass_stats, BOND_PASS_TRACK_MASK_KEY) && length(bond_pass_stats[BOND_PASS_TRACK_MASK_KEY]) == n_forces
@@ -453,11 +462,11 @@ module FPDiffusive
         return reshape(M, Nx, Ny, Nx, Ny)
     end
 
-    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=Potentials.setBondForce(([1],[2]),true,0.0);
+    function setState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64,param.dims)),bond_force=BondForce[];
                       ic ="random", full_corr_tensor=false, int_type::Type{<:Signed}=Int32,
                       position_int_type::Type{<:Signed}=Int32,
                       keep_directional_densities::Bool=false,
-                      bond_pass_count_mode::AbstractString="nonzero_magnitude",
+                      bond_pass_count_mode::AbstractString="none",
                       simulation_backend::AbstractString=PARTICLE_SIMULATION_BACKEND)
         backend = normalize_simulation_backend(simulation_backend)
         if backend == OCCUPANCY_SIMULATION_BACKEND
@@ -549,6 +558,7 @@ module FPDiffusive
         else
             throw(ArgumentError("bond_force must be BondForce or Vector{BondForce}"))
         end
+        validate_bond_passage_mode(bond_forces, String(bond_pass_count_mode))
         track_mask = bond_pass_track_mask_for_forcings(bond_forces, String(bond_pass_count_mode))
         initialize_bond_passage_stats!(bond_pass_stats, length(bond_forces);
                                        track_mask=track_mask,
@@ -561,9 +571,8 @@ module FPDiffusive
         return state
     end
 
-    function reset_statistics!(state)
+    function reset_statistics_arrays_and_counts!(state)
         dim = ndims(state.ρ)
-        state.t = 0
         state.ρ_avg .= state.ρ
         state.max_site_occupancy = Int64(maximum(state.ρ))
         if has_directional_densities(state)
@@ -589,13 +598,14 @@ module FPDiffusive
             throw(DomainError("Invalid input - dimension not supported yet"))
         end
         forcings = get_state_forcings!(state)
+        collection_enabled = bond_passage_collection_enabled(state.bond_pass_stats)
         existing_mask = if haskey(state.bond_pass_stats, BOND_PASS_TRACK_MASK_KEY) &&
                            length(state.bond_pass_stats[BOND_PASS_TRACK_MASK_KEY]) == length(forcings)
             Float64.(state.bond_pass_stats[BOND_PASS_TRACK_MASK_KEY])
         else
-            bond_pass_track_mask_for_forcings(forcings, "nonzero_magnitude")
+            default_mode = collection_enabled ? "nonzero_magnitude" : "none"
+            bond_pass_track_mask_for_forcings(forcings, default_mode)
         end
-        collection_enabled = bond_passage_collection_enabled(state.bond_pass_stats)
         initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings);
                                        track_mask=existing_mask,
                                        collection_enabled=collection_enabled)
@@ -605,8 +615,18 @@ module FPDiffusive
         return state
     end
 
-    function configure_bond_passage_tracking!(state, mode::AbstractString="nonzero_magnitude")
+    function reset_statistics!(state)
+        state.t = 0
+        return reset_statistics_arrays_and_counts!(state)
+    end
+
+    function start_statistics_now!(state)
+        return reset_statistics_arrays_and_counts!(state)
+    end
+
+    function configure_bond_passage_tracking!(state, mode::AbstractString="none")
         forcings = get_state_forcings!(state)
+        validate_bond_passage_mode(forcings, String(mode))
         track_mask = bond_pass_track_mask_for_forcings(forcings, String(mode))
         initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings);
                                        track_mask=track_mask,
@@ -730,6 +750,16 @@ module FPDiffusive
         if !haskey(stats, BOND_PASS_SAMPLE_COUNT_KEY) || length(stats[BOND_PASS_SAMPLE_COUNT_KEY]) != 1
             stats[BOND_PASS_SAMPLE_COUNT_KEY] = [0.0]
         end
+        if !haskey(stats, STATISTICS_SAMPLE_COUNT_KEY) || length(stats[STATISTICS_SAMPLE_COUNT_KEY]) != 1
+            legacy_count = if haskey(stats, BOND_PASS_SAMPLE_COUNT_KEY) &&
+                              !isempty(stats[BOND_PASS_SAMPLE_COUNT_KEY]) &&
+                              stats[BOND_PASS_SAMPLE_COUNT_KEY][1] > 0
+                Float64(stats[BOND_PASS_SAMPLE_COUNT_KEY][1])
+            else
+                max(Float64(state.t), 0.0)
+            end
+            stats[STATISTICS_SAMPLE_COUNT_KEY] = [legacy_count]
+        end
         if !haskey(stats, BOND_PASS_COLLECTION_ENABLED_KEY) || length(stats[BOND_PASS_COLLECTION_ENABLED_KEY]) != 1
             stats[BOND_PASS_COLLECTION_ENABLED_KEY] = [1.0]
         end
@@ -742,6 +772,31 @@ module FPDiffusive
             end
         end
         return nothing
+    end
+
+    function effective_statistics_sample_count(state)
+        if hasfield(typeof(state), :bond_pass_stats)
+            stats = state.bond_pass_stats
+            if haskey(stats, STATISTICS_SAMPLE_COUNT_KEY) &&
+               !isempty(stats[STATISTICS_SAMPLE_COUNT_KEY]) &&
+               stats[STATISTICS_SAMPLE_COUNT_KEY][1] > 0
+                return Int(round(stats[STATISTICS_SAMPLE_COUNT_KEY][1]))
+            end
+            if haskey(stats, BOND_PASS_SAMPLE_COUNT_KEY) &&
+               !isempty(stats[BOND_PASS_SAMPLE_COUNT_KEY]) &&
+               stats[BOND_PASS_SAMPLE_COUNT_KEY][1] > 0
+                return Int(round(stats[BOND_PASS_SAMPLE_COUNT_KEY][1]))
+            end
+        end
+        return hasfield(typeof(state), :t) ? max(Int(round(state.t)), 0) : 0
+    end
+
+    function ensure_statistics_sample_count!(state)
+        stats = state.bond_pass_stats
+        if !haskey(stats, STATISTICS_SAMPLE_COUNT_KEY) || length(stats[STATISTICS_SAMPLE_COUNT_KEY]) != 1
+            stats[STATISTICS_SAMPLE_COUNT_KEY] = [Float64(effective_statistics_sample_count(state))]
+        end
+        return stats[STATISTICS_SAMPLE_COUNT_KEY]
     end
 
     function tracked_force_indices_from_state(state, n_forces::Int)
@@ -895,6 +950,24 @@ module FPDiffusive
         return maximum(values(bond_totals))
     end
 
+    @inline function has_nonzero_force_magnitude(forcings::Vector{BondForce})
+        for force in forcings
+            if abs(force.magnitude) > 0.0
+                return true
+            end
+        end
+        return false
+    end
+
+    @inline function has_force_fluctuations(forcings::Vector{BondForce}, ffrs)
+        for force_idx in eachindex(forcings)
+            abs(forcings[force_idx].magnitude) > 0.0 || continue
+            forcing_rate(ffrs, force_idx) > 0.0 || continue
+            return true
+        end
+        return false
+    end
+
     @inline function hop_rate_normalization(D::Real, max_bond_forcing::Real, scheme::AbstractString)
         if scheme == LEGACY_FORCING_RATE_SCHEME
             return 1.0
@@ -1023,15 +1096,18 @@ module FPDiffusive
             forcings = get_state_forcings!(state)
             n_forces = length(forcings)
             scheme = forcing_rate_scheme(param)
-            rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
+            max_force_magnitude = max_forcing_magnitude_per_bond(forcings)
+            has_rate_forcing = max_force_magnitude > 0.0
+            has_force_flips = has_force_fluctuations(forcings, ffrs)
+            rate_normalization = hop_rate_normalization(param.D, max_force_magnitude, scheme)
             L = param.dims[1]
             scratch = runtime_scratch!(state)
             left_neighbors, right_neighbors = periodic_neighbors_1d!(state, L)
-            track_bond_passages = bond_passage_collection_enabled(state.bond_pass_stats)
+            track_bond_passages = collect_statistics && n_forces > 0 && bond_passage_collection_enabled(state.bond_pass_stats)
             if track_bond_passages
                 ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
             end
-            tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
+            tracked_force_indices = track_bond_passages ? tracked_force_indices_from_state(state, n_forces) : Int[]
             sweep_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_forward_counts_1d, n_forces) : Int64[]
             sweep_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_reverse_counts_1d, n_forces) : Int64[]
             if track_bond_passages
@@ -1074,7 +1150,7 @@ module FPDiffusive
                         t2 = time_ns()
                     end
 
-                    directed_bond_forcing = directed_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
+                    directed_bond_forcing = has_rate_forcing ? directed_bond_forcing_1d(forcings, spot_index, candidate_spot_index) : 0.0
                     if static_zero_potential
                         p_candidate = bond_rate_prefactor(param.D, directed_bond_forcing, rate_normalization, scheme)
                     else
@@ -1154,17 +1230,20 @@ module FPDiffusive
                 end
 
                 # Independent force fluctuations (each force has its own channel)
-                for force_idx in 1:n_forces
-                    # Calibrated so ffr is "expected flips per sweep per force".
-                    # One sweep has param.N micro-steps.
-                    p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
-                    if p_force > 1.0
-                        p_force = 1.0
-                    elseif p_force < 0.0
-                        p_force = 0.0
-                    end
-                    if rand(rng) < p_force
-                        bondforce_update!(forcings[force_idx])
+                if has_force_flips
+                    for force_idx in 1:n_forces
+                        abs(forcings[force_idx].magnitude) > 0.0 || continue
+                        # Calibrated so ffr is "expected flips per sweep per force".
+                        # One sweep has param.N micro-steps.
+                        p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
+                        if p_force > 1.0
+                            p_force = 1.0
+                        elseif p_force < 0.0
+                            p_force = 0.0
+                        end
+                        if rand(rng) < p_force
+                            bondforce_update!(forcings[force_idx])
+                        end
                     end
                 end
                 
@@ -1189,15 +1268,18 @@ module FPDiffusive
             forcings = get_state_forcings!(state)
             n_forces = length(forcings)
             scheme = forcing_rate_scheme(param)
-            rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
+            max_force_magnitude = max_forcing_magnitude_per_bond(forcings)
+            has_rate_forcing = max_force_magnitude > 0.0
+            has_force_flips = has_force_fluctuations(forcings, ffrs)
+            rate_normalization = hop_rate_normalization(param.D, max_force_magnitude, scheme)
             Lx, Ly = param.dims
             scratch = runtime_scratch!(state)
             left_x, right_x, down_y, up_y = periodic_neighbors_2d!(state, Lx, Ly)
-            track_bond_passages = bond_passage_collection_enabled(state.bond_pass_stats)
+            track_bond_passages = collect_statistics && n_forces > 0 && bond_passage_collection_enabled(state.bond_pass_stats)
             if track_bond_passages
                 ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
             end
-            tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
+            tracked_force_indices = track_bond_passages ? tracked_force_indices_from_state(state, n_forces) : Int[]
             sweep_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_forward_counts_2d, n_forces) : Int64[]
             sweep_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_reverse_counts_2d, n_forces) : Int64[]
             Δt = 1
@@ -1244,7 +1326,7 @@ module FPDiffusive
                         t2 = time_ns()
                     end
 
-                    directed_bond_forcing = directed_bond_forcing_2d(forcings, spot_index, cand)
+                    directed_bond_forcing = has_rate_forcing ? directed_bond_forcing_2d(forcings, spot_index, cand) : 0.0
                     if static_zero_potential
                         p_cand = bond_rate_prefactor(param.D, directed_bond_forcing, rate_normalization, scheme)
                     else
@@ -1293,17 +1375,20 @@ module FPDiffusive
                 end
 
                 # Independent force fluctuations (each force has its own channel)
-                for force_idx in 1:n_forces
-                    # Calibrated so ffr is "expected flips per sweep per force".
-                    # One sweep has param.N micro-steps.
-                    p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
-                    if p_force > 1.0
-                        p_force = 1.0
-                    elseif p_force < 0.0
-                        p_force = 0.0
-                    end
-                    if rand(rng) < p_force
-                        bondforce_update!(forcings[force_idx])
+                if has_force_flips
+                    for force_idx in 1:n_forces
+                        abs(forcings[force_idx].magnitude) > 0.0 || continue
+                        # Calibrated so ffr is "expected flips per sweep per force".
+                        # One sweep has param.N micro-steps.
+                        p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
+                        if p_force > 1.0
+                            p_force = 1.0
+                        elseif p_force < 0.0
+                            p_force = 0.0
+                        end
+                        if rand(rng) < p_force
+                            bondforce_update!(forcings[force_idx])
+                        end
                     end
                 end
                 
@@ -1428,20 +1513,15 @@ function compute_time_correlation(ρ_history)
 end
 
 function averaged_sample_count(state)
-    if hasfield(typeof(state), :bond_pass_stats)
-        stats = state.bond_pass_stats
-        if haskey(stats, FPDiffusive.BOND_PASS_SAMPLE_COUNT_KEY) &&
-           !isempty(stats[FPDiffusive.BOND_PASS_SAMPLE_COUNT_KEY])
-            return Int(round(stats[FPDiffusive.BOND_PASS_SAMPLE_COUNT_KEY][1]))
-        end
-    end
-    return max(state.t, 0)
+    return FPDiffusive.effective_statistics_sample_count(state)
 end
 
 function update_and_compute_correlations!(state, param,  ρ_history, frame, rng, calc_var_frequency=1, calc_correlations=false; collect_statistics::Bool=true)
     FPDiffusive.update!(param, state, rng; collect_statistics=collect_statistics)
     if collect_statistics && frame%calc_var_frequency==0
         #println("Calculating correlations at frame $frame")
+        stats_sample_count = FPDiffusive.ensure_statistics_sample_count!(state)
+        stats_sample_count[1] += calc_var_frequency
         n_eff = max(averaged_sample_count(state), 1)
         weight_new = min(calc_var_frequency, n_eff)
         weight_prev = n_eff - weight_new
