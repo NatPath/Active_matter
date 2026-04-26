@@ -1638,7 +1638,7 @@ function forcing_rate_scheme_from_param(param)
     if loaded_param_has_field(param, :forcing_rate_scheme)
         return String(loaded_param_field(param, :forcing_rate_scheme))
     end
-    return FPDiffusive.LEGACY_FORCING_RATE_SCHEME
+    return FPDiffusive.SYMMETRIC_NORMALIZED_FORCING_RATE_SCHEME
 end
 
 function canonicalize_loaded_param(param)
