@@ -284,7 +284,7 @@ function data_collapse_plot(title::AbstractString, xlabel::AbstractString, ylabe
                             powerlaw::Bool=false, legend_position=:outerright)
     size = powerlaw ? (1180, 680) : (1240, 700)
     right_margin = powerlaw ? 26Plots.mm : 32Plots.mm
-    return plot(
+    plot_kwargs = (
         title=title,
         xlabel=xlabel,
         ylabel=ylabel,
@@ -302,6 +302,10 @@ function data_collapse_plot(title::AbstractString, xlabel::AbstractString, ylabe
         right_margin=right_margin,
         gridalpha=0.18,
     )
+    if powerlaw
+        return plot(; plot_kwargs..., xscale=:log10, yscale=:log10)
+    end
+    return plot(; plot_kwargs...)
 end
 
 function apply_robust_data_collapse_limits!(p, y_vals; trim_quantile::Float64=0.98, trim_threshold::Float64=1.75)
