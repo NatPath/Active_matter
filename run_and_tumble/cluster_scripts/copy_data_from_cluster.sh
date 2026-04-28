@@ -12,7 +12,7 @@ Core options:
   --latest                                Fetch latest run_id in selected run family (can combine with filters)
   --list                                  List run registry entries and exit
   --tail <N>                              Number of listed entries (default: 30)
-  --run_family <two_force_d|single_origin_bond|ssep|active_objects|diffusive_1d_pmlr|diffusive_2d_origin_bond|auto>
+  --run_family <two_force_d|single_origin_bond|ssep|active_objects|diffusive_1d_pmlr|diffusive_1d_center_bond|diffusive_2d_origin_bond|auto>
                                           Registry family for --list/--latest (default: two_force_d)
 
 Run filters for --list / --latest:
@@ -33,7 +33,7 @@ Paths / connection:
   --sync_scope <auto|aggregation|full>    Data sync scope:
                                           auto (default): if run_id looks aggregated (_nr...), fetch aggregated artifacts only
                                           aggregation: fetch aggregated state files + run metadata
-                                          (for diffusive_1d_pmlr / diffusive_2d_origin_bond run_ids, fetches the run-specific
+                                          (for diffusive_1d_pmlr / diffusive_1d_center_bond / diffusive_2d_origin_bond run_ids, fetches the run-specific
                                           batch aggregate from aggregate_root/batches;
                                           otherwise prefers aggregated/, then states/aggregated, with legacy fallback;
                                           excludes aggregated/archive and states/aggregated/archive)
@@ -65,6 +65,7 @@ Examples:
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
   bash copy_data_from_cluster.sh --run_id diffusive_1d_pmlr_L512_rho100_gamma1_V16_production_ns1000000_nr600_20260420-120000 --plot --collapse_indices 20:10:80
+  bash copy_data_from_cluster.sh --run_id diffusive_1d_center_bond_L2048_rho100_f1_ffr1 --sync_scope aggregation --plot
   bash copy_data_from_cluster.sh --run_id diffusive_2d_origin_bond_L64_rho1000_f1_ffr1_prod_ns50000_nr600_20260412-021855 --plot
   bash copy_data_from_cluster.sh --run_id diffusive_2d_origin_bond_L64_rho1000_f1_ffr1_prod_ns50000_nr600_20260412-021855 --plot --collapse_indices 4,8,12
   bash copy_data_from_cluster.sh --run_id two_force_warmup_production_L256_rho100_..._production_20260226-032016 --aggregated_saved_only --plot
@@ -128,11 +129,11 @@ sample_count="0"
 ssh_control_dir=""
 ssh_control_path=""
 
-ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects" "diffusive_1d_pmlr" "diffusive_2d_origin_bond")
+ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects" "diffusive_1d_pmlr" "diffusive_1d_center_bond" "diffusive_2d_origin_bond")
 
 is_diffusive_family() {
     case "$1" in
-        diffusive_1d_pmlr|diffusive_2d_origin_bond) return 0 ;;
+        diffusive_1d_pmlr|diffusive_1d_center_bond|diffusive_2d_origin_bond) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -144,6 +145,7 @@ registry_rel_path_for_family() {
         ssep) printf "runs/ssep/single_center_bond/run_registry.csv" ;;
         active_objects) printf "runs/active_objects/steady_state_histograms/run_registry.csv" ;;
         diffusive_1d_pmlr) printf "runs/diffusive_1d_pmlr/run_registry.csv" ;;
+        diffusive_1d_center_bond) printf "runs/diffusive_1d_center_bond/run_registry.csv" ;;
         diffusive_2d_origin_bond) printf "runs/diffusive_2d_origin_bond/run_registry.csv" ;;
         *) return 1 ;;
     esac
@@ -156,6 +158,7 @@ run_root_rel_path_for_family() {
         ssep) printf "runs/ssep/single_center_bond" ;;
         active_objects) printf "runs/active_objects/steady_state_histograms" ;;
         diffusive_1d_pmlr) printf "runs/diffusive_1d_pmlr" ;;
+        diffusive_1d_center_bond) printf "runs/diffusive_1d_center_bond" ;;
         diffusive_2d_origin_bond) printf "runs/diffusive_2d_origin_bond" ;;
         *) return 1 ;;
     esac
@@ -172,6 +175,9 @@ candidate_families_for_run_id() {
             ;;
         diffusive_1d_pmlr_*)
             printf "%s\n" "diffusive_1d_pmlr"
+            ;;
+        diffusive_1d_center_bond_*)
+            printf "%s\n" "diffusive_1d_center_bond"
             ;;
         ssep_*|ssep_ctmc_*)
             printf "%s\n" "ssep"
@@ -232,6 +238,20 @@ ssh_with_master() {
 remote_path_exists() {
     local remote_path="$1"
     ssh_with_master "${remote_user}@${remote_host}" "test -e $(printf '%q' "${remote_path}")"
+}
+
+write_existing_remote_files_from() {
+    local remote_base="$1"
+    local output_file="$2"
+    local rel_path
+    shift 2
+
+    : > "${output_file}"
+    for rel_path in "$@"; do
+        if remote_path_exists "${remote_base}/${rel_path}"; then
+            printf "%s\n" "${rel_path}" >> "${output_file}"
+        fi
+    done
 }
 
 read_lines_to_array() {
@@ -412,8 +432,8 @@ if ! [[ "${tail_n}" =~ ^[0-9]+$ ]] || (( tail_n <= 0 )); then
     echo "--tail must be a positive integer. Got '${tail_n}'."
     exit 1
 fi
-if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "diffusive_1d_pmlr" && "${run_family}" != "diffusive_2d_origin_bond" && "${run_family}" != "auto" ]]; then
-    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, diffusive_1d_pmlr, diffusive_2d_origin_bond, or auto. Got '${run_family}'."
+if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "diffusive_1d_pmlr" && "${run_family}" != "diffusive_1d_center_bond" && "${run_family}" != "diffusive_2d_origin_bond" && "${run_family}" != "auto" ]]; then
+    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, diffusive_1d_pmlr, diffusive_1d_center_bond, diffusive_2d_origin_bond, or auto. Got '${run_family}'."
     exit 1
 fi
 if [[ "${sync_scope}" != "auto" && "${sync_scope}" != "aggregation" && "${sync_scope}" != "full" ]]; then
@@ -543,7 +563,7 @@ latest_run_id_for_family() {
             }
             END {print chosen}
         ' "${registry_path}"
-    elif [[ "${family}" == "diffusive_1d_pmlr" ]]; then
+    elif [[ "${family}" == "diffusive_1d_pmlr" || "${family}" == "diffusive_1d_center_bond" ]]; then
         awk -F, \
             -v mode="${mode}" \
             -v fL="${filter_L}" \
@@ -683,7 +703,7 @@ write_filtered_registry() {
                 if (keep) print
             }
         ' "${registry_path}" > "${out_path}"
-    elif [[ "${family}" == "diffusive_1d_pmlr" ]]; then
+    elif [[ "${family}" == "diffusive_1d_pmlr" || "${family}" == "diffusive_1d_center_bond" ]]; then
         awk -F, \
             -v mode="${mode}" \
             -v fL="${filter_L}" \
@@ -837,6 +857,8 @@ elif [[ "${resolved_family}" == "active_objects" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_histogram_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
 elif [[ "${resolved_family}" == "diffusive_1d_pmlr" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_gamma reg_potential_strength reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
+elif [[ "${resolved_family}" == "diffusive_1d_center_bond" ]]; then
+    IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_force_strength reg_ffr reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
 elif [[ "${resolved_family}" == "diffusive_2d_origin_bond" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
 else
@@ -928,14 +950,15 @@ if [[ "${sync_scope_effective}" == "aggregation" ]]; then
 
         if [[ "${reg_mode:-}" == "managed" ]]; then
             run_files_from="$(mktemp)"
-            {
-                echo "run_info.txt"
-                echo "run_spec.yaml"
-                echo "replicas.csv"
-                echo "segments.csv"
-            } > "${run_files_from}"
-            rsync_with_master -av --progress --ignore-missing-args --files-from="${run_files_from}" \
-                "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
+            write_existing_remote_files_from "${remote_run_dir}" "${run_files_from}" \
+                "run_info.txt" \
+                "run_spec.yaml" \
+                "replicas.csv" \
+                "segments.csv"
+            if [[ -s "${run_files_from}" ]]; then
+                rsync_with_master -av --progress --files-from="${run_files_from}" \
+                    "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
+            fi
             rm -f "${run_files_from}"
         else
             run_files_from="$(mktemp)"
