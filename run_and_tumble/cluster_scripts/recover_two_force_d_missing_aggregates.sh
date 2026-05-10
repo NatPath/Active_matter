@@ -28,7 +28,7 @@ Options:
                                      (default: 300)
   --archive_stamp <token>            Archive stamp token (default: recover_missing_agg_<timestamp>)
   --request_cpus <int>               Condor request_cpus for aggregation jobs (default: 1)
-  --request_memory <value>           Condor request_memory for aggregation jobs (default: "4 GB")
+  --request_memory <value>           Condor request_memory for aggregation jobs (default: "5 GB")
   --julia_num_procs_aggregate <int>  JULIA_NUM_PROCS_AGGREGATE for aggregation jobs (default: 1)
   --batch_name <name>                Condor batch_name (default: auto)
   --job_label <label>                Optional label added to the recovery job folder name
@@ -267,7 +267,7 @@ expected_batch_repeats="300"
 archive_stamp=""
 
 request_cpus="1"
-request_memory="4 GB"
+request_memory="5 GB"
 julia_num_procs_aggregate="1"
 batch_name=""
 job_label=""

@@ -3,7 +3,17 @@ using Plots
 using LsqFit
 using Printf
 using LinearAlgebra
-export plot_sweep, plot_density, plot_data_colapse, plot_spatial_correlation, plot_average_density_and_correlation
+export plot_sweep, plot_density, plot_data_colapse, plot_paired_1d_data_collapse,
+       plot_spatial_correlation, plot_average_density_and_correlation
+
+const LATEXSTRING_FUNCTION = let
+    try
+        @eval import LaTeXStrings
+        LaTeXStrings.latexstring
+    catch
+        nothing
+    end
+end
 
 const BOND_PASS_FORWARD_AVG_KEY = :bond_pass_forward_avg
 const BOND_PASS_REVERSE_AVG_KEY = :bond_pass_reverse_avg
@@ -18,6 +28,63 @@ const SELECTED_SITE_CUTS_KEY = :selected_site_cuts
 const SELECTED_SITE_CUT_SITES_KEY = :selected_site_cut_sites
 const SELECTED_SITE_CUT_ORIGIN_SITE_KEY = :selected_site_cut_origin_site
 const AGG_CONNECTED_FULL_EXACT_KEY = :agg_connected_corr_full_exact
+const DATA_COLLAPSE_INDEX_COLORS = [
+    :royalblue,
+    :crimson,
+    :seagreen,
+    :darkorange,
+    :mediumpurple,
+    :sienna,
+    :deeppink,
+    :teal,
+    :goldenrod,
+    :navy,
+    :darkgreen,
+    :magenta,
+]
+
+function math_label(latex_source::AbstractString, fallback::AbstractString)
+    LATEXSTRING_FUNCTION === nothing && return fallback
+    return LATEXSTRING_FUNCTION(latex_source)
+end
+
+function latex_roman_text(text::AbstractString)
+    escaped = replace(String(text), "\\" => "\\textbackslash{}")
+    escaped = replace(escaped, "_" => "\\_")
+    escaped = replace(escaped, " " => "\\ ")
+    return "\\mathrm{" * escaped * "}"
+end
+
+function compact_power_token(value::Real)
+    rounded = round(Float64(value); digits=6)
+    if isinteger(rounded)
+        return string(Int(rounded))
+    end
+    return @sprintf("%.3g", Float64(value))
+end
+
+function unicode_superscript_token(token::AbstractString)
+    superscripts = Dict(
+        '0' => '⁰',
+        '1' => '¹',
+        '2' => '²',
+        '3' => '³',
+        '4' => '⁴',
+        '5' => '⁵',
+        '6' => '⁶',
+        '7' => '⁷',
+        '8' => '⁸',
+        '9' => '⁹',
+        '-' => '⁻',
+        '+' => '⁺',
+        '.' => '⋅',
+    )
+    io = IOBuffer()
+    for char in String(token)
+        print(io, get(superscripts, char, char))
+    end
+    return String(take!(io))
+end
 
 # Exact (Float64) value of exp(-1)*(I0(1)+I1(1)), where I0/I1 are modified Bessel functions.
 const SINGLE_ORIGIN_VARJ_BASELINE_FACTOR = 0.6736700229433489
@@ -214,12 +281,12 @@ function add_powerlaw_series!(p, distances, values, n; label="", add_reference=f
     return true
 end
 
-function add_dimension_reference!(p, dim, x_vals, data_vals)
+function add_dimension_reference!(p, dim, x_vals, data_vals; label="reference")
     mask = isfinite.(x_vals) .& isfinite.(data_vals)
     if !any(mask)
         return false
     end
-    x_ref = x_vals[mask]
+    x_ref = Float64.(x_vals[mask])
     y_ref = x_ref ./ (((x_ref .^ 2) .+ 1) .^ (dim .+ 1))
     max_ref = maximum(abs.(y_ref))
     max_data = maximum(abs.(data_vals[mask]))
@@ -227,7 +294,10 @@ function add_dimension_reference!(p, dim, x_vals, data_vals)
         return false
     end
     scale = max_data / max_ref
-    plot!(p, x_ref, y_ref .* scale; label="reference", color=:gray, linestyle=:dashdot, lw=2)
+    order = sortperm(x_ref)
+    x_ref = x_ref[order]
+    y_ref = y_ref[order]
+    plot!(p, x_ref, y_ref .* scale; label=label, color=:gray, linestyle=:dashdot, lw=2)
     return true
 end
 
@@ -568,8 +638,35 @@ function smooth_periodic_cut_site!(cut::AbstractVector{<:Real}, site::Int)
     return cut
 end
 
+function smooth_periodic_cut_bond!(cut::AbstractVector{<:Real}, b1::Int, b2::Int)
+    L = length(cut)
+    ref_b1 = mod1(Int(b1), L)
+    ref_b2 = mod1(Int(b2), L)
+    if ref_b2 == mod1(ref_b1 + 1, L)
+        left_site = mod1(ref_b1 - 1, L)
+        right_site = mod1(ref_b2 + 1, L)
+        smoothed = 0.5 * (cut[left_site] + cut[right_site])
+        cut[ref_b1] = smoothed
+        cut[ref_b2] = smoothed
+    elseif ref_b1 == mod1(ref_b2 + 1, L)
+        left_site = mod1(ref_b2 - 1, L)
+        right_site = mod1(ref_b1 + 1, L)
+        smoothed = 0.5 * (cut[left_site] + cut[right_site])
+        cut[ref_b1] = smoothed
+        cut[ref_b2] = smoothed
+    else
+        smooth_periodic_cut_site!(cut, ref_b1)
+        smooth_periodic_cut_site!(cut, ref_b2)
+    end
+    return cut
+end
+
 @inline function reflected_site_about_center_1d(site::Int, center_site::Int, L::Int)
     return mod1(2 * center_site - site, L)
+end
+
+@inline function reflected_site_about_bond_center_1d(site::Int, b1::Int, b2::Int, L::Int)
+    return mod1(Int(b1) + Int(b2) - Int(site), L)
 end
 
 function connected_selected_site_cut_1d(
@@ -678,6 +775,31 @@ function reflection_decomposed_cut_1d(
     @inbounds for site in 1:L
         reflected[site] = cut_vals[reflected_site_about_center_1d(site, center_site, L)]
     end
+    sym = 0.5 .* (cut_vals .+ reflected)
+    antisym = 0.5 .* (cut_vals .- reflected)
+    return sym, antisym
+end
+
+function reflected_cut_1d_about_bond_center(
+    cut::AbstractVector{<:Real},
+    b1::Int,
+    b2::Int,
+)
+    L = length(cut)
+    reflected = Vector{Float64}(undef, L)
+    @inbounds for site in 1:L
+        reflected[site] = Float64(cut[reflected_site_about_bond_center_1d(site, b1, b2, L)])
+    end
+    return reflected
+end
+
+function reflection_decomposed_cut_1d_about_bond_center(
+    cut::AbstractVector{<:Real},
+    b1::Int,
+    b2::Int,
+)
+    cut_vals = Float64.(cut)
+    reflected = reflected_cut_1d_about_bond_center(cut_vals, b1, b2)
     sym = 0.5 .* (cut_vals .+ reflected)
     antisym = 0.5 .* (cut_vals .- reflected)
     return sym, antisym
@@ -891,6 +1013,23 @@ function centered_periodic_axis(L, ref_site)
     return x_rel[perm], perm
 end
 
+function bond_center_coordinate_1d(L::Int, b1::Int, b2::Int)
+    if b2 == mod1(b1 + 1, L)
+        return Float64(b1) + 0.5
+    elseif b1 == mod1(b2 + 1, L)
+        return Float64(b2) + 0.5
+    end
+    return 0.5 * (Float64(b1) + Float64(b2))
+end
+
+function centered_periodic_bond_axis_1d(L::Int, b1::Int, b2::Int)
+    half = 0.5 * Float64(L)
+    center = bond_center_coordinate_1d(L, b1, b2)
+    x_rel = [mod(Float64(i) - center + half, Float64(L)) - half for i in 1:L]
+    perm = sortperm(x_rel)
+    return x_rel[perm], perm
+end
+
 function periodic_relative_coordinate(L::Int, origin_site::Int, target_site::Int)
     half = L ÷ 2
     return mod(target_site - origin_site + half, L) - half
@@ -1089,16 +1228,8 @@ function bond_centered_cut_1d(
     b2::Int;
     smooth_diagonal::Bool=true,
 )
-    L = size(corr_mat, 2)
     cut = 0.5 .* (Float64.(corr_mat[b1, :]) .+ Float64.(corr_mat[b2, :]))
-    if smooth_diagonal
-        b1_left = mod1(b1 - 1, L)
-        b1_right = mod1(b1 + 1, L)
-        b2_left = mod1(b2 - 1, L)
-        b2_right = mod1(b2 + 1, L)
-        cut[b1] = 0.5 * (cut[b1_left] + cut[b1_right])
-        cut[b2] = 0.5 * (cut[b2_left] + cut[b2_right])
-    end
+    smooth_diagonal && smooth_periodic_cut_bond!(cut, b1, b2)
     return cut
 end
 
@@ -2088,8 +2219,344 @@ function plot_average_density_and_correlation(state, param; label="")
     throw(DomainError("Only 1D or 2D plotting supported"))
 end
 
+function one_dimensional_data_collapse_curves(
+    state,
+    param,
+    power_n,
+    indices;
+    label::AbstractString="",
+    x_window::Real=5.0,
+    use_reflection_pair_average::Bool=true,
+    bond_centered_1d::Bool=false,
+)
+    length(param.dims) == 1 || throw(DomainError("1D collapse curves require a 1D state."))
+
+    n = Float64(power_n)
+    L = Int(param.dims[1])
+    fix_term = connected_correlation_fix_term(param)
+    curves = NamedTuple[]
+
+    use_bond_centered_collapse = false
+    bond_origin = (0, 0)
+    bond_corr_mat = nothing
+    if bond_centered_1d
+        bonds, _, _ = force_bond_sites_1d(state, L)
+        has_full_corr = haskey(state.ρ_matrix_avg_cuts, :full) || haskey(state.ρ_matrix_avg_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
+        if length(bonds) == 1 && has_full_corr
+            bond_origin = bonds[1]
+            bond_corr_mat = connected_correlation_matrix_1d(state, param)
+            use_bond_centered_collapse = true
+        else
+            reason = length(bonds) != 1 ? "expected exactly one 1D forcing bond, found $(length(bonds))" : "full correlation matrix is unavailable"
+            println("Bond-centered 1D collapse requested for ", label, " but ", reason, "; using site-centered collapse.")
+        end
+    end
+
+    for index in indices
+        i = Int(index)
+        x_rel, perm, full_data, antisym_data, sym_data = if use_bond_centered_collapse
+            origin_b1, origin_b2 = bond_origin
+            target_b1 = mod1(origin_b1 + i, L)
+            target_b2 = mod1(origin_b2 + i, L)
+            reflected_b1 = mod1(origin_b1 - i, L)
+            reflected_b2 = mod1(origin_b2 - i, L)
+
+            full_cut_raw = bond_centered_cut_1d(bond_corr_mat, target_b1, target_b2; smooth_diagonal=false)
+            if use_reflection_pair_average
+                reflected_cut = bond_centered_cut_1d(bond_corr_mat, reflected_b1, reflected_b2; smooth_diagonal=false)
+                full_cut_raw = 0.5 .* (full_cut_raw .+ reflected_cut_1d_about_bond_center(reflected_cut, origin_b1, origin_b2))
+            end
+            full_cut_raw = Float64.(full_cut_raw) .+ fix_term
+
+            full_data = copy(full_cut_raw)
+            smooth_periodic_cut_bond!(full_data, target_b1, target_b2)
+
+            sym_data, antisym_data = reflection_decomposed_cut_1d_about_bond_center(full_cut_raw, origin_b1, origin_b2)
+            smooth_periodic_cut_bond!(antisym_data, target_b1, target_b2)
+            smooth_periodic_cut_bond!(antisym_data, reflected_b1, reflected_b2)
+            smooth_periodic_cut_bond!(sym_data, target_b1, target_b2)
+            smooth_periodic_cut_bond!(sym_data, reflected_b1, reflected_b2)
+
+            x_rel, perm = centered_periodic_bond_axis_1d(L, origin_b1, origin_b2)
+            x_rel, perm, full_data, antisym_data, sym_data
+        else
+            middle_spot = if has_selected_site_cuts_for_plot(state)
+                _, selected_origin_site, _ = selected_site_cut_metadata_for_plot(state, L)
+                selected_origin_site
+            else
+                L ÷ 2
+            end
+            point_to_look_at = mod1(Int(middle_spot + i), L)
+
+            full_cut_raw = if use_reflection_pair_average
+                reflection_pair_averaged_cut_1d(
+                    state,
+                    param,
+                    point_to_look_at;
+                    origin_site=middle_spot,
+                    smooth_diagonal=false,
+                )[1]
+            else
+                connected_correlation_cut_1d(state, param, point_to_look_at; smooth_diagonal=false)
+            end
+            full_cut_raw = Float64.(full_cut_raw) .+ fix_term
+            full_data = copy(full_cut_raw)
+            smooth_periodic_cut_site!(full_data, point_to_look_at)
+
+            sym_data, antisym_data = reflection_decomposed_cut_1d(full_cut_raw, middle_spot)
+            reflected_site = reflected_site_about_center_1d(point_to_look_at, middle_spot, L)
+            smooth_periodic_cut_site!(antisym_data, point_to_look_at)
+            smooth_periodic_cut_site!(antisym_data, reflected_site)
+            smooth_periodic_cut_site!(sym_data, point_to_look_at)
+            smooth_periodic_cut_site!(sym_data, reflected_site)
+
+            x_rel, perm = centered_periodic_axis(L, middle_spot)
+            x_rel, perm, full_data, antisym_data, sym_data
+        end
+
+        x_scaled = Float64.(x_rel) ./ Float64(i)
+        range_mask = (-Float64(x_window) .<= x_scaled .<= Float64(x_window))
+        for (data, key) in zip((full_data, antisym_data, sym_data), (:full, :antisym, :sym))
+            data_centered = Float64.(data[perm])
+            y_scaled = data_centered .* Float64(i)^n
+            final_mask = range_mask .& isfinite.(x_scaled) .& isfinite.(y_scaled)
+            push!(
+                curves,
+                (
+                    cut=key,
+                    offset=i,
+                    label=String(label),
+                    x=x_scaled[final_mask],
+                    y=y_scaled[final_mask],
+                    x_rel=Float64.(x_rel),
+                    distances=abs.(Float64.(x_rel)),
+                    data_centered=data_centered,
+                    bond_centered=use_bond_centered_collapse,
+                ),
+            )
+        end
+    end
+
+    return curves
+end
+
+function robust_abs_peak(curves; cut::Symbol=:full, quantile::Float64=0.98)
+    values = Float64[]
+    for curve in curves
+        curve.cut == cut || continue
+        for value in curve.y
+            isfinite(value) && push!(values, abs(Float64(value)))
+        end
+    end
+    isempty(values) && return 0.0
+
+    sort!(values)
+    q = clamp(quantile, 0.0, 1.0)
+    idx = clamp(ceil(Int, q * length(values)), 1, length(values))
+    return values[idx]
+end
+
+function normalize_data_collapse_scale_mode(scale_mode)
+    mode = Symbol(lowercase(String(scale_mode)))
+    if mode in (:match_reference, :match_pmlr, :reference)
+        return :match_reference
+    elseif mode in (:unit_peak, :normalize, :normalized)
+        return :unit_peak
+    elseif mode == :none
+        return :none
+    end
+    throw(ArgumentError("Unsupported scale_mode '$scale_mode'. Use match_reference, unit_peak, or none."))
+end
+
+function data_collapse_scale_factors(peaks; scale_mode=:match_reference, reference_index::Int=1)
+    mode = normalize_data_collapse_scale_mode(scale_mode)
+    if mode == :none
+        return ones(Float64, length(peaks))
+    end
+
+    target_peak = mode == :unit_peak ? 1.0 : peaks[reference_index]
+    return [peak > 0 && isfinite(peak) ? target_peak / peak : 1.0 for peak in peaks]
+end
+
+function data_collapse_index_color(index_position::Int)
+    return DATA_COLLAPSE_INDEX_COLORS[mod1(index_position, length(DATA_COLLAPSE_INDEX_COLORS))]
+end
+
+function collapse_indices_title(indices)
+    idx = Int.(collect(indices))
+    if length(idx) <= 8
+        return join(idx, ",")
+    end
+    return string(first(idx), ":", last(idx), " (", length(idx), " y values)")
+end
+
+function paired_scale_label(scale_mode, dataset_labels, reference_index::Int, scale_quantile::Float64)
+    mode = normalize_data_collapse_scale_mode(scale_mode)
+    if mode == :match_reference
+        return string("scaled to ", dataset_labels[reference_index])
+    elseif mode == :unit_peak
+        return "unit peak"
+    end
+    return "unscaled"
+end
+
+function plot_paired_1d_data_collapse(
+    states_params_names,
+    power_n,
+    indices,
+    results_dir::AbstractString="results_figures/paired_data_collapse";
+    dataset_labels=nothing,
+    title::AbstractString="",
+    x_window::Real=5.0,
+    scale_mode=:match_reference,
+    scale_quantile::Float64=0.98,
+    reference_index::Int=1,
+    use_reflection_pair_average::Bool=true,
+    bond_centered_1d_flags=nothing,
+    file_prefix::AbstractString="paired_1d",
+)
+    isempty(states_params_names) && error("No datasets were provided.")
+    reference_index = clamp(reference_index, 1, length(states_params_names))
+    labels = if isnothing(dataset_labels)
+        [String(item[3]) for item in states_params_names]
+    else
+        String.(dataset_labels)
+    end
+    length(labels) == length(states_params_names) || error("dataset_labels must match the number of datasets.")
+
+    n = Float64(power_n)
+    dataset_curves = Vector{Vector{NamedTuple}}()
+    bond_flags = Bool[]
+    for (dataset_i, (state, param, label)) in enumerate(states_params_names)
+        length(param.dims) == 1 || error("Paired 1D collapse only supports 1D states. Dataset '$label' has dims=$(param.dims).")
+        bond_flag = if isnothing(bond_centered_1d_flags)
+            false
+        else
+            Bool(bond_centered_1d_flags[dataset_i])
+        end
+        push!(bond_flags, bond_flag)
+        curves = one_dimensional_data_collapse_curves(
+            state,
+            param,
+            n,
+            indices;
+            label=String(label),
+            x_window=x_window,
+            use_reflection_pair_average=use_reflection_pair_average,
+            bond_centered_1d=bond_flag,
+        )
+        any(curve -> curve.cut == :full && !isempty(curve.x), curves) || error("No full-cut collapse curves were produced for dataset '$label'.")
+        push!(dataset_curves, curves)
+    end
+
+    peaks = [robust_abs_peak(curves; cut=:full, quantile=scale_quantile) for curves in dataset_curves]
+    scale_factors = data_collapse_scale_factors(peaks; scale_mode=scale_mode, reference_index=reference_index)
+    mode = normalize_data_collapse_scale_mode(scale_mode)
+    power_token = compact_power_token(n)
+    unicode_power = unicode_superscript_token(power_token)
+    x_label = math_label("\\frac{x}{y}", "x/y")
+    base_y_label = math_label("C y^{$power_token}", "C y$unicode_power")
+    y_label = if mode == :unit_peak
+        math_label("C y^{$power_token}/\\mathrm{peak}", "C y$unicode_power / peak")
+    elseif mode == :match_reference
+        math_label("C y^{$power_token}\\;\\mathrm{(scaled)}", "C y$unicode_power (scaled)")
+    else
+        base_y_label
+    end
+
+    scale_label = paired_scale_label(mode, labels, reference_index, scale_quantile)
+    offset_positions = Dict{Int,Int}()
+    for (pos, offset) in enumerate(Int.(collect(indices)))
+        offset_positions[offset] = pos
+    end
+
+    dataset_linestyles = [:solid, :dash, :dot, :dashdot]
+    dataset_markers = [:circle, :diamond, :utriangle, :rect]
+    cut_specs = [
+        (:full, "full_data", "full_data"),
+        (:antisym, "antisymmetric", "antisym"),
+    ]
+
+    plots = Dict{Symbol,Any}()
+    output_paths = Dict{Symbol,String}()
+    mkpath(results_dir)
+    mode_token = String(mode)
+
+    for (cut_key, file_token, title_token) in cut_specs
+        plot_title = isempty(title) ?
+                     string(title_token, " | ", scale_label) :
+                     string(String(title), " | ", title_token)
+        p = data_collapse_plot(plot_title, x_label, y_label; legend_position=:outerright)
+        plot!(p; size=(1380, 780), right_margin=42Plots.mm)
+
+        all_x = Float64[]
+        all_y = Float64[]
+
+        for (dataset_i, curves) in enumerate(dataset_curves)
+            scale_factor = scale_factors[dataset_i]
+            line_style = dataset_linestyles[mod1(dataset_i, length(dataset_linestyles))]
+            marker_shape = dataset_markers[mod1(dataset_i, length(dataset_markers))]
+            for curve in curves
+                curve.cut == cut_key || continue
+                color = data_collapse_index_color(offset_positions[curve.offset])
+                y_scaled = curve.y .* scale_factor
+                append!(all_x, curve.x)
+                append!(all_y, y_scaled)
+                plot!(
+                    p,
+                    curve.x,
+                    y_scaled;
+                    label=math_label(
+                        string(latex_roman_text(labels[dataset_i]), "\\; y=", curve.offset),
+                        string(labels[dataset_i], " y=", curve.offset),
+                    ),
+                    color=color,
+                    linestyle=line_style,
+                    linewidth=dataset_i == reference_index ? 2.5 : 2.2,
+                    markershape=marker_shape,
+                    markersize=2.0,
+                    markercolor=color,
+                    markerstrokecolor=color,
+                    markeralpha=0.45,
+                )
+            end
+        end
+
+        add_dimension_reference!(
+            p,
+            1,
+            all_x,
+            all_y;
+            label=math_label(
+                "\\mathrm{ref}\\sim\\frac{x/y}{\\left(1+(x/y)^2\\right)^2}",
+                "ref ∼ (x/y)/(1+(x/y)²)²",
+            ),
+        )
+        apply_data_collapse_max_note!(p, plot_title, all_x, all_y; mark_point=true)
+        apply_robust_data_collapse_limits!(p, all_y)
+
+        out_path = joinpath(results_dir, "$(file_prefix)_$(file_token)_collapse_y$(n)_indices-$(join(Int.(indices), "-"))_$(mode_token).png")
+        savefig(p, out_path)
+        plots[cut_key] = p
+        output_paths[cut_key] = out_path
+    end
+
+    return (
+        plots=plots,
+        output_paths=output_paths,
+        plot=plots[:full],
+        output_path=output_paths[:full],
+        peaks=peaks,
+        scale_factors=scale_factors,
+        dataset_labels=labels,
+        bond_centered_flags=bond_flags,
+        scale_mode=mode,
+    )
+end
+
 function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true;
-                           show_powerlaw=true, use_reflection_pair_average=true)
+                           show_powerlaw=true, use_reflection_pair_average=true,
+                           bond_centered_1d=false)
     n = Float64(power_n)
     extra_power_exp = 2.0  # reference slope -2
     x_label, y_label = data_collapse_axis_labels(n)
@@ -2104,9 +2571,6 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
         dim_num = length(param.dims)
 
         if dim_num == 1
-            L = param.dims[1]
-            N = param.N
-            fix_term = connected_correlation_fix_term(param)
             # Setup output directories
             full_dir = "$(results_dir)/full_data"
             antisym_dir = "$(results_dir)/antisymmetric"
@@ -2136,75 +2600,50 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 ref_added_sym_extra = false
             end
 
-            for i in indices
-                middle_spot = if has_selected_site_cuts_for_plot(state)
-                    _, selected_origin_site, _ = selected_site_cut_metadata_for_plot(state, L)
-                    selected_origin_site
-                else
-                    L ÷ 2
+            collapse_curves = one_dimensional_data_collapse_curves(
+                state,
+                param,
+                n,
+                indices;
+                label=String(label),
+                x_window=5.0,
+                use_reflection_pair_average=use_reflection_pair_average,
+                bond_centered_1d=bond_centered_1d,
+            )
+
+            for curve in collapse_curves
+                key = curve.cut
+                p_combined_plot = key == :full ? p_full_combined :
+                                  key == :antisym ? p_antisym_combined :
+                                  p_sym_combined
+                curve_label = collapse_curve_label(label, curve.offset, state_count)
+                append!(plot_x[key], curve.x)
+                append!(plot_y[key], curve.y)
+                plot!(p_combined_plot, curve.x, curve.y, label=curve_label, lw=2.2)
+                if !ref_dim_added[key]
+                    ref_dim_added[key] = add_dimension_reference!(p_combined_plot, dim_num, curve.x, curve.y)
                 end
-                point_to_look_at = mod1(Int(middle_spot + i), L)
 
-                full_cut_raw = if use_reflection_pair_average
-                    reflection_pair_averaged_cut_1d(
-                        state,
-                        param,
-                        point_to_look_at;
-                        origin_site=middle_spot,
-                        smooth_diagonal=false,
-                    )[1]
-                else
-                    connected_correlation_cut_1d(state, param, point_to_look_at; smooth_diagonal=false)
-                end
-                full_cut_raw = Float64.(full_cut_raw) .+ fix_term
-                full_data = copy(full_cut_raw)
-                smooth_periodic_cut_site!(full_data, point_to_look_at)
-
-                sym_data, antisym_data = reflection_decomposed_cut_1d(full_cut_raw, middle_spot)
-                reflected_site = reflected_site_about_center_1d(point_to_look_at, middle_spot, L)
-                smooth_periodic_cut_site!(antisym_data, point_to_look_at)
-                smooth_periodic_cut_site!(antisym_data, reflected_site)
-                smooth_periodic_cut_site!(sym_data, point_to_look_at)
-                smooth_periodic_cut_site!(sym_data, reflected_site)
-
-                x_rel, perm = centered_periodic_axis(L, middle_spot)
-                x_scaled = Float64.(x_rel) ./ Float64(i)
-                full_data_centered = full_data[perm]
-                antisym_data_centered = antisym_data[perm]
-                sym_data_centered = sym_data[perm]
-
-                for (data, p_combined_plot, key) in zip((full_data_centered, antisym_data_centered, sym_data_centered), (p_full_combined, p_antisym_combined, p_sym_combined), (:full, :antisym, :sym))
-                    y_scaled = data .* i^n
-                    mask = (-5 .<= x_scaled .<= 5)
-                    x_filtered = x_scaled[mask]
-                    y_filtered = y_scaled[mask]
-                    append!(plot_x[key], x_filtered)
-                    append!(plot_y[key], y_filtered)
-                    plot!(p_combined_plot, x_filtered, y_filtered, label=collapse_curve_label(label, i, state_count), lw=2.2)
-                    if !ref_dim_added[key]
-                        ref_dim_added[key] = add_dimension_reference!(p_combined_plot, dim_num, x_filtered, y_filtered)
+                if key == :full
+                    append!(all_x, curve.x)
+                    append!(all_y, curve.y)
+                    plot!(p_combined, curve.x, curve.y, label=curve_label, linewidth=2.2)
+                    if !ref_dim_added[:combined]
+                        ref_dim_added[:combined] = add_dimension_reference!(p_combined, dim_num, curve.x, curve.y)
                     end
                 end
 
-                y_scaled = full_data_centered .* i^n
-                mask = (-5 .<= x_scaled .<= 5)
-                x_filtered = x_scaled[mask]
-                y_filtered = y_scaled[mask]
-                append!(all_x, x_filtered)
-                append!(all_y, y_filtered)
-                plot!(p_combined, x_filtered, y_filtered, label=collapse_curve_label(label, i, state_count), linewidth=2.2)
-                if !ref_dim_added[:combined]
-                    ref_dim_added[:combined] = add_dimension_reference!(p_combined, dim_num, x_filtered, y_filtered)
-                end
                 if show_powerlaw
-                    distances = abs.(Float64.(x_rel))
-                    curve_label = collapse_curve_label(label, i, state_count)
-                    ref_added_full |= add_powerlaw_series!(p_full_powerlaw, distances, full_data_centered, n; label=curve_label, add_reference=!ref_added_full, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_full_extra)
-                    ref_added_antisym |= add_powerlaw_series!(p_antisym_powerlaw, distances, antisym_data_centered, n; label=curve_label, add_reference=!ref_added_antisym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_antisym_extra)
-                    ref_added_sym |= add_powerlaw_series!(p_sym_powerlaw, distances, sym_data_centered, n; label=curve_label, add_reference=!ref_added_sym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_sym_extra)
-                    ref_added_full_extra = true
-                    ref_added_antisym_extra = true
-                    ref_added_sym_extra = true
+                    if key == :full
+                        ref_added_full |= add_powerlaw_series!(p_full_powerlaw, curve.distances, curve.data_centered, n; label=curve_label, add_reference=!ref_added_full, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_full_extra)
+                        ref_added_full_extra = true
+                    elseif key == :antisym
+                        ref_added_antisym |= add_powerlaw_series!(p_antisym_powerlaw, curve.distances, curve.data_centered, n; label=curve_label, add_reference=!ref_added_antisym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_antisym_extra)
+                        ref_added_antisym_extra = true
+                    elseif key == :sym
+                        ref_added_sym |= add_powerlaw_series!(p_sym_powerlaw, curve.distances, curve.data_centered, n; label=curve_label, add_reference=!ref_added_sym, extra_reference_exponent=extra_power_exp, add_extra_reference=!ref_added_sym_extra)
+                        ref_added_sym_extra = true
+                    end
                 end
             end
 

@@ -85,6 +85,9 @@ function parse_commandline()
             arg_type = Int
             default = 100
             required = false
+        "--performance_mode"
+            help = "Disable plotting and progress display for lean/headless runs"
+            action = :store_true
     end
     return parse_args(s)
 end
@@ -149,40 +152,42 @@ end
 
 # Default parameters (used when no config file is provided)
 @everywhere function get_default_params()
-    L= 16  
-    d = 2
+    L= 64  
+    d = 1
     return Dict(
         "dim_num" => d,
         "D" => 1.0,
-        "α" => 0.0,
+        "α" => 0.25,
         "L" => L,
         "ρ₀" => 100, # particles per site
         "T" => 1.0,
-        "γ" => 0.0,
-        "ϵ" => 0,
+        "γ" => 0.25,
+        "ϵ" => 1.0,
         "n_sweeps" => 10^6,
         "description" => "",
         # "potential_type" => "well",
         # "fluctuation_type" => "reflection",
-        "potential_type" => "zero",
-        "fluctuation_type" => "no-fluctuation",
-        "potential_magnitude" => 0.0,
+        "potential_type" => "linear_slides_cut1",
+        "fluctuation_type" => "profile_switch",
+        "potential_magnitude" => 2.0,
         "save_dir" => "saved_states",
         "show_times" => [j*10^i for i in 0:12 for j in 1:9],
         # "show_times" => [i for i in 1:1:1000000],
         "save_times" => [j*10^i for i in 6:12 for j in 1:9],
         "forcing_type" => "center_bond_x",
         "forcing_types" => ["center_bond_x"],
-        "ffr" => 1.0,
-        "ffrs" => [1.0],
+        "ffr" => 0.0,
+        "ffrs" => [0.0],
         "forcing_fluctuation_type" => "alternating_direction",
-        "forcing_magnitude" => 1.0,
-        "forcing_magnitudes" => [1.0],
+        "forcing_magnitude" => 0.0,
+        "forcing_magnitudes" => [0.0],
         "forcing_direction_flags" => [true],
         "forcing_rate_scheme" => "legacy_penalty",
         "bond_pass_count_mode" => "nonzero_magnitude",
         "ic" => "random",
         "int_type" => "Int32",
+        "performance_mode" => false,
+        "statistics_interval" => 1,
     )
 end
 
@@ -234,6 +239,23 @@ end
     error("$key_name must be a boolean or a list of booleans.")
 end
 
+@everywhere function to_bool(value, key_name::String)
+    if value isa Bool
+        return value
+    elseif value isa Number
+        return value != 0
+    elseif value isa AbstractString
+        lv = lowercase(strip(value))
+        if lv in ("true", "t", "1", "yes", "y")
+            return true
+        elseif lv in ("false", "f", "0", "no", "n")
+            return false
+        end
+        error("$key_name has an invalid boolean value: $value")
+    end
+    error("$key_name must be boolean-like (Bool/0-1/string).")
+end
+
 @everywhere function expand_to_length(values::Vector{T}, n::Int, key_name::String) where {T}
     if length(values) == n
         return values
@@ -278,6 +300,23 @@ end
         end
     end
     error("Unsupported forcing type: $forcing_type")
+end
+
+@everywhere function get_performance_mode(params, defaults)
+    if haskey(params, "performance_mode")
+        return to_bool(params["performance_mode"], "performance_mode")
+    elseif haskey(params, "cluster_mode")
+        return to_bool(params["cluster_mode"], "cluster_mode")
+    end
+    return to_bool(get(defaults, "performance_mode", false), "performance_mode")
+end
+
+@everywhere function get_statistics_interval(params, defaults)
+    raw_interval = get(params, "statistics_interval", defaults["statistics_interval"])
+    if !(raw_interval isa Number)
+        error("statistics_interval must be numeric.")
+    end
+    return max(Int(round(Float64(raw_interval))), 1)
 end
 
 @everywhere function parse_forcing_bond_pair(raw_pair, dim_num::Int, L::Int)
@@ -457,6 +496,7 @@ end
     params["show_times"] = Int[]
     params["save_times"] = Int[]
     int_type = resolve_int_type(args, params, defaults)
+    statistics_interval = get_statistics_interval(params, defaults)
     
     # Set up simulation parameters.
     dim_num            = get(params, "dim_num", defaults["dim_num"])
@@ -496,7 +536,10 @@ end
     dist, corr_mat_cuts = run_simulation!(state, param, n_sweeps, rng;
                                                  calc_correlations=false,
                                                  show_times=params["show_times"],
-                                                 save_times=params["save_times"])
+                                                 save_times=params["save_times"],
+                                                 plot_flag=false,
+                                                 show_progress=false,
+                                                 statistics_interval=statistics_interval)
     return dist, corr_mat_cuts, state, param
 end
 
@@ -675,6 +718,7 @@ function main()
                 params = get_default_params()
             end
             defaults = get_default_params()
+            performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
             dim_num            = get(params, "dim_num", defaults["dim_num"])
             potential_type     = get(params, "potential_type", defaults["potential_type"])
             fluctuation_type   = get(params, "fluctuation_type", defaults["fluctuation_type"])
@@ -704,7 +748,7 @@ function main()
             seed = rand(1:2^30)
             #rng = MersenneTwister(123)
             rng = MersenneTwister(seed)
-            potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type,rng=rng,plot_flag=true)
+            potential = Potentials.choose_potential(v_args, dims; fluctuation_type=fluctuation_type, rng=rng, plot_flag=!performance_mode)
             
             state = FP.setState(0, rng, param, T, potential, forcings; ic=ic, int_type=int_type, bond_pass_count_mode=bond_pass_count_mode)
         end
@@ -719,6 +763,13 @@ function main()
         progress_interval = max(Int(round(Float64(progress_interval_raw))), 1)
         snapshot_request_file = String(get(params, "snapshot_request_file", ""))
         snapshot_tag_prefix = String(get(params, "snapshot_tag_prefix", "snapshot"))
+        if !(@isdefined performance_mode)
+            performance_mode = get(args, "performance_mode", false) ? true : get_performance_mode(params, defaults)
+        end
+        statistics_interval = get_statistics_interval(params, defaults)
+        if performance_mode
+            show_times = Int[]
+        end
 
         if estimate_only
             estimated_time = estimate_run_time(state, param, n_sweeps, rng; sample_size=estimate_sample_size)
@@ -752,13 +803,15 @@ function main()
                                                  show_times=show_times,
                                                  save_times=save_times,
                                                  save_dir=save_dir,
-                                                 plot_flag=true,
+                                                 plot_flag=!performance_mode,
                                                  save_description=description,
+                                                 show_progress=!performance_mode,
                                                  progress_file=progress_file,
                                                  progress_interval=progress_interval,
                                                  snapshot_request_file=snapshot_request_file,
                                                  snapshot_tag_prefix=snapshot_tag_prefix,
-                                                 relaxed_ic=using_initial_state)
+                                                 relaxed_ic=using_initial_state,
+                                                 statistics_interval=statistics_interval)
         catch e
             if isa(e, InterruptException)
                 println("\nInterrupt detected, initiating cleanup...")

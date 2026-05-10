@@ -250,6 +250,9 @@ function parse_commandline()
         "--collapse_indices"
             help = "Optional subset of positive cut offsets to use for data collapse, e.g. 8,16,32 or 20:10:80. Required for 2D x/diag cut collapse and for legacy/full-matrix 1D states without selected-cut metadata."
             default = ""
+        "--bond_centered_collapse"
+            help = "Use bond-centered coordinates/reflection for 1D data collapse; this is already the default when a single forcing bond and full correlation matrix are available"
+            action = :store_true
     end
     return parse_args(s)
 end
@@ -391,6 +394,8 @@ end
 
 function collect_diffusive_files_from_run_dir(run_dir::AbstractString)
     candidate_dirs = [
+        joinpath(run_dir, "aggregates", "current"),
+        joinpath(run_dir, "aggregates"),
         joinpath(run_dir, "aggregated", "current"),
         joinpath(run_dir, "aggregated"),
         joinpath(run_dir, "states", "aggregated"),
@@ -415,7 +420,8 @@ function collect_files_from_run_id(run_id::AbstractString, cluster_results_root:
 
     files = if resolved_family == RUN_FAMILY_SSEP
         collect_ssep_files_from_run_dir(run_dir)
-    elseif resolved_family in (RUN_FAMILY_DIFFUSIVE_1D_PMLR, RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND)
+    elseif resolved_family in (RUN_FAMILY_DIFFUSIVE_1D_PMLR, RUN_FAMILY_DIFFUSIVE_2D_ORIGIN_BOND) ||
+           (resolved_family == RUN_FAMILY_SINGLE_ORIGIN_BOND && resolved_mode == "managed")
         collect_diffusive_files_from_run_dir(run_dir)
     else
         states_dir = joinpath(run_dir, "states")
@@ -800,8 +806,9 @@ function collapse_indices_dir_token(indices::AbstractVector{<:Integer})
     return "idx-" * join(Int.(indices), "-")
 end
 
-function collapse_dir_name(collapse_power::Real, indices::AbstractVector{<:Integer})
-    return "data_collapse_y" * collapse_power_dir_token(collapse_power) * "_" * collapse_indices_dir_token(indices)
+function collapse_dir_name(collapse_power::Real, indices::AbstractVector{<:Integer}; bond_centered::Bool=false)
+    prefix = bond_centered ? "data_collapse_bond_centered_y" : "data_collapse_y"
+    return prefix * collapse_power_dir_token(collapse_power) * "_" * collapse_indices_dir_token(indices)
 end
 
 function resolve_collapse_indices(available_indices::Vector{Int}, requested_indices::Union{Nothing,Vector{Int}}, saved_state::AbstractString)
@@ -864,6 +871,25 @@ function supports_1d_data_collapse(state, param)
     rho_matrix_avg_cuts isa AbstractDict || return false
 
     return PlotUtils.has_selected_site_cuts_for_plot(state) || haskey(rho_matrix_avg_cuts, :full)
+end
+
+function default_bond_centered_collapse_1d(state, param)
+    dims = get_prop(param, :dims, nothing)
+    if !(dims isa Tuple || dims isa AbstractVector) || length(dims) != 1
+        return false
+    end
+
+    rho_matrix_avg_cuts = get_prop(state, :ρ_matrix_avg_cuts, nothing)
+    rho_matrix_avg_cuts isa AbstractDict || return false
+    has_full_corr = haskey(rho_matrix_avg_cuts, :full) || haskey(rho_matrix_avg_cuts, AGG_CONNECTED_FULL_EXACT_KEY)
+    has_full_corr || return false
+
+    try
+        bonds, _, _ = PlotUtils.force_bond_sites_1d(state, Int(dims[1]))
+        return length(bonds) == 1
+    catch
+        return false
+    end
 end
 
 function available_2d_cut_collapse_indices(param)
@@ -2293,7 +2319,8 @@ end
 
 function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir::String;
                                       collapse_power::Float64=2.0,
-                                      requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing)
+                                      requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing,
+                                      bond_centered_collapse::Bool=false)
     base_name = replace(basename(saved_state), ".jld2" => "")
     state_dir = joinpath(out_dir, base_name)
     sweep_dir = joinpath(state_dir, "current_sweep_statistics")
@@ -2313,12 +2340,14 @@ function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir
         out_dir;
         collapse_power=collapse_power,
         requested_collapse_indices=requested_collapse_indices,
+        bond_centered_collapse=bond_centered_collapse,
     )
 end
 
 function save_1d_data_collapse_if_possible(saved_state::String, state, param, out_dir::String;
                                            collapse_power::Float64=2.0,
-                                           requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing)
+                                           requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing,
+                                           bond_centered_collapse::Bool=false)
     supports_1d_data_collapse(state, param) || return false
 
     base_name = replace(basename(saved_state), ".jld2" => "")
@@ -2331,7 +2360,8 @@ function save_1d_data_collapse_if_possible(saved_state::String, state, param, ou
         end
         return false
     end
-    collapse_dir = joinpath(out_dir, base_name, collapse_dir_name(collapse_power, indices))
+    effective_bond_centered_collapse = bond_centered_collapse || default_bond_centered_collapse_1d(state, param)
+    collapse_dir = joinpath(out_dir, base_name, collapse_dir_name(collapse_power, indices; bond_centered=effective_bond_centered_collapse))
     mkpath(collapse_dir)
 
     PlotUtils.plot_data_colapse(
@@ -2339,9 +2369,11 @@ function save_1d_data_collapse_if_possible(saved_state::String, state, param, ou
         collapse_power,
         indices,
         collapse_dir,
-        true,
+        true;
+        bond_centered_1d=effective_bond_centered_collapse,
     )
-    println("Saved 1D data collapse using indices ", indices, " under ", collapse_dir, " (source=", source, ")")
+    center_mode = effective_bond_centered_collapse ? ", bond_centered=true" : ""
+    println("Saved 1D data collapse using indices ", indices, " under ", collapse_dir, " (source=", source, center_mode, ")")
     return true
 end
 
@@ -3250,6 +3282,7 @@ function main()
     corr_model_c = Float64(get(args, "corr_model_c", 0.0))
     collapse_power = Float64(get(args, "collapse_power", 2.0))
     requested_collapse_indices = parse_requested_collapse_indices(get(args, "collapse_indices", ""))
+    bond_centered_collapse = get(args, "bond_centered_collapse", false)
     mode_raw = String(args["mode"])
     run_id = strip(String(get(args, "run_id", "")))
     if !isempty(run_id) && mode_raw == "single"
@@ -3351,6 +3384,7 @@ function main()
                         out_dir;
                         collapse_power=collapse_power,
                         requested_collapse_indices=requested_collapse_indices,
+                        bond_centered_collapse=bond_centered_collapse,
                     )
                 elseif is_legacy_normalized_state(state)
                     save_legacy_sweep_plot(saved_state, state, param, out_dir)
@@ -3361,6 +3395,7 @@ function main()
                         out_dir;
                         collapse_power=collapse_power,
                         requested_collapse_indices=requested_collapse_indices,
+                        bond_centered_collapse=bond_centered_collapse,
                     )
                 elseif is_common_diffusive_state(state, param)
                     save_diffusive_sweep_components(
@@ -3379,6 +3414,7 @@ function main()
                         out_dir;
                         collapse_power=collapse_power,
                         requested_collapse_indices=requested_collapse_indices,
+                        bond_centered_collapse=bond_centered_collapse,
                     )
                     save_2d_cut_data_collapse_if_possible(
                         saved_state,
@@ -3397,6 +3433,7 @@ function main()
                         out_dir;
                         collapse_power=collapse_power,
                         requested_collapse_indices=requested_collapse_indices,
+                        bond_centered_collapse=bond_centered_collapse,
                     )
                 end
             catch e

@@ -175,14 +175,17 @@ module FP
     const BOND_PASS_SPATIAL_F_AVG_KEY = :bond_pass_spatial_f_avg
     const BOND_PASS_SPATIAL_F2_AVG_KEY = :bond_pass_spatial_f2_avg
     const BOND_PASS_SPATIAL_SAMPLE_COUNT_KEY = :bond_pass_spatial_sample_count
+    const STATE_RUNTIME_SCRATCH = IdDict{Any, Dict{Symbol,Any}}()
 
     function bond_pass_track_mask_for_forcings(forcings::Vector{BondForce}, mode::AbstractString)
         if mode == "all_forcing_bonds"
             return ones(Float64, length(forcings))
         elseif mode == "nonzero_magnitude"
             return [abs(force.magnitude) > 0.0 ? 1.0 : 0.0 for force in forcings]
+        elseif mode == "none"
+            return zeros(Float64, length(forcings))
         else
-            throw(ArgumentError("Unsupported bond_pass_count_mode: $mode. Use \"nonzero_magnitude\" or \"all_forcing_bonds\"."))
+            throw(ArgumentError("Unsupported bond_pass_count_mode: $mode. Use \"none\", \"nonzero_magnitude\", or \"all_forcing_bonds\"."))
         end
     end
 
@@ -565,6 +568,77 @@ module FP
 
     @inline endpoint_tuple(indices::AbstractVector{<:Integer}) = Tuple(Int(i) for i in indices)
 
+    @inline function runtime_scratch!(state)
+        return get!(STATE_RUNTIME_SCRATCH, state) do
+            Dict{Symbol,Any}()
+        end
+    end
+
+    @inline function cached_int_buffer!(scratch::Dict{Symbol,Any}, key::Symbol, len::Int)
+        buf = get(scratch, key, nothing)
+        if !(buf isa Vector{Int64}) || length(buf) != len
+            buf = zeros(Int64, len)
+            scratch[key] = buf
+        else
+            fill!(buf, 0)
+        end
+        return buf
+    end
+
+    @inline function precompute_periodic_neighbors_1d(L::Int)
+        left = Vector{Int}(undef, L)
+        right = Vector{Int}(undef, L)
+        @inbounds for i in 1:L
+            left[i] = i == 1 ? L : i - 1
+            right[i] = i == L ? 1 : i + 1
+        end
+        return left, right
+    end
+
+    @inline function periodic_neighbors_1d!(state, L::Int)
+        scratch = runtime_scratch!(state)
+        cached = get(scratch, :periodic_neighbors_1d, nothing)
+        if cached === nothing || length(cached[1]) != L
+            cached = precompute_periodic_neighbors_1d(L)
+            scratch[:periodic_neighbors_1d] = cached
+        end
+        return cached
+    end
+
+    @inline function precompute_periodic_neighbors_2d(Lx::Int, Ly::Int)
+        left_x = Vector{Int}(undef, Lx)
+        right_x = Vector{Int}(undef, Lx)
+        down_y = Vector{Int}(undef, Ly)
+        up_y = Vector{Int}(undef, Ly)
+        @inbounds for i in 1:Lx
+            left_x[i] = i == 1 ? Lx : i - 1
+            right_x[i] = i == Lx ? 1 : i + 1
+        end
+        @inbounds for j in 1:Ly
+            down_y[j] = j == 1 ? Ly : j - 1
+            up_y[j] = j == Ly ? 1 : j + 1
+        end
+        return left_x, right_x, down_y, up_y
+    end
+
+    @inline function periodic_neighbors_2d!(state, Lx::Int, Ly::Int)
+        scratch = runtime_scratch!(state)
+        cached = get(scratch, :periodic_neighbors_2d, nothing)
+        if cached === nothing || length(cached[1]) != Lx || length(cached[3]) != Ly
+            cached = precompute_periodic_neighbors_2d(Lx, Ly)
+            scratch[:periodic_neighbors_2d] = cached
+        end
+        return cached
+    end
+
+    @inline function has_force_fluctuations(forcings::Vector{BondForce}, ffrs)
+        for force_idx in eachindex(forcings)
+            abs(forcings[force_idx].magnitude) > 0.0 || continue
+            forcing_rate(ffrs, force_idx) > 0.0 && return true
+        end
+        return false
+    end
+
     function max_forcing_magnitude_per_bond(forcings::Vector{BondForce})
         isempty(forcings) && return 0.0
         bond_totals = Dict{Any,Float64}()
@@ -736,15 +810,23 @@ module FP
             forcings = get_state_forcings!(state)
             n_forces = length(forcings)
             scheme = forcing_rate_scheme(param)
-            rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
+            max_force_magnitude = max_forcing_magnitude_per_bond(forcings)
+            has_rate_forcing = max_force_magnitude > 0.0
+            has_force_flips = has_force_fluctuations(forcings, ffrs)
+            rate_normalization = hop_rate_normalization(param.D, max_force_magnitude, scheme)
             L = param.dims[1]
+            left_neighbors, right_neighbors = periodic_neighbors_1d!(state, L)
             ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
-            tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-            sweep_forward_counts = zeros(Int64, n_forces)
-            sweep_reverse_counts = zeros(Int64, n_forces)
-            ensure_spatial_bond_passage_stats!(state, L)
-            sweep_spatial_forward_counts = zeros(Int64, L)
-            sweep_spatial_reverse_counts = zeros(Int64, L)
+            track_bond_passages = n_forces > 0 && any(>(0.5), state.ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY])
+            tracked_force_indices = track_bond_passages ? tracked_force_indices_from_state(state, n_forces) : Int[]
+            scratch = runtime_scratch!(state)
+            sweep_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_forward_counts_1d, n_forces) : Int64[]
+            sweep_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_reverse_counts_1d, n_forces) : Int64[]
+            if track_bond_passages
+                ensure_spatial_bond_passage_stats!(state, L)
+            end
+            sweep_spatial_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :spatial_forward_counts_1d, L) : Int64[]
+            sweep_spatial_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :spatial_reverse_counts_1d, L) : Int64[]
             Δt=1
             t_end = state.t + Δt
             t= state.t
@@ -765,8 +847,8 @@ module FP
                 if n<=param.N
                     particle = state.particles[n]
                     spot_index = particle.position[1]
-                    left_index= mod1(spot_index-1,param.dims[1])
-                    right_index = mod1(spot_index+1,param.dims[1])
+                    left_index = left_neighbors[spot_index]
+                    right_index = right_neighbors[spot_index]
 
                     
                     if action_index == 1 # left
@@ -787,7 +869,7 @@ module FP
                             t2 = time_ns()
                         end
                         
-                        directed_bond_forcing = directed_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
+                        directed_bond_forcing = has_rate_forcing ? directed_bond_forcing_1d(forcings, spot_index, candidate_spot_index) : 0.0
                         p_candidate = calculate_jump_probability(particle.direction[1], choice_direction, param.D, V[candidate_spot_index]-V[spot_index], T, state.exp_table;
                                                                  ϵ=param.ϵ,
                                                                  directed_bond_forcing=directed_bond_forcing,
@@ -811,9 +893,8 @@ module FP
                 end
                 
                 p_candidate = clamp(p_candidate, 0.0, 1.0)
-                p_stay = 1-p_candidate
-                p_arr = [p_candidate, p_stay]
-                choice = tower_sampling(p_arr, sum(p_arr),rng)
+                p_stay = 1 - p_candidate
+                choice = tower_sampling(p_candidate, p_stay, rng)
                 
                 if benchmark
                     bench_results.tower_sampling_time += (time_ns() - t3) / 1e9
@@ -836,9 +917,9 @@ module FP
                                                     forcings, tracked_force_indices,
                                                     spot_index, candidate_spot_index)
                         end
-                        if action_index == 2 && candidate_spot_index == right_index
+                        if track_bond_passages && action_index == 2 && candidate_spot_index == right_index
                             sweep_spatial_forward_counts[spot_index] += 1
-                        elseif action_index == 1 && candidate_spot_index == left_index
+                        elseif track_bond_passages && action_index == 1 && candidate_spot_index == left_index
                             # Left jump i->i-1 crosses bond (i-1,i) in reverse orientation.
                             sweep_spatial_reverse_counts[left_index] += 1
                         end
@@ -875,17 +956,20 @@ module FP
                 end
 
                 # Independent force fluctuations (each force has its own channel)
-                for force_idx in 1:n_forces
-                    # Calibrated so ffr is "expected flips per sweep per force".
-                    # One sweep has param.N micro-steps.
-                    p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
-                    if p_force > 1.0
-                        p_force = 1.0
-                    elseif p_force < 0.0
-                        p_force = 0.0
-                    end
-                    if rand(rng) < p_force
-                        bondforce_update!(forcings[force_idx])
+                if has_force_flips
+                    for force_idx in 1:n_forces
+                        abs(forcings[force_idx].magnitude) > 0.0 || continue
+                        # Calibrated so ffr is "expected flips per sweep per force".
+                        # One sweep has param.N micro-steps.
+                        p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
+                        if p_force > 1.0
+                            p_force = 1.0
+                        elseif p_force < 0.0
+                            p_force = 0.0
+                        end
+                        if rand(rng) < p_force
+                            bondforce_update!(forcings[force_idx])
+                        end
                     end
                 end
                 
@@ -896,8 +980,10 @@ module FP
                 
                 t += 1/param.N
             end
-            update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
-            update_spatial_bond_passage_averages!(state, sweep_spatial_forward_counts, sweep_spatial_reverse_counts)
+            if track_bond_passages
+                update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
+                update_spatial_bond_passage_averages!(state, sweep_spatial_forward_counts, sweep_spatial_reverse_counts)
+            end
             
         elseif length(param.dims) == 2
             V = state.potential.V
@@ -908,11 +994,18 @@ module FP
             forcings = get_state_forcings!(state)
             n_forces = length(forcings)
             scheme = forcing_rate_scheme(param)
-            rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
+            max_force_magnitude = max_forcing_magnitude_per_bond(forcings)
+            has_rate_forcing = max_force_magnitude > 0.0
+            has_force_flips = has_force_fluctuations(forcings, ffrs)
+            rate_normalization = hop_rate_normalization(param.D, max_force_magnitude, scheme)
             ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
-            tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-            sweep_forward_counts = zeros(Int64, n_forces)
-            sweep_reverse_counts = zeros(Int64, n_forces)
+            track_bond_passages = n_forces > 0 && any(>(0.5), state.ρ_matrix_avg_cuts[BOND_PASS_TRACK_MASK_KEY])
+            tracked_force_indices = track_bond_passages ? tracked_force_indices_from_state(state, n_forces) : Int[]
+            scratch = runtime_scratch!(state)
+            sweep_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_forward_counts_2d, n_forces) : Int64[]
+            sweep_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_reverse_counts_2d, n_forces) : Int64[]
+            Lx, Ly = param.dims
+            left_x, right_x, down_y, up_y = periodic_neighbors_2d!(state, Lx, Ly)
             Δt = 1
             t_end = state.t + Δt
             t = state.t
@@ -937,11 +1030,10 @@ module FP
 
 
                     # Calculate neighboring indices
-                    Lx,Ly = param.dims
-                    left = (mod1(i-1, Lx), j)
-                    right = (mod1(i+1, Lx), j)
-                    down = (i, mod1(j-1, Ly))
-                    up = (i, mod1(j+1, Ly))
+                    left = (left_x[i], j)
+                    right = (right_x[i], j)
+                    down = (i, down_y[j])
+                    up = (i, up_y[j])
 
                     if action_index==1  # left
                         cand = left
@@ -966,7 +1058,7 @@ module FP
                             t2 = time_ns()
                         end
                         
-                        directed_bond_forcing = directed_bond_forcing_2d(forcings, spot_index, cand)
+                        directed_bond_forcing = has_rate_forcing ? directed_bond_forcing_2d(forcings, spot_index, cand) : 0.0
                         p_cand = calculate_jump_probability(particle.direction, dirvec, param.D, V[cand...]-V[i,j], T, state.exp_table;
                                                             directed_bond_forcing=directed_bond_forcing,
                                                             rate_normalization=rate_normalization,
@@ -988,8 +1080,7 @@ module FP
                 
                 p_cand = clamp(p_cand, 0.0, 1.0)
                 p_stay = 1 - p_cand
-                p_arr = [p_cand, p_stay]
-                choice = tower_sampling(p_arr, sum(p_arr), rng)
+                choice = tower_sampling(p_cand, p_stay, rng)
                 
                 if benchmark
                     bench_results.tower_sampling_time += (time_ns() - t3) / 1e9
@@ -1019,17 +1110,20 @@ module FP
                 end
 
                 # Independent force fluctuations (each force has its own channel)
-                for force_idx in 1:n_forces
-                    # Calibrated so ffr is "expected flips per sweep per force".
-                    # One sweep has param.N micro-steps.
-                    p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
-                    if p_force > 1.0
-                        p_force = 1.0
-                    elseif p_force < 0.0
-                        p_force = 0.0
-                    end
-                    if rand(rng) < p_force
-                        bondforce_update!(forcings[force_idx])
+                if has_force_flips
+                    for force_idx in 1:n_forces
+                        abs(forcings[force_idx].magnitude) > 0.0 || continue
+                        # Calibrated so ffr is "expected flips per sweep per force".
+                        # One sweep has param.N micro-steps.
+                        p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
+                        if p_force > 1.0
+                            p_force = 1.0
+                        elseif p_force < 0.0
+                            p_force = 0.0
+                        end
+                        if rand(rng) < p_force
+                            bondforce_update!(forcings[force_idx])
+                        end
                     end
                 end
                 
@@ -1056,7 +1150,9 @@ module FP
                 
                 t += 1 / param.N
             end
-            update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
+            if track_bond_passages
+                update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
+            end
         else
             throw(DomainError("Invalid input - dimension not supported yet"))
         end
@@ -1069,8 +1165,7 @@ module FP
     end
 
     function tower_sampling(weights, w_sum, rng)
-        #key = w_sum*rand(rng)
-        key = w_sum*rand()
+        key = w_sum * rand(rng)
 
         selected = 1
         gathered = weights[selected]
@@ -1080,6 +1175,11 @@ module FP
         end
 
         return selected
+    end
+
+    @inline function tower_sampling(w1::Real, w2::Real, rng)
+        key = (w1 + w2) * rand(rng)
+        return key <= w1 ? 1 : 2
     end
 end
 
@@ -1145,13 +1245,14 @@ function update_and_compute_correlations!(state, param,  ρ_history, frame, rng,
 
         dim_num= length(param.dims)
         if dim_num==1
-            state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
-            # @. state.ρ_avg += (state.ρ-state.ρ_avg)*calc_var_frequency/frame
-            ρf = float(state.ρ)
-            ρ_matrix = ρf * transpose(ρf)
-            # state.ρ_matrix_avg = (state.ρ_matrix_avg*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
-            state.ρ_matrix_avg_cuts[:full] = (state.ρ_matrix_avg_cuts[:full]*(frame-calc_var_frequency)+ρ_matrix*calc_var_frequency)/frame
-            # @. state.ρ_matrix_avg_cuts[:full] += (ρ_matrix-state.ρ_matrix_avg_cuts[:full])*calc_var_frequency/frame
+            weight = calc_var_frequency / frame
+            @. state.ρ_avg += (state.ρ - state.ρ_avg) * weight
+            ρ = state.ρ
+            full = state.ρ_matrix_avg_cuts[:full]
+            @inbounds for j in axes(full, 2), i in axes(full, 1)
+                ρ_outer = Float64(ρ[i]) * Float64(ρ[j])
+                full[i, j] += (ρ_outer - full[i, j]) * weight
+            end
             # time_averaged_desnity_field = calculate_time_averaged_density_field(ρ_history[:,1:frame])
         elseif dim_num==2
             # state.ρ_avg = (state.ρ_avg * (frame-calc_var_frequency)+state.ρ*calc_var_frequency)/frame
@@ -1262,7 +1363,8 @@ function run_simulation!(state, param, n_sweeps, rng;
                         progress_interval::Int = 25,
                         snapshot_request_file = nothing,
                         snapshot_tag_prefix = "snapshot",
-                        relaxed_ic::Bool=false)
+                        relaxed_ic::Bool=false,
+                        statistics_interval::Int=1)
     println("Starting simulation")
     prg, ρ_history, decay_times = initialize_simulation(state, param, n_sweeps, calc_correlations; show_progress=show_progress)
 
@@ -1271,6 +1373,7 @@ function run_simulation!(state, param, n_sweeps, rng;
     t_end = t_init + n_sweeps-1
     println("with t_init = $t_init , t_end = $t_end")
     progress_interval = max(progress_interval, 1)
+    statistics_interval = max(statistics_interval, 1)
     progress_file_path = isnothing(progress_file) ? "" : strip(String(progress_file))
     snapshot_request_path = isnothing(snapshot_request_file) ? "" : strip(String(snapshot_request_file))
     run_start_epoch = time()
@@ -1293,7 +1396,7 @@ function run_simulation!(state, param, n_sweeps, rng;
         #     FP.update!(param, state, rng)
         # end
         
-        update_and_compute_correlations!(state, param, ρ_history, sweep, rng)
+        update_and_compute_correlations!(state, param, ρ_history, sweep, rng, statistics_interval)
 
         if !isempty(snapshot_request_path) && isfile(snapshot_request_path)
             try

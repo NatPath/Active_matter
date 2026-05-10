@@ -55,6 +55,7 @@ Post-processing:
                                           (default when omitted: automatic rho0^2-based baseline from load_and_plot.jl)
   --collapse_power <value>                Power n used for cut-based data-collapse plots
   --collapse_indices <spec>               Cut offsets for data collapse, e.g. 8,16,32 or 20:10:80
+  --bond_centered_collapse                Force bond-centered 1D collapse; this is already automatic for one-bond full-matrix states
   --mode_plot <single|two_force_d>        load_and_plot mode; auto-selected from run family when omitted
 
 Examples:
@@ -66,6 +67,7 @@ Examples:
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
   bash copy_data_from_cluster.sh --run_id diffusive_1d_pmlr_L512_rho100_gamma1_V16_production_ns1000000_nr600_20260420-120000 --plot --collapse_indices 20:10:80
   bash copy_data_from_cluster.sh --run_id diffusive_1d_center_bond_L2048_rho100_f1_ffr1 --sync_scope aggregation --plot
+  bash copy_data_from_cluster.sh --run_id single_origin_bond_L64_rho100_f1_ffr1 --plot --collapse_indices 6:2:14
   bash copy_data_from_cluster.sh --run_id diffusive_2d_origin_bond_L64_rho1000_f1_ffr1_prod_ns50000_nr600_20260412-021855 --plot
   bash copy_data_from_cluster.sh --run_id diffusive_2d_origin_bond_L64_rho1000_f1_ffr1_prod_ns50000_nr600_20260412-021855 --plot --collapse_indices 4,8,12
   bash copy_data_from_cluster.sh --run_id two_force_warmup_production_L256_rho100_..._production_20260226-032016 --aggregated_saved_only --plot
@@ -122,6 +124,7 @@ skip_per_state="false"
 baseline_j2=""
 collapse_power=""
 collapse_indices=""
+bond_centered_collapse="false"
 plot_mode="two_force_d"
 plot_mode_explicit="false"
 sample_count="0"
@@ -133,7 +136,7 @@ ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects" "diffus
 
 is_diffusive_family() {
     case "$1" in
-        diffusive_1d_pmlr|diffusive_1d_center_bond|diffusive_2d_origin_bond) return 0 ;;
+        diffusive_1d_pmlr|diffusive_1d_center_bond|diffusive_2d_origin_bond|single_origin_bond_managed) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -142,6 +145,7 @@ registry_rel_path_for_family() {
     case "$1" in
         two_force_d) printf "runs/two_force_d/run_registry.csv" ;;
         single_origin_bond) printf "runs/single_origin_bond/run_registry.csv" ;;
+        single_origin_bond_managed) printf "runs/single_origin_bond/managed_registry.csv" ;;
         ssep) printf "runs/ssep/single_center_bond/run_registry.csv" ;;
         active_objects) printf "runs/active_objects/steady_state_histograms/run_registry.csv" ;;
         diffusive_1d_pmlr) printf "runs/diffusive_1d_pmlr/run_registry.csv" ;;
@@ -155,6 +159,7 @@ run_root_rel_path_for_family() {
     case "$1" in
         two_force_d) printf "runs/two_force_d" ;;
         single_origin_bond) printf "runs/single_origin_bond" ;;
+        single_origin_bond_managed) printf "runs/single_origin_bond" ;;
         ssep) printf "runs/ssep/single_center_bond" ;;
         active_objects) printf "runs/active_objects/steady_state_histograms" ;;
         diffusive_1d_pmlr) printf "runs/diffusive_1d_pmlr" ;;
@@ -183,6 +188,7 @@ candidate_families_for_run_id() {
             printf "%s\n" "ssep"
             ;;
         single_origin_bond_*|single_*)
+            printf "%s\n" "single_origin_bond_managed"
             printf "%s\n" "single_origin_bond"
             ;;
         two_force_*)
@@ -407,6 +413,10 @@ while [[ $# -gt 0 ]]; do
             collapse_indices="${2:-}"
             shift 2
             ;;
+        --bond_centered_collapse)
+            bond_centered_collapse="true"
+            shift 1
+            ;;
         --mode_plot)
             plot_mode="${2:-}"
             plot_mode_explicit="true"
@@ -563,7 +573,7 @@ latest_run_id_for_family() {
             }
             END {print chosen}
         ' "${registry_path}"
-    elif [[ "${family}" == "diffusive_1d_pmlr" || "${family}" == "diffusive_1d_center_bond" ]]; then
+    elif [[ "${family}" == "diffusive_1d_pmlr" || "${family}" == "diffusive_1d_center_bond" || "${family}" == "single_origin_bond_managed" ]]; then
         awk -F, \
             -v mode="${mode}" \
             -v fL="${filter_L}" \
@@ -703,7 +713,7 @@ write_filtered_registry() {
                 if (keep) print
             }
         ' "${registry_path}" > "${out_path}"
-    elif [[ "${family}" == "diffusive_1d_pmlr" || "${family}" == "diffusive_1d_center_bond" ]]; then
+    elif [[ "${family}" == "diffusive_1d_pmlr" || "${family}" == "diffusive_1d_center_bond" || "${family}" == "single_origin_bond_managed" ]]; then
         awk -F, \
             -v mode="${mode}" \
             -v fL="${filter_L}" \
@@ -857,7 +867,7 @@ elif [[ "${resolved_family}" == "active_objects" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_histogram_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
 elif [[ "${resolved_family}" == "diffusive_1d_pmlr" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_gamma reg_potential_strength reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
-elif [[ "${resolved_family}" == "diffusive_1d_center_bond" ]]; then
+elif [[ "${resolved_family}" == "diffusive_1d_center_bond" || "${resolved_family}" == "single_origin_bond_managed" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_force_strength reg_ffr reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
 elif [[ "${resolved_family}" == "diffusive_2d_origin_bond" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
@@ -895,7 +905,9 @@ fi
 
 sync_scope_effective="${sync_scope}"
 if [[ "${sync_scope_effective}" == "auto" ]]; then
-    if [[ "${run_id}" =~ _nr[0-9]+(_|$) ]]; then
+    if [[ "${reg_mode:-}" == "managed" ]]; then
+        sync_scope_effective="aggregation"
+    elif [[ "${run_id}" =~ _nr[0-9]+(_|$) ]]; then
         sync_scope_effective="aggregation"
     else
         sync_scope_effective="full"
@@ -1229,6 +1241,9 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     fi
     if [[ -n "${collapse_indices}" ]]; then
         cmd+=("--collapse_indices" "${collapse_indices}")
+    fi
+    if [[ "${bond_centered_collapse}" == "true" ]]; then
+        cmd+=("--bond_centered_collapse")
     fi
     if [[ "${skip_per_state}" == "true" ]]; then
         cmd+=("--skip_per_state_sweep")

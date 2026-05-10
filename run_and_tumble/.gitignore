@@ -19,6 +19,7 @@ condor_logs/
 dummy_states_agg/
 generated_configs/
 cluster_scripts/generated_submit/
+configuration_files/
 
 # Local scratch / transfer leftovers
 output_from_cluster.txt
