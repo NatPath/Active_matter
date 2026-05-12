@@ -2228,12 +2228,13 @@ function one_dimensional_data_collapse_curves(
     x_window::Real=5.0,
     use_reflection_pair_average::Bool=true,
     bond_centered_1d::Bool=false,
+    fix_term_scale::Real=1.0,
 )
     length(param.dims) == 1 || throw(DomainError("1D collapse curves require a 1D state."))
 
     n = Float64(power_n)
     L = Int(param.dims[1])
-    fix_term = connected_correlation_fix_term(param)
+    fix_term = Float64(fix_term_scale) * connected_correlation_fix_term(param)
     curves = NamedTuple[]
 
     use_bond_centered_collapse = false
@@ -2338,6 +2339,88 @@ function one_dimensional_data_collapse_curves(
     end
 
     return curves
+end
+
+function optimal_1d_collapse_fix_term_scale(
+    state,
+    param,
+    power_n,
+    indices;
+    label::AbstractString="",
+    x_window::Real=5.0,
+    use_reflection_pair_average::Bool=true,
+    bond_centered_1d::Bool=false,
+)
+    fix_term = connected_correlation_fix_term(param)
+    if abs(fix_term) <= eps(Float64)
+        return (
+            scale=1.0,
+            fix_term=fix_term,
+            optimal_fix_term=fix_term,
+            rms_before=NaN,
+            rms_after=NaN,
+            sample_count=0,
+        )
+    end
+
+    curves = one_dimensional_data_collapse_curves(
+        state,
+        param,
+        power_n,
+        indices;
+        label=label,
+        x_window=x_window,
+        use_reflection_pair_average=use_reflection_pair_average,
+        bond_centered_1d=bond_centered_1d,
+        fix_term_scale=0.0,
+    )
+
+    n = Float64(power_n)
+    numerator = 0.0
+    denominator = 0.0
+    ss_before = 0.0
+    sample_count = 0
+    for curve in curves
+        curve.cut == :sym || continue
+        correction = fix_term * Float64(curve.offset)^n
+        for y0 in curve.y
+            numerator += Float64(y0) * correction
+            denominator += correction^2
+            ss_before += Float64(y0)^2
+            sample_count += 1
+        end
+    end
+
+    if sample_count == 0 || denominator <= 0
+        return (
+            scale=1.0,
+            fix_term=fix_term,
+            optimal_fix_term=fix_term,
+            rms_before=NaN,
+            rms_after=NaN,
+            sample_count=sample_count,
+        )
+    end
+
+    scale = -numerator / denominator
+    ss_after = 0.0
+    for curve in curves
+        curve.cut == :sym || continue
+        correction = fix_term * Float64(curve.offset)^n
+        for y0 in curve.y
+            y_fit = Float64(y0) + scale * correction
+            ss_after += y_fit^2
+        end
+    end
+
+    return (
+        scale=scale,
+        fix_term=fix_term,
+        optimal_fix_term=scale * fix_term,
+        rms_before=sqrt(ss_before / sample_count),
+        rms_after=sqrt(ss_after / sample_count),
+        sample_count=sample_count,
+    )
 end
 
 function robust_abs_peak(curves; cut::Symbol=:full, quantile::Float64=0.98)
@@ -2556,7 +2639,7 @@ end
 
 function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true;
                            show_powerlaw=true, use_reflection_pair_average=true,
-                           bond_centered_1d=false)
+                           bond_centered_1d=false, fix_term_scale::Real=1.0)
     n = Float64(power_n)
     extra_power_exp = 2.0  # reference slope -2
     x_label, y_label = data_collapse_axis_labels(n)
@@ -2609,6 +2692,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
                 x_window=5.0,
                 use_reflection_pair_average=use_reflection_pair_average,
                 bond_centered_1d=bond_centered_1d,
+                fix_term_scale=fix_term_scale,
             )
 
             for curve in collapse_curves
@@ -2663,7 +2747,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             end
         elseif dim_num == 2
             dims = param.dims
-            fix_term = connected_correlation_fix_term(param)
+            fix_term = Float64(fix_term_scale) * connected_correlation_fix_term(param)
             
             # Setup output directories for 2D
             x_axis_dir = "$(results_dir)/x_axis_cut"
