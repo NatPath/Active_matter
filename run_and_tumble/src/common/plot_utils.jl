@@ -183,6 +183,45 @@ end
     throw(ArgumentError("Unsupported connected-correlation statistics_model: $baseline_model"))
 end
 
+const SINGLE_ORIGIN_FLUCTUATING_FORCE_FIX_TERM_SCALE = 1.4
+
+function has_positive_force_fluctuation_rate(param)
+    hasfield(typeof(param), :ffr) || return false
+    ffr = getfield(param, :ffr)
+    if ffr isa AbstractVector
+        return any(rate -> Float64(rate) > 0.0, ffr)
+    end
+    return Float64(ffr) > 0.0
+end
+
+function is_static_zero_potential_param(param)
+    hasfield(typeof(param), :potential_type) || return false
+    hasfield(typeof(param), :fluctuation_type) || return false
+    return String(getfield(param, :potential_type)) == "zero" &&
+           String(getfield(param, :fluctuation_type)) == "no-fluctuation"
+end
+
+function default_plot_fix_term_scale(state, param)
+    if length(param.dims) == 1 &&
+       has_positive_force_fluctuation_rate(param) &&
+       is_static_zero_potential_param(param)
+        bonds, _, magnitudes = force_bond_sites_1d(state, Int(param.dims[1]))
+        if length(bonds) == 1 && length(magnitudes) == 1 && abs(Float64(magnitudes[1])) > 0.0
+            return SINGLE_ORIGIN_FLUCTUATING_FORCE_FIX_TERM_SCALE
+        end
+    end
+    return 1.0
+end
+
+function resolve_plot_fix_term_scale(state, param, requested_scale::Real=NaN)
+    requested = Float64(requested_scale)
+    return isnan(requested) ? default_plot_fix_term_scale(state, param) : requested
+end
+
+function plot_connected_correlation_fix_term(state, param; fix_term_scale::Real=NaN)
+    return resolve_plot_fix_term_scale(state, param, fix_term_scale) * connected_correlation_fix_term(param)
+end
+
 function connected_correlation_matrix_1d(state, param)
     if haskey(state.ρ_matrix_avg_cuts, :full)
         rho_avg = Float64.(state.ρ_avg)
@@ -197,6 +236,11 @@ function connected_correlation_matrix_1d(state, param)
         return derived_connected
     end
     return Float64.(state.ρ_matrix_avg_cuts[AGG_CONNECTED_FULL_EXACT_KEY])
+end
+
+function connected_correlation_matrix_1d_for_plot(state, param; fix_term_scale::Real=NaN)
+    return connected_correlation_matrix_1d(state, param) .+
+           plot_connected_correlation_fix_term(state, param; fix_term_scale=fix_term_scale)
 end
 
 function finite_curve_ylims(curves...; pad_fraction::Float64=0.08, min_pad::Float64=1e-6)
@@ -560,6 +604,7 @@ function plot_sweep(
     remove_diagonal_for_multiforce_cuts=true,
     include_abs_mean_in_spatial_f_plot=false,
     prefer_multiforce_plots=true,
+    fix_term_scale::Real=NaN,
 )
     dim_num = length(param.dims)
     if dim_num == 1
@@ -577,11 +622,12 @@ function plot_sweep(
                 plot_directional=plot_directional,
                 remove_diagonal_for_cuts=remove_diagonal_for_multiforce_cuts,
                 include_abs_mean_in_spatial_f_plot=include_abs_mean_in_spatial_f_plot,
+                fix_term_scale=fix_term_scale,
             )
         end
-        return plot_sweep_1d(sweep, state, param; label=label, plot_directional=plot_directional)
+        return plot_sweep_1d(sweep, state, param; label=label, plot_directional=plot_directional, fix_term_scale=fix_term_scale)
     elseif dim_num == 2
-        return plot_sweep_2d(sweep, state, param; label=label, plot_directional=plot_directional)
+        return plot_sweep_2d(sweep, state, param; label=label, plot_directional=plot_directional, fix_term_scale=fix_term_scale)
     else
         throw(DomainError("Only 1D or 2D plotting supported"))
     end
@@ -1790,12 +1836,13 @@ function plot_sweep_1d_multiforce(
     remove_diagonal_for_cuts=true,
     include_abs_mean_in_spatial_f_plot=false,
     return_components=false,
+    fix_term_scale::Real=NaN,
 )
     L = param.dims[1]
     x_range = 1:L
     colors = [:red, :orange, :yellow, :cyan, :magenta, :green, :blue]
 
-    corr_mat = connected_correlation_matrix_1d(state, param)
+    corr_mat = connected_correlation_matrix_1d_for_plot(state, param; fix_term_scale=fix_term_scale)
     corr_scale = maximum(abs.(corr_mat))
     if !isfinite(corr_scale) || corr_scale == 0
         corr_scale = 1.0
@@ -1954,8 +2001,8 @@ function plot_sweep_1d_multiforce(
     return corr_mat
 end
 
-function plot_sweep_1d(sweep, state, param; label="", plot_directional=false)
-    corr_mat = connected_correlation_matrix_1d(state, param)
+function plot_sweep_1d(sweep, state, param; label="", plot_directional=false, fix_term_scale::Real=NaN)
+    corr_mat = connected_correlation_matrix_1d_for_plot(state, param; fix_term_scale=fix_term_scale)
 
     p0 = plot_density(state.ρ_avg, param, state; title="Time averaged density")
     p1 = plot_instantaneous_state_1d(state, param)
@@ -1999,9 +2046,9 @@ function plot_sweep_1d(sweep, state, param; label="", plot_directional=false)
     return corr_mat
 end
 
-function plot_sweep_2d(sweep, state, param; label="", plot_directional=false)
+function plot_sweep_2d(sweep, state, param; label="", plot_directional=false, fix_term_scale::Real=NaN)
     dims = param.dims
-    fix_term = connected_correlation_fix_term(param)
+    fix_term = plot_connected_correlation_fix_term(state, param; fix_term_scale=fix_term_scale)
     y0 = clamp(div(dims[2], 2), 1, dims[2])
     x0 = clamp(div(dims[1], 2), 1, dims[1])
     x_range = 1:dims[1]
@@ -2142,14 +2189,14 @@ function plot_density(density, param, state; title="Density", show_directions=fa
     return p
 end
 
-function plot_average_density_and_correlation(state, param; label="")
+function plot_average_density_and_correlation(state, param; label="", fix_term_scale::Real=NaN)
     dim_num = length(param.dims)
 
     if dim_num == 1
         if has_selected_site_cuts_for_plot(state)
             return plot_selected_site_cuts_1d(state, param; sweep=state.t, label=label, include_instantaneous=false)
         end
-        corr_mat = connected_correlation_matrix_1d(state, param)
+        corr_mat = connected_correlation_matrix_1d_for_plot(state, param; fix_term_scale=fix_term_scale)
         L = param.dims[1]
         center = clamp(div(L, 2), 1, L)
         quarter_site = mod1(center + fld(L, 4), L)
@@ -2192,7 +2239,7 @@ function plot_average_density_and_correlation(state, param; label="")
     elseif dim_num == 2
         x0 = clamp(div(param.dims[1] + 1, 2), 1, param.dims[1])
         y0 = clamp(div(param.dims[2] + 1, 2), 1, param.dims[2])
-        fix_term = connected_correlation_fix_term(param)
+        fix_term = plot_connected_correlation_fix_term(state, param; fix_term_scale=fix_term_scale)
 
         p_density = plot_density(state.ρ_avg, param, state; title="Time averaged density")
         if hasfield(typeof(state), :forcing)
@@ -2228,13 +2275,13 @@ function one_dimensional_data_collapse_curves(
     x_window::Real=5.0,
     use_reflection_pair_average::Bool=true,
     bond_centered_1d::Bool=false,
-    fix_term_scale::Real=1.0,
+    fix_term_scale::Real=NaN,
 )
     length(param.dims) == 1 || throw(DomainError("1D collapse curves require a 1D state."))
 
     n = Float64(power_n)
     L = Int(param.dims[1])
-    fix_term = Float64(fix_term_scale) * connected_correlation_fix_term(param)
+    fix_term = plot_connected_correlation_fix_term(state, param; fix_term_scale=fix_term_scale)
     curves = NamedTuple[]
 
     use_bond_centered_collapse = false
@@ -2639,7 +2686,7 @@ end
 
 function plot_data_colapse(states_params_names, power_n, indices, results_dir = "results_figures", do_fit=true;
                            show_powerlaw=true, use_reflection_pair_average=true,
-                           bond_centered_1d=false, fix_term_scale::Real=1.0)
+                           bond_centered_1d=false, fix_term_scale::Real=NaN)
     n = Float64(power_n)
     extra_power_exp = 2.0  # reference slope -2
     x_label, y_label = data_collapse_axis_labels(n)
@@ -2747,7 +2794,7 @@ function plot_data_colapse(states_params_names, power_n, indices, results_dir = 
             end
         elseif dim_num == 2
             dims = param.dims
-            fix_term = Float64(fix_term_scale) * connected_correlation_fix_term(param)
+            fix_term = plot_connected_correlation_fix_term(state, param; fix_term_scale=fix_term_scale)
             
             # Setup output directories for 2D
             x_axis_dir = "$(results_dir)/x_axis_cut"

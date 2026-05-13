@@ -247,6 +247,13 @@ function parse_commandline()
             help = "Power n used for cut-based data-collapse plots C(x,y)*y^n"
             arg_type = Float64
             default = 2.0
+        "--collapse_fix_term_scale"
+            help = "Multiplier applied to the regular connected-correlation fix term in plots (default auto; use 1 for N/L^2, 0 to disable)"
+            arg_type = Float64
+            default = NaN
+        "--optimize_collapse_fix_term"
+            help = "For 1D data-collapse plots, choose the fix-term scale that minimizes the plotted symmetric component over the selected collapse window"
+            action = :store_true
         "--collapse_indices"
             help = "Optional subset of positive cut offsets to use for data collapse, e.g. 8,16,32 or 20:10:80. Required for 2D x/diag cut collapse and for legacy/full-matrix 1D states without selected-cut metadata."
             default = ""
@@ -994,7 +1001,7 @@ function tracked_force_indices(state, magnitudes::AbstractVector{<:Real})
 end
 
 function connected_corr_mat_1d(state, param)
-    fix_term = PlotUtils.connected_correlation_fix_term(param)
+    fix_term = PlotUtils.plot_connected_correlation_fix_term(state, param)
     if haskey(state.ρ_matrix_avg_cuts, :full)
         rho_avg = Float64.(state.ρ_avg)
         derived = Float64.(state.ρ_matrix_avg_cuts[:full]) .- (rho_avg * transpose(rho_avg)) .+ fix_term
@@ -2281,7 +2288,8 @@ end
 function save_diffusive_sweep_components(saved_state::String, state, param, out_dir::String;
                                          include_abs_mean_in_spatial_f_plot::Bool=false,
                                          keep_diagonal_in_multiforce_cut::Bool=false,
-                                         corr_model_c::Float64=0.0)
+                                         corr_model_c::Float64=0.0,
+                                         fix_term_scale::Float64=NaN)
     base_name = replace(basename(saved_state), ".jld2" => "")
     state_dir = joinpath(out_dir, base_name, "current_sweep_statistics")
     mkpath(state_dir)
@@ -2293,6 +2301,7 @@ function save_diffusive_sweep_components(saved_state::String, state, param, out_
             param;
             remove_diagonal_for_cuts=!keep_diagonal_in_multiforce_cut,
             include_abs_mean_in_spatial_f_plot=include_abs_mean_in_spatial_f_plot,
+            fix_term_scale=fix_term_scale,
             return_components=true,
         )
 
@@ -2310,7 +2319,7 @@ function save_diffusive_sweep_components(saved_state::String, state, param, out_
             println("Saved ", output_file)
         end
     else
-        PlotUtils.plot_sweep(state.t, state, param)
+        PlotUtils.plot_sweep(state.t, state, param; fix_term_scale=fix_term_scale)
         output_file = joinpath(state_dir, "00_composite.png")
         savefig(output_file)
         println("Saved ", output_file)
@@ -2319,6 +2328,8 @@ end
 
 function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir::String;
                                       collapse_power::Float64=2.0,
+                                      collapse_fix_term_scale::Float64=NaN,
+                                      optimize_collapse_fix_term::Bool=false,
                                       requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing,
                                       bond_centered_collapse::Bool=false)
     base_name = replace(basename(saved_state), ".jld2" => "")
@@ -2326,7 +2337,7 @@ function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir
     sweep_dir = joinpath(state_dir, "current_sweep_statistics")
     mkpath(sweep_dir)
 
-    p_sweep = PlotUtils.plot_sweep(state.t, state, param)
+    p_sweep = PlotUtils.plot_sweep(state.t, state, param; fix_term_scale=collapse_fix_term_scale)
     savefig_or_placeholder(
         p_sweep,
         joinpath(sweep_dir, "00_composite.png");
@@ -2339,6 +2350,8 @@ function save_ssep_sweep_and_collapse(saved_state::String, state, param, out_dir
         param,
         out_dir;
         collapse_power=collapse_power,
+        collapse_fix_term_scale=collapse_fix_term_scale,
+        optimize_collapse_fix_term=optimize_collapse_fix_term,
         requested_collapse_indices=requested_collapse_indices,
         bond_centered_collapse=bond_centered_collapse,
     )
@@ -2346,6 +2359,8 @@ end
 
 function save_1d_data_collapse_if_possible(saved_state::String, state, param, out_dir::String;
                                            collapse_power::Float64=2.0,
+                                           collapse_fix_term_scale::Float64=NaN,
+                                           optimize_collapse_fix_term::Bool=false,
                                            requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing,
                                            bond_centered_collapse::Bool=false)
     supports_1d_data_collapse(state, param) || return false
@@ -2364,6 +2379,37 @@ function save_1d_data_collapse_if_possible(saved_state::String, state, param, ou
     collapse_dir = joinpath(out_dir, base_name, collapse_dir_name(collapse_power, indices; bond_centered=effective_bond_centered_collapse))
     mkpath(collapse_dir)
 
+    effective_fix_term_scale = collapse_fix_term_scale
+    if optimize_collapse_fix_term
+        opt = PlotUtils.optimal_1d_collapse_fix_term_scale(
+            state,
+            param,
+            collapse_power,
+            indices;
+            label=base_name,
+            x_window=5.0,
+            bond_centered_1d=effective_bond_centered_collapse,
+        )
+        effective_fix_term_scale = Float64(opt.scale)
+        report_path = joinpath(collapse_dir, "fix_term_optimization.txt")
+        open(report_path, "w") do io
+            println(io, "collapse_power = ", collapse_power)
+            println(io, "collapse_indices = ", indices)
+            println(io, "regular_fix_term = ", opt.fix_term)
+            println(io, "optimal_fix_term_scale = ", opt.scale)
+            println(io, "optimal_fix_term = ", opt.optimal_fix_term)
+            println(io, "symmetric_rms_before = ", opt.rms_before)
+            println(io, "symmetric_rms_after = ", opt.rms_after)
+            println(io, "sample_count = ", opt.sample_count)
+            println(io, "objective = least squares of plotted symmetric collapse values in |Δ / offset| <= 5")
+        end
+        println("Optimized collapse fix term for ", saved_state,
+                ": scale=", opt.scale,
+                ", fix_term=", opt.optimal_fix_term,
+                ", symmetric RMS ", opt.rms_before, " -> ", opt.rms_after,
+                " (report=", report_path, ")")
+    end
+
     PlotUtils.plot_data_colapse(
         [(state, param, base_name)],
         collapse_power,
@@ -2371,14 +2417,18 @@ function save_1d_data_collapse_if_possible(saved_state::String, state, param, ou
         collapse_dir,
         true;
         bond_centered_1d=effective_bond_centered_collapse,
+        fix_term_scale=effective_fix_term_scale,
     )
     center_mode = effective_bond_centered_collapse ? ", bond_centered=true" : ""
-    println("Saved 1D data collapse using indices ", indices, " under ", collapse_dir, " (source=", source, center_mode, ")")
+    resolved_scale = PlotUtils.resolve_plot_fix_term_scale(state, param, effective_fix_term_scale)
+    scale_note = resolved_scale == 1.0 ? "" : ", fix_term_scale=$(resolved_scale)"
+    println("Saved 1D data collapse using indices ", indices, " under ", collapse_dir, " (source=", source, center_mode, scale_note, ")")
     return true
 end
 
 function save_2d_cut_data_collapse_if_possible(saved_state::String, state, param, out_dir::String;
                                                collapse_power::Float64=2.0,
+                                               collapse_fix_term_scale::Float64=NaN,
                                                requested_collapse_indices::Union{Nothing,Vector{Int}}=nothing)
     supports_2d_cut_data_collapse(state, param) || return false
 
@@ -2398,19 +2448,22 @@ function save_2d_cut_data_collapse_if_possible(saved_state::String, state, param
         collapse_power,
         indices,
         collapse_dir,
-        true,
+        true;
+        fix_term_scale=collapse_fix_term_scale,
     )
-    println("Saved 2D cut data collapse using indices ", indices, " under ", collapse_dir, " (source=", source, ")")
+    resolved_scale = PlotUtils.resolve_plot_fix_term_scale(state, param, collapse_fix_term_scale)
+    scale_note = resolved_scale == 1.0 ? "" : ", fix_term_scale=$(resolved_scale)"
+    println("Saved 2D cut data collapse using indices ", indices, " under ", collapse_dir, " (source=", source, scale_note, ")")
     return true
 end
 
-function save_legacy_sweep_plot(saved_state::String, state, param, out_dir::String)
+function save_legacy_sweep_plot(saved_state::String, state, param, out_dir::String; fix_term_scale::Float64=NaN)
     base_name = replace(basename(saved_state), ".jld2" => "")
     state_dir = joinpath(out_dir, base_name, "current_sweep_statistics")
     mkpath(state_dir)
     output_file = joinpath(state_dir, "00_composite.png")
     try
-        PlotUtils.plot_sweep(state.t, state, param)
+        PlotUtils.plot_sweep(state.t, state, param; fix_term_scale=fix_term_scale)
         savefig(output_file)
         println("Saved ", output_file)
     catch e
@@ -3281,6 +3334,8 @@ function main()
     with_per_state_flag = get(args, "with_per_state_sweep", false)
     corr_model_c = Float64(get(args, "corr_model_c", 0.0))
     collapse_power = Float64(get(args, "collapse_power", 2.0))
+    collapse_fix_term_scale = Float64(get(args, "collapse_fix_term_scale", NaN))
+    optimize_collapse_fix_term = get(args, "optimize_collapse_fix_term", false)
     requested_collapse_indices = parse_requested_collapse_indices(get(args, "collapse_indices", ""))
     bond_centered_collapse = get(args, "bond_centered_collapse", false)
     mode_raw = String(args["mode"])
@@ -3383,17 +3438,21 @@ function main()
                         param,
                         out_dir;
                         collapse_power=collapse_power,
+                        collapse_fix_term_scale=collapse_fix_term_scale,
+                        optimize_collapse_fix_term=optimize_collapse_fix_term,
                         requested_collapse_indices=requested_collapse_indices,
                         bond_centered_collapse=bond_centered_collapse,
                     )
                 elseif is_legacy_normalized_state(state)
-                    save_legacy_sweep_plot(saved_state, state, param, out_dir)
+                    save_legacy_sweep_plot(saved_state, state, param, out_dir; fix_term_scale=collapse_fix_term_scale)
                     save_1d_data_collapse_if_possible(
                         saved_state,
                         state,
                         param,
                         out_dir;
                         collapse_power=collapse_power,
+                        collapse_fix_term_scale=collapse_fix_term_scale,
+                        optimize_collapse_fix_term=optimize_collapse_fix_term,
                         requested_collapse_indices=requested_collapse_indices,
                         bond_centered_collapse=bond_centered_collapse,
                     )
@@ -3406,6 +3465,7 @@ function main()
                         include_abs_mean_in_spatial_f_plot=include_abs_mean,
                         keep_diagonal_in_multiforce_cut=keep_diag,
                         corr_model_c=corr_model_c,
+                        fix_term_scale=collapse_fix_term_scale,
                     )
                     save_1d_data_collapse_if_possible(
                         saved_state,
@@ -3413,6 +3473,8 @@ function main()
                         param,
                         out_dir;
                         collapse_power=collapse_power,
+                        collapse_fix_term_scale=collapse_fix_term_scale,
+                        optimize_collapse_fix_term=optimize_collapse_fix_term,
                         requested_collapse_indices=requested_collapse_indices,
                         bond_centered_collapse=bond_centered_collapse,
                     )
@@ -3422,16 +3484,19 @@ function main()
                         param,
                         out_dir;
                         collapse_power=collapse_power,
+                        collapse_fix_term_scale=collapse_fix_term_scale,
                         requested_collapse_indices=requested_collapse_indices,
                     )
                 else
-                    save_legacy_sweep_plot(saved_state, state, param, out_dir)
+                    save_legacy_sweep_plot(saved_state, state, param, out_dir; fix_term_scale=collapse_fix_term_scale)
                     save_1d_data_collapse_if_possible(
                         saved_state,
                         state,
                         param,
                         out_dir;
                         collapse_power=collapse_power,
+                        collapse_fix_term_scale=collapse_fix_term_scale,
+                        optimize_collapse_fix_term=optimize_collapse_fix_term,
                         requested_collapse_indices=requested_collapse_indices,
                         bond_centered_collapse=bond_centered_collapse,
                     )
