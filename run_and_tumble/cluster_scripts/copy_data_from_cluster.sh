@@ -12,7 +12,7 @@ Core options:
   --latest                                Fetch latest run_id in selected run family (can combine with filters)
   --list                                  List run registry entries and exit
   --tail <N>                              Number of listed entries (default: 30)
-  --run_family <two_force_d|single_origin_bond|ssep|active_objects|diffusive_1d_pmlr|diffusive_1d_center_bond|diffusive_2d_origin_bond|auto>
+  --run_family <two_force_d|single_origin_bond|ssep|active_objects|coupled_sde|diffusive_1d_pmlr|diffusive_1d_center_bond|diffusive_2d_origin_bond|auto>
                                           Registry family for --list/--latest (default: two_force_d)
 
 Run filters for --list / --latest:
@@ -65,6 +65,7 @@ Examples:
   bash copy_data_from_cluster.sh --run_id two_force_production_L128_rho100_ns1000000_d2-32-s2_nr8_dag_20260225-180000 --sync_scope aggregation
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
+  bash copy_data_from_cluster.sh --run_id coupled_sde_fixed_signal_L256_rho10_v1 --sync_scope aggregation --plot
   bash copy_data_from_cluster.sh --run_id diffusive_1d_pmlr_L512_rho100_gamma1_V16_production_ns1000000_nr600_20260420-120000 --plot --collapse_indices 20:10:80
   bash copy_data_from_cluster.sh --run_id diffusive_1d_center_bond_L2048_rho100_f1_ffr1 --sync_scope aggregation --plot
   bash copy_data_from_cluster.sh --run_id single_origin_bond_L64_rho100_f1_ffr1 --plot --collapse_indices 6:2:14
@@ -132,7 +133,7 @@ sample_count="0"
 ssh_control_dir=""
 ssh_control_path=""
 
-ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects" "diffusive_1d_pmlr" "diffusive_1d_center_bond" "diffusive_2d_origin_bond")
+ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects" "coupled_sde" "diffusive_1d_pmlr" "diffusive_1d_center_bond" "diffusive_2d_origin_bond")
 
 is_diffusive_family() {
     case "$1" in
@@ -148,6 +149,7 @@ registry_rel_path_for_family() {
         single_origin_bond_managed) printf "runs/single_origin_bond/managed_registry.csv" ;;
         ssep) printf "runs/ssep/single_center_bond/run_registry.csv" ;;
         active_objects) printf "runs/active_objects/steady_state_histograms/run_registry.csv" ;;
+        coupled_sde) printf "runs/coupled_sde_active_objects/run_registry.csv" ;;
         diffusive_1d_pmlr) printf "runs/diffusive_1d_pmlr/run_registry.csv" ;;
         diffusive_1d_center_bond) printf "runs/diffusive_1d_center_bond/run_registry.csv" ;;
         diffusive_2d_origin_bond) printf "runs/diffusive_2d_origin_bond/run_registry.csv" ;;
@@ -162,6 +164,7 @@ run_root_rel_path_for_family() {
         single_origin_bond_managed) printf "runs/single_origin_bond" ;;
         ssep) printf "runs/ssep/single_center_bond" ;;
         active_objects) printf "runs/active_objects/steady_state_histograms" ;;
+        coupled_sde) printf "runs/coupled_sde_active_objects" ;;
         diffusive_1d_pmlr) printf "runs/diffusive_1d_pmlr" ;;
         diffusive_1d_center_bond) printf "runs/diffusive_1d_center_bond" ;;
         diffusive_2d_origin_bond) printf "runs/diffusive_2d_origin_bond" ;;
@@ -177,6 +180,9 @@ candidate_families_for_run_id() {
             ;;
         active_objects_*)
             printf "%s\n" "active_objects"
+            ;;
+        coupled_sde_*)
+            printf "%s\n" "coupled_sde"
             ;;
         diffusive_1d_pmlr_*)
             printf "%s\n" "diffusive_1d_pmlr"
@@ -434,16 +440,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "${mode}" != "warmup" && "${mode}" != "production" ]]; then
-    echo "--mode must be warmup or production. Got '${mode}'."
+if [[ "${mode}" != "warmup" && "${mode}" != "production" && "${mode}" != "fixed_separation" && "${mode}" != "mobile_objects" ]]; then
+    echo "--mode must be warmup, production, fixed_separation, or mobile_objects. Got '${mode}'."
     exit 1
 fi
 if ! [[ "${tail_n}" =~ ^[0-9]+$ ]] || (( tail_n <= 0 )); then
     echo "--tail must be a positive integer. Got '${tail_n}'."
     exit 1
 fi
-if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "diffusive_1d_pmlr" && "${run_family}" != "diffusive_1d_center_bond" && "${run_family}" != "diffusive_2d_origin_bond" && "${run_family}" != "auto" ]]; then
-    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, diffusive_1d_pmlr, diffusive_1d_center_bond, diffusive_2d_origin_bond, or auto. Got '${run_family}'."
+if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "coupled_sde" && "${run_family}" != "diffusive_1d_pmlr" && "${run_family}" != "diffusive_1d_center_bond" && "${run_family}" != "diffusive_2d_origin_bond" && "${run_family}" != "auto" ]]; then
+    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, coupled_sde, diffusive_1d_pmlr, diffusive_1d_center_bond, diffusive_2d_origin_bond, or auto. Got '${run_family}'."
     exit 1
 fi
 if [[ "${sync_scope}" != "auto" && "${sync_scope}" != "aggregation" && "${sync_scope}" != "full" ]]; then
@@ -769,6 +775,9 @@ if [[ -z "${run_id}" ]]; then
     if [[ "${selected_family}" == "auto" ]]; then
         selected_family="two_force_d"
     fi
+    if [[ "${selected_family}" == "coupled_sde" && "${mode_explicit}" != "true" ]]; then
+        mode=""
+    fi
 
     if [[ "${selected_family}" != "two_force_d" ]]; then
         if [[ -n "${filter_d_min}" || -n "${filter_d_max}" || -n "${filter_d_step}" ]]; then
@@ -865,6 +874,8 @@ elif [[ "${resolved_family}" == "ssep" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
 elif [[ "${resolved_family}" == "active_objects" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_histogram_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
+elif [[ "${resolved_family}" == "coupled_sde" ]]; then
+    IFS=',' read -r reg_ts reg_run_id reg_mode reg_num_configs reg_num_replicas reg_cpus reg_mem reg_run_root reg_state_dir reg_analysis_dir reg_config_dir reg_aggregate_run_id <<< "${registry_row}"
 elif [[ "${resolved_family}" == "diffusive_1d_pmlr" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_gamma reg_potential_strength reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
 elif [[ "${resolved_family}" == "diffusive_1d_center_bond" || "${resolved_family}" == "single_origin_bond_managed" ]]; then
@@ -905,7 +916,9 @@ fi
 
 sync_scope_effective="${sync_scope}"
 if [[ "${sync_scope_effective}" == "auto" ]]; then
-    if [[ "${reg_mode:-}" == "managed" ]]; then
+    if [[ "${resolved_family}" == "coupled_sde" ]]; then
+        sync_scope_effective="aggregation"
+    elif [[ "${reg_mode:-}" == "managed" ]]; then
         sync_scope_effective="aggregation"
     elif [[ "${run_id}" =~ _nr[0-9]+(_|$) ]]; then
         sync_scope_effective="aggregation"
@@ -923,6 +936,8 @@ if [[ "${state_glob_explicit}" == "true" ]]; then
     aggregation_glob="${state_glob}"
 elif [[ "${resolved_family}" == "active_objects" && -n "${reg_aggregate_run_id:-}" ]]; then
     aggregation_glob="${reg_aggregate_run_id}*_steady_state_hist.jld2"
+elif [[ "${resolved_family}" == "coupled_sde" ]]; then
+    aggregation_glob="*.jld2"
 elif is_diffusive_family "${resolved_family}"; then
     aggregation_glob="$(resolve_diffusive_batch_glob "${local_run_dir}/run_info.txt" "${run_id}")"
 elif [[ "${resolved_family}" == "ssep" && -n "${reg_aggregate_run_id:-}" ]]; then
@@ -1070,6 +1085,12 @@ EOF
                 --include='histograms/aggregated/'
                 --include="histograms/aggregated/${aggregation_glob}"
             )
+        elif [[ "${resolved_family}" == "coupled_sde" ]]; then
+            rsync_args+=(
+                --include='analysis/***'
+                --include='configs/***'
+                --include="states/${aggregation_glob}"
+            )
         elif [[ -n "${state_subdir}" ]]; then
             rsync_args+=(--include="states/${state_subdir}/${aggregation_glob}")
         elif [[ "${aggregated_saved_only}" == "true" ]]; then
@@ -1108,6 +1129,65 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     julia_bin="${JULIA_BIN:-julia}"
     if ! command -v "${julia_bin}" >/dev/null 2>&1; then
         echo "Julia executable '${julia_bin}' not found. Skipping plot."
+        exit 0
+    fi
+
+    if [[ "${resolved_family}" == "coupled_sde" ]]; then
+        states_dir="${local_run_dir}/states"
+        if [[ ! -d "${states_dir}" ]]; then
+            echo "No coupled-SDE states directory found at ${states_dir}; skipping analysis."
+            exit 0
+        fi
+        read_lines_to_array coupled_state_files < <(find "${states_dir}" -maxdepth 1 -type f -name "*.jld2" | sort)
+        if (( ${#coupled_state_files[@]} == 0 )); then
+            echo "No coupled-SDE JLD2 states found in ${states_dir}; skipping analysis."
+            exit 0
+        fi
+
+        analysis_kind="${reg_mode}"
+        analysis_script=""
+        case "${analysis_kind}" in
+            fixed_separation)
+                analysis_script="${REPO_ROOT}/utility_scripts/analyze_coupled_sde_fixed_separation.jl"
+                ;;
+            mobile_objects)
+                analysis_script="${REPO_ROOT}/utility_scripts/analyze_coupled_sde_mobile_objects.jl"
+                ;;
+            *)
+                echo "Unknown coupled-SDE mode '${analysis_kind}'; skipping analysis."
+                exit 0
+                ;;
+        esac
+        if [[ ! -f "${analysis_script}" ]]; then
+            echo "Missing coupled-SDE analysis script: ${analysis_script}"
+            exit 1
+        fi
+
+        out_dir="${local_run_dir}/reports/coupled_sde_analysis_$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "${out_dir}"
+        cmd=("${julia_bin}" --startup-file=no "${analysis_script}"
+            --state_dir "${states_dir}"
+            --output_dir "${out_dir}"
+            --save_tag "${run_id}")
+        if [[ "${analysis_kind}" == "fixed_separation" ]]; then
+            fit_min_value="$(read_run_info_value "${local_run_dir}/run_info.txt" "fit_min")"
+            fit_max_value="$(read_run_info_value "${local_run_dir}/run_info.txt" "fit_max")"
+            periodic_fit_value="$(read_run_info_value "${local_run_dir}/run_info.txt" "periodic_fit")"
+            if [[ -n "${fit_min_value}" ]]; then
+                cmd+=(--fit_min "${fit_min_value}")
+            fi
+            if [[ -n "${fit_max_value}" ]]; then
+                cmd+=(--fit_max "${fit_max_value}")
+            fi
+            if [[ "${periodic_fit_value}" == "true" ]]; then
+                cmd+=(--periodic_fit)
+            fi
+        fi
+
+        echo "Running coupled-SDE ${analysis_kind} analysis on ${#coupled_state_files[@]} state file(s)..."
+        "${cmd[@]}"
+        echo "Coupled-SDE analysis saved to: ${out_dir}"
+        echo "Done. Local run folder: ${local_run_dir}"
         exit 0
     fi
 

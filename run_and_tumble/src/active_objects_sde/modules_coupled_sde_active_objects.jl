@@ -29,6 +29,9 @@ Base.@kwdef struct CoupledSDEParam
     separation::Float64 = 16.0
     initial_XA::Union{Nothing,Float64} = nothing
     initial_XB::Union{Nothing,Float64} = nothing
+    random_initial_objects::Bool = false
+    initial_min_separation::Float64 = 0.0
+    initial_max_separation::Union{Nothing,Float64} = nothing
     n_steps::Int = 10_000
     warmup_steps::Int = 1_000
     sample_interval::Int = 1
@@ -202,7 +205,19 @@ end
     throw(ArgumentError("Unsupported profile_type=$(param.profile_type). Use gaussian or compact_bump."))
 end
 
-function default_object_positions(param::CoupledSDEParam)
+function default_object_positions(param::CoupledSDEParam, rng::AbstractRNG)
+    if param.random_initial_objects
+        max_sep = isnothing(param.initial_max_separation) ? param.L / 2 : Float64(param.initial_max_separation)
+        min_sep = Float64(param.initial_min_separation)
+        0.0 <= min_sep <= max_sep <= param.L / 2 ||
+            throw(ArgumentError("Random initial separations require 0 <= initial_min_separation <= initial_max_separation <= L/2. Got min=$(min_sep), max=$(max_sep), L=$(param.L)."))
+        sep_min = min_sep + (max_sep - min_sep) * rand(rng)
+        oriented_sep = rand(rng) < 0.5 ? sep_min : param.L - sep_min
+        XA_unwrapped = param.L * rand(rng)
+        XB_unwrapped = XA_unwrapped - oriented_sep
+        return wrap_position(XA_unwrapped, param.L), wrap_position(XB_unwrapped, param.L), XA_unwrapped, XB_unwrapped
+    end
+
     if !isnothing(param.initial_XA) && !isnothing(param.initial_XB)
         XA = wrap_position(param.initial_XA, param.L)
         XB = wrap_position(param.initial_XB, param.L)
@@ -236,7 +251,7 @@ function initialize_state(param::CoupledSDEParam, rng::AbstractRNG)
     param.N >= 0 || throw(ArgumentError("N must be nonnegative. Got $(param.N)."))
     x = zeros(Float64, param.N)
     initialize_uniform_bath!(x, param, rng)
-    XA, XB, XA_unwrapped, XB_unwrapped = default_object_positions(param)
+    XA, XB, XA_unwrapped, XB_unwrapped = default_object_positions(param, rng)
     return CoupledSDEState(0, 0.0, x, XA, XB, XA_unwrapped, XB_unwrapped, 0.0, 0.0, 0.0, 0.0, 0.0)
 end
 
@@ -550,6 +565,9 @@ function parameters_dict(param::CoupledSDEParam)
         "separation" => param.separation,
         "initial_XA" => param.initial_XA,
         "initial_XB" => param.initial_XB,
+        "random_initial_objects" => param.random_initial_objects,
+        "initial_min_separation" => param.initial_min_separation,
+        "initial_max_separation" => param.initial_max_separation,
         "n_steps" => param.n_steps,
         "warmup_steps" => param.warmup_steps,
         "sample_interval" => param.sample_interval,
