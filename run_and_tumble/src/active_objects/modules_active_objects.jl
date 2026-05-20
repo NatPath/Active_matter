@@ -47,12 +47,12 @@ module FPActiveObjects
         object_history_on_move_only::Bool
     end
 
-    mutable struct State{N,C,B,D}
+    mutable struct State{N,P,R,C,B}
         t::Int64
-        particles::Vector{FPDiffusive.Particle{D}}
-        ρ::Array{Int64,N}
-        ρ₊::Array{Int64,N}
-        ρ₋::Array{Int64,N}
+        particles::P
+        ρ::R
+        ρ₊::Union{Nothing,R}
+        ρ₋::Union{Nothing,R}
         ρ_avg::Array{Float64,N}
         ρ_matrix_avg_cuts::C
         bond_pass_stats::B
