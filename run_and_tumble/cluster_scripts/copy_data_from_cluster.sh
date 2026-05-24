@@ -12,7 +12,7 @@ Core options:
   --latest                                Fetch latest run_id in selected run family (can combine with filters)
   --list                                  List run registry entries and exit
   --tail <N>                              Number of listed entries (default: 30)
-  --run_family <two_force_d|single_origin_bond|ssep|active_objects|coupled_sde|diffusive_1d_pmlr|diffusive_1d_center_bond|diffusive_2d_origin_bond|auto>
+  --run_family <two_force_d|single_origin_bond|ssep|active_objects|coupled_sde|fluctuating_force_sde|diffusive_1d_pmlr|diffusive_1d_center_bond|diffusive_2d_origin_bond|auto>
                                           Registry family for --list/--latest (default: two_force_d)
 
 Run filters for --list / --latest:
@@ -66,6 +66,7 @@ Examples:
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
   bash copy_data_from_cluster.sh --run_id coupled_sde_fixed_signal_L256_rho10_v1 --sync_scope aggregation --plot
+  bash copy_data_from_cluster.sh --run_id ffsde_two_force_L160_600cpu_20260524-120000 --run_family fluctuating_force_sde --sync_scope aggregation
   bash copy_data_from_cluster.sh --run_id diffusive_1d_pmlr_L512_rho100_gamma1_V16_production_ns1000000_nr600_20260420-120000 --plot --collapse_indices 20:10:80
   bash copy_data_from_cluster.sh --run_id diffusive_1d_center_bond_L2048_rho100_f1_ffr1 --sync_scope aggregation --plot
   bash copy_data_from_cluster.sh --run_id single_origin_bond_L64_rho100_f1_ffr1 --plot --collapse_indices 6:2:14
@@ -133,7 +134,7 @@ sample_count="0"
 ssh_control_dir=""
 ssh_control_path=""
 
-ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects" "coupled_sde" "diffusive_1d_pmlr" "diffusive_1d_center_bond" "diffusive_2d_origin_bond")
+ALL_FAMILIES=("two_force_d" "single_origin_bond" "ssep" "active_objects" "coupled_sde" "fluctuating_force_sde" "diffusive_1d_pmlr" "diffusive_1d_center_bond" "diffusive_2d_origin_bond")
 
 is_diffusive_family() {
     case "$1" in
@@ -150,6 +151,7 @@ registry_rel_path_for_family() {
         ssep) printf "runs/ssep/single_center_bond/run_registry.csv" ;;
         active_objects) printf "runs/active_objects/steady_state_histograms/run_registry.csv" ;;
         coupled_sde) printf "runs/coupled_sde_active_objects/run_registry.csv" ;;
+        fluctuating_force_sde) printf "runs/fluctuating_force_sde/run_registry.csv" ;;
         diffusive_1d_pmlr) printf "runs/diffusive_1d_pmlr/run_registry.csv" ;;
         diffusive_1d_center_bond) printf "runs/diffusive_1d_center_bond/run_registry.csv" ;;
         diffusive_2d_origin_bond) printf "runs/diffusive_2d_origin_bond/run_registry.csv" ;;
@@ -165,6 +167,7 @@ run_root_rel_path_for_family() {
         ssep) printf "runs/ssep/single_center_bond" ;;
         active_objects) printf "runs/active_objects/steady_state_histograms" ;;
         coupled_sde) printf "runs/coupled_sde_active_objects" ;;
+        fluctuating_force_sde) printf "runs/fluctuating_force_sde" ;;
         diffusive_1d_pmlr) printf "runs/diffusive_1d_pmlr" ;;
         diffusive_1d_center_bond) printf "runs/diffusive_1d_center_bond" ;;
         diffusive_2d_origin_bond) printf "runs/diffusive_2d_origin_bond" ;;
@@ -183,6 +186,9 @@ candidate_families_for_run_id() {
             ;;
         coupled_sde_*)
             printf "%s\n" "coupled_sde"
+            ;;
+        ffsde_*|fluctuating_force_sde_*)
+            printf "%s\n" "fluctuating_force_sde"
             ;;
         diffusive_1d_pmlr_*)
             printf "%s\n" "diffusive_1d_pmlr"
@@ -448,8 +454,8 @@ if ! [[ "${tail_n}" =~ ^[0-9]+$ ]] || (( tail_n <= 0 )); then
     echo "--tail must be a positive integer. Got '${tail_n}'."
     exit 1
 fi
-if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "coupled_sde" && "${run_family}" != "diffusive_1d_pmlr" && "${run_family}" != "diffusive_1d_center_bond" && "${run_family}" != "diffusive_2d_origin_bond" && "${run_family}" != "auto" ]]; then
-    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, coupled_sde, diffusive_1d_pmlr, diffusive_1d_center_bond, diffusive_2d_origin_bond, or auto. Got '${run_family}'."
+if [[ "${run_family}" != "two_force_d" && "${run_family}" != "single_origin_bond" && "${run_family}" != "ssep" && "${run_family}" != "active_objects" && "${run_family}" != "coupled_sde" && "${run_family}" != "fluctuating_force_sde" && "${run_family}" != "diffusive_1d_pmlr" && "${run_family}" != "diffusive_1d_center_bond" && "${run_family}" != "diffusive_2d_origin_bond" && "${run_family}" != "auto" ]]; then
+    echo "--run_family must be two_force_d, single_origin_bond, ssep, active_objects, coupled_sde, fluctuating_force_sde, diffusive_1d_pmlr, diffusive_1d_center_bond, diffusive_2d_origin_bond, or auto. Got '${run_family}'."
     exit 1
 fi
 if [[ "${sync_scope}" != "auto" && "${sync_scope}" != "aggregation" && "${sync_scope}" != "full" ]]; then
@@ -778,6 +784,9 @@ if [[ -z "${run_id}" ]]; then
     if [[ "${selected_family}" == "coupled_sde" && "${mode_explicit}" != "true" ]]; then
         mode=""
     fi
+    if [[ "${selected_family}" == "fluctuating_force_sde" && "${mode_explicit}" != "true" ]]; then
+        mode=""
+    fi
 
     if [[ "${selected_family}" != "two_force_d" ]]; then
         if [[ -n "${filter_d_min}" || -n "${filter_d_max}" || -n "${filter_d_step}" ]]; then
@@ -876,6 +885,8 @@ elif [[ "${resolved_family}" == "active_objects" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_ns reg_warmup_sweeps reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_histogram_dir reg_config_path reg_aggregate_run_id <<< "${registry_row}"
 elif [[ "${resolved_family}" == "coupled_sde" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_num_configs reg_num_replicas reg_cpus reg_mem reg_run_root reg_state_dir reg_analysis_dir reg_config_dir reg_aggregate_run_id <<< "${registry_row}"
+elif [[ "${resolved_family}" == "fluctuating_force_sde" ]]; then
+    IFS=',' read -r reg_ts reg_run_id reg_mode reg_num_distances reg_num_replicas_per_distance reg_total_jobs reg_cpus reg_mem reg_run_root reg_state_dir reg_analysis_dir reg_config_dir reg_aggregate_run_id <<< "${registry_row}"
 elif [[ "${resolved_family}" == "diffusive_1d_pmlr" ]]; then
     IFS=',' read -r reg_ts reg_run_id reg_mode reg_L reg_rho reg_gamma reg_potential_strength reg_ns reg_num_replicas reg_cpus reg_mem reg_run_root reg_submit_dir reg_log_dir reg_state_dir reg_config_path reg_save_tag_prefix reg_aggregate_root reg_cumulative_tag <<< "${registry_row}"
 elif [[ "${resolved_family}" == "diffusive_1d_center_bond" || "${resolved_family}" == "single_origin_bond_managed" ]]; then
@@ -918,6 +929,8 @@ sync_scope_effective="${sync_scope}"
 if [[ "${sync_scope_effective}" == "auto" ]]; then
     if [[ "${resolved_family}" == "coupled_sde" ]]; then
         sync_scope_effective="aggregation"
+    elif [[ "${resolved_family}" == "fluctuating_force_sde" ]]; then
+        sync_scope_effective="aggregation"
     elif [[ "${reg_mode:-}" == "managed" ]]; then
         sync_scope_effective="aggregation"
     elif [[ "${run_id}" =~ _nr[0-9]+(_|$) ]]; then
@@ -937,6 +950,8 @@ if [[ "${state_glob_explicit}" == "true" ]]; then
 elif [[ "${resolved_family}" == "active_objects" && -n "${reg_aggregate_run_id:-}" ]]; then
     aggregation_glob="${reg_aggregate_run_id}*_steady_state_hist.jld2"
 elif [[ "${resolved_family}" == "coupled_sde" ]]; then
+    aggregation_glob="*.jld2"
+elif [[ "${resolved_family}" == "fluctuating_force_sde" ]]; then
     aggregation_glob="*.jld2"
 elif is_diffusive_family "${resolved_family}"; then
     aggregation_glob="$(resolve_diffusive_batch_glob "${local_run_dir}/run_info.txt" "${run_id}")"
@@ -1091,6 +1106,13 @@ EOF
                 --include='configs/***'
                 --include="states/${aggregation_glob}"
             )
+        elif [[ "${resolved_family}" == "fluctuating_force_sde" ]]; then
+            rsync_args+=(
+                --include='analysis/***'
+                --include='configs/***'
+                --include='cluster_followup_commands.txt'
+                --include='local_fetch_command.txt'
+            )
         elif [[ -n "${state_subdir}" ]]; then
             rsync_args+=(--include="states/${state_subdir}/${aggregation_glob}")
         elif [[ "${aggregated_saved_only}" == "true" ]]; then
@@ -1098,7 +1120,7 @@ EOF
         elif [[ "${resolved_family}" == "ssep" ]]; then
             rsync_args+=(--include="aggregated/${aggregation_glob}")
         fi
-        if [[ "${aggregated_saved_only}" != "true" && "${resolved_family}" != "active_objects" ]]; then
+        if [[ "${aggregated_saved_only}" != "true" && "${resolved_family}" != "active_objects" && "${resolved_family}" != "fluctuating_force_sde" ]]; then
             rsync_args+=(
                 --include="aggregated/${aggregation_glob}"
                 --include="states/aggregated/${aggregation_glob}"
