@@ -65,7 +65,7 @@ Examples:
   bash copy_data_from_cluster.sh --run_id two_force_production_L128_rho100_ns1000000_d2-32-s2_nr8_dag_20260225-180000 --sync_scope aggregation
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
-  bash copy_data_from_cluster.sh --run_id coupled_sde_fixed_signal_L256_rho10_v1 --sync_scope aggregation --plot
+  bash copy_data_from_cluster.sh --run_id coupled_sde_mobile_600cpu_12h_prod_001 --sync_scope aggregation --plot
   bash copy_data_from_cluster.sh --run_id ffsde_two_force_L160_600cpu_20260524-120000 --run_family fluctuating_force_sde --sync_scope aggregation
   bash copy_data_from_cluster.sh --run_id diffusive_1d_pmlr_L512_rho100_gamma1_V16_production_ns1000000_nr600_20260420-120000 --plot --collapse_indices 20:10:80
   bash copy_data_from_cluster.sh --run_id diffusive_1d_center_bond_L2048_rho100_f1_ffr1 --sync_scope aggregation --plot
@@ -1104,7 +1104,9 @@ EOF
             rsync_args+=(
                 --include='analysis/***'
                 --include='configs/***'
-                --include="states/${aggregation_glob}"
+                --include='cluster_followup_commands.txt'
+                --include='analysis_commands.txt'
+                --include='continuation_notes.txt'
             )
         elif [[ "${resolved_family}" == "fluctuating_force_sde" ]]; then
             rsync_args+=(
@@ -1155,60 +1157,55 @@ if [[ "${plot_after_sync}" == "true" ]]; then
     fi
 
     if [[ "${resolved_family}" == "coupled_sde" ]]; then
-        states_dir="${local_run_dir}/states"
-        if [[ ! -d "${states_dir}" ]]; then
-            echo "No coupled-SDE states directory found at ${states_dir}; skipping analysis."
-            exit 0
-        fi
-        read_lines_to_array coupled_state_files < <(find "${states_dir}" -maxdepth 1 -type f -name "*.jld2" | sort)
-        if (( ${#coupled_state_files[@]} == 0 )); then
-            echo "No coupled-SDE JLD2 states found in ${states_dir}; skipping analysis."
-            exit 0
-        fi
-
         analysis_kind="${reg_mode}"
-        analysis_script=""
         case "${analysis_kind}" in
             fixed_separation)
-                analysis_script="${REPO_ROOT}/utility_scripts/analyze_coupled_sde_fixed_separation.jl"
+                analysis_dir="${local_run_dir}/analysis"
+                if [[ -d "${analysis_dir}" ]]; then
+                    echo "Fetched coupled-SDE fixed-separation aggregate analysis to: ${analysis_dir}"
+                    echo "Done. Local run folder: ${local_run_dir}"
+                    exit 0
+                fi
                 ;;
             mobile_objects)
-                analysis_script="${REPO_ROOT}/utility_scripts/analyze_coupled_sde_mobile_objects.jl"
+                analysis_dir="${local_run_dir}/analysis"
+                if [[ ! -d "${analysis_dir}" ]]; then
+                    echo "No coupled-SDE analysis directory found at ${analysis_dir}; skipping plot."
+                    exit 0
+                fi
+                read_lines_to_array coupled_mobile_aggregates < <(find "${analysis_dir}" -maxdepth 1 -type f -name "*_mobile_aggregate.jld2" | sort)
+                if (( ${#coupled_mobile_aggregates[@]} == 0 )); then
+                    echo "No coupled-SDE mobile aggregate JLD2 found in ${analysis_dir}; skipping plot."
+                    exit 0
+                fi
+                plot_script="${REPO_ROOT}/utility_scripts/plot_coupled_sde_mobile_aggregate.jl"
+                if [[ ! -f "${plot_script}" ]]; then
+                    echo "Missing coupled-SDE mobile plot script: ${plot_script}"
+                    exit 1
+                fi
+                out_dir="${local_run_dir}/reports/coupled_sde_mobile_steady_state_$(date +%Y%m%d-%H%M%S)"
+                mkdir -p "${out_dir}"
+                latest_aggregate="$(find "${analysis_dir}" -maxdepth 1 -type f -name "*_mobile_aggregate.jld2" -printf '%T@ %p\n' | sort -nr | head -n 1 | awk '{ $1=""; sub(/^ /,""); print }')"
+                echo "Running coupled-SDE mobile steady-state plotter on aggregate: ${latest_aggregate}"
+                "${julia_bin}" --startup-file=no "${plot_script}" \
+                    --aggregate "${latest_aggregate}" \
+                    --out_dir "${out_dir}" \
+                    --save_tag "${run_id}"
+                echo "Plots saved to: ${out_dir}"
+                echo "Done. Local run folder: ${local_run_dir}"
+                exit 0
                 ;;
             *)
                 echo "Unknown coupled-SDE mode '${analysis_kind}'; skipping analysis."
                 exit 0
                 ;;
         esac
-        if [[ ! -f "${analysis_script}" ]]; then
-            echo "Missing coupled-SDE analysis script: ${analysis_script}"
-            exit 1
+        states_dir="${local_run_dir}/states"
+        if [[ -d "${states_dir}" ]]; then
+            echo "No aggregate plot path matched; raw states are present at ${states_dir}."
+        else
+            echo "No aggregate plot path matched and raw states were not fetched."
         fi
-
-        out_dir="${local_run_dir}/reports/coupled_sde_analysis_$(date +%Y%m%d-%H%M%S)"
-        mkdir -p "${out_dir}"
-        cmd=("${julia_bin}" --startup-file=no "${analysis_script}"
-            --state_dir "${states_dir}"
-            --output_dir "${out_dir}"
-            --save_tag "${run_id}")
-        if [[ "${analysis_kind}" == "fixed_separation" ]]; then
-            fit_min_value="$(read_run_info_value "${local_run_dir}/run_info.txt" "fit_min")"
-            fit_max_value="$(read_run_info_value "${local_run_dir}/run_info.txt" "fit_max")"
-            periodic_fit_value="$(read_run_info_value "${local_run_dir}/run_info.txt" "periodic_fit")"
-            if [[ -n "${fit_min_value}" ]]; then
-                cmd+=(--fit_min "${fit_min_value}")
-            fi
-            if [[ -n "${fit_max_value}" ]]; then
-                cmd+=(--fit_max "${fit_max_value}")
-            fi
-            if [[ "${periodic_fit_value}" == "true" ]]; then
-                cmd+=(--periodic_fit)
-            fi
-        fi
-
-        echo "Running coupled-SDE ${analysis_kind} analysis on ${#coupled_state_files[@]} state file(s)..."
-        "${cmd[@]}"
-        echo "Coupled-SDE analysis saved to: ${out_dir}"
         echo "Done. Local run folder: ${local_run_dir}"
         exit 0
     fi

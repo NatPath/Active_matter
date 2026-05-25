@@ -112,6 +112,11 @@ mutable struct MobileStats
     sum_delta_rel_sq::Vector{Float64}
     sum_Ssum::Vector{Float64}
     sum_separation_min::Vector{Float64}
+    position_bin_edges::Vector{Float64}
+    position_bin_centers::Vector{Float64}
+    XA_histogram_counts::Vector{Float64}
+    XB_histogram_counts::Vector{Float64}
+    center_histogram_counts::Vector{Float64}
     sample_count::Int
     history_time::Vector{Float64}
     history_XA::Vector{Float64}
@@ -137,11 +142,18 @@ function MobileStats(param::CoupledSDEParam)
     n_bins = max(param.n_bins, 1)
     edges = collect(range(0.0, max_dist; length=n_bins + 1))
     centers = [(edges[i] + edges[i + 1]) / 2 for i in 1:n_bins]
+    position_edges = collect(range(0.0, param.L; length=n_bins + 1))
+    position_centers = [(position_edges[i] + position_edges[i + 1]) / 2 for i in 1:n_bins]
     return MobileStats(
         edges,
         centers,
         zeros(Float64, n_bins),
         zeros(Float64, n_bins),
+        zeros(Float64, n_bins),
+        zeros(Float64, n_bins),
+        zeros(Float64, n_bins),
+        position_edges,
+        position_centers,
         zeros(Float64, n_bins),
         zeros(Float64, n_bins),
         zeros(Float64, n_bins),
@@ -469,6 +481,17 @@ function distance_bin_index(stats::MobileStats, distance::Real)
     return nothing
 end
 
+function position_bin_index(stats::MobileStats, position::Real, L::Real)
+    x = wrap_position(position, L)
+    x == stats.position_bin_edges[end] && return length(stats.position_bin_centers)
+    width = stats.position_bin_edges[2] - stats.position_bin_edges[1]
+    idx = floor(Int, (x - stats.position_bin_edges[1]) / width) + 1
+    if 1 <= idx <= length(stats.position_bin_centers)
+        return idx
+    end
+    return nothing
+end
+
 function maybe_record_history!(stats::MobileStats, obs::StepObservables, state::CoupledSDEState, param::CoupledSDEParam, production_step::Int)
     param.save_raw_history || return stats
     param.history_interval > 0 || return stats
@@ -509,6 +532,14 @@ function accumulate!(stats::MobileStats, obs::StepObservables, state::CoupledSDE
             stats.sum_separation_min[idx] += obs.separation_min
             stats.sample_count += 1
         end
+
+        idxA = position_bin_index(stats, obs.XA, param.L)
+        idxB = position_bin_index(stats, obs.XB, param.L)
+        center = wrap_position(0.5 * (state.XA_unwrapped + state.XB_unwrapped), param.L)
+        idxC = position_bin_index(stats, center, param.L)
+        isnothing(idxA) || (stats.XA_histogram_counts[idxA] += 1.0)
+        isnothing(idxB) || (stats.XB_histogram_counts[idxB] += 1.0)
+        isnothing(idxC) || (stats.center_histogram_counts[idxC] += 1.0)
     end
 
     maybe_record_history!(stats, obs, state, param, production_step)
@@ -675,6 +706,16 @@ function mobile_result_dict(param::CoupledSDEParam, state::CoupledSDEState, stat
     @inbounds for i in eachindex(P_mass)
         P_density[i] = isfinite(P_mass[i]) ? P_mass[i] / bin_widths[i] : NaN
     end
+    position_widths = diff(stats.position_bin_edges)
+    XA_total = sum(stats.XA_histogram_counts)
+    XB_total = sum(stats.XB_histogram_counts)
+    center_total = sum(stats.center_histogram_counts)
+    XA_mass = XA_total > 0 ? stats.XA_histogram_counts ./ XA_total : fill(NaN, length(stats.XA_histogram_counts))
+    XB_mass = XB_total > 0 ? stats.XB_histogram_counts ./ XB_total : fill(NaN, length(stats.XB_histogram_counts))
+    center_mass = center_total > 0 ? stats.center_histogram_counts ./ center_total : fill(NaN, length(stats.center_histogram_counts))
+    XA_density = XA_mass ./ position_widths
+    XB_density = XB_mass ./ position_widths
+    center_density = center_mass ./ position_widths
 
     return Dict(
         "result_type" => "coupled_sde_mobile_objects",
@@ -696,6 +737,19 @@ function mobile_result_dict(param::CoupledSDEParam, state::CoupledSDEState, stat
             "D_rel_proxy" => D_proxy,
             "P_mass" => P_mass,
             "P_density" => P_density,
+        ),
+        "locations" => Dict(
+            "edges" => stats.position_bin_edges,
+            "centers" => stats.position_bin_centers,
+            "XA_histogram_counts" => stats.XA_histogram_counts,
+            "XB_histogram_counts" => stats.XB_histogram_counts,
+            "center_histogram_counts" => stats.center_histogram_counts,
+            "XA_P_mass" => XA_mass,
+            "XB_P_mass" => XB_mass,
+            "center_P_mass" => center_mass,
+            "XA_P_density" => XA_density,
+            "XB_P_density" => XB_density,
+            "center_P_density" => center_density,
         ),
         "history" => Dict(
             "time" => stats.history_time,
