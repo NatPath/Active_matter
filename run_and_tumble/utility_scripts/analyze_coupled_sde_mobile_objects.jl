@@ -118,6 +118,11 @@ function init_buffer(result)
         "sum_delta_rel_sq" => zeros(Float64, n_bins),
         "sum_Ssum" => zeros(Float64, n_bins),
         "sum_separation_min" => zeros(Float64, n_bins),
+        "position_edges" => Float64.(get(result, "locations", Dict("edges" => bins["edges"]))["edges"]),
+        "position_centers" => Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]),
+        "XA_histogram_counts" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "XB_histogram_counts" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "center_histogram_counts" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
         "sample_count" => 0,
         "n_replicas" => 0,
         "history_records" => 0,
@@ -137,6 +142,11 @@ function compatible!(buf, result, path)
     edges = Float64.(result["bins"]["edges"])
     length(edges) == length(buf["edges"]) || error("Bin-edge length mismatch for $path.")
     all(isapprox.(edges, buf["edges"]; rtol=1.0e-10, atol=1.0e-12)) || error("Bin edges differ for $path.")
+    if haskey(result, "locations")
+        position_edges = Float64.(result["locations"]["edges"])
+        length(position_edges) == length(buf["position_edges"]) || error("Location-bin edge length mismatch for $path.")
+        all(isapprox.(position_edges, buf["position_edges"]; rtol=1.0e-10, atol=1.0e-12)) || error("Location bin edges differ for $path.")
+    end
 end
 
 function accumulate!(buf, result, path)
@@ -147,6 +157,12 @@ function accumulate!(buf, result, path)
     buf["sum_delta_rel_sq"] .+= Float64.(bins["sum_delta_rel_sq"])
     buf["sum_Ssum"] .+= Float64.(bins["sum_Ssum"])
     buf["sum_separation_min"] .+= Float64.(bins["sum_separation_min"])
+    if haskey(result, "locations")
+        locations = result["locations"]
+        buf["XA_histogram_counts"] .+= Float64.(locations["XA_histogram_counts"])
+        buf["XB_histogram_counts"] .+= Float64.(locations["XB_histogram_counts"])
+        buf["center_histogram_counts"] .+= Float64.(locations["center_histogram_counts"])
+    end
     buf["sample_count"] += Int(result["sample_count"])
     buf["n_replicas"] += 1
     history = get(result, "history", Dict())
@@ -235,6 +251,44 @@ function rows_from_buffer(buf)
     return rows
 end
 
+function location_rows_from_buffer(buf)
+    edges = buf["position_edges"]
+    centers = buf["position_centers"]
+    widths = diff(edges)
+    histA = buf["XA_histogram_counts"]
+    histB = buf["XB_histogram_counts"]
+    histC = buf["center_histogram_counts"]
+    totalA = sum(histA)
+    totalB = sum(histB)
+    totalC = sum(histC)
+    rows = Vector{Dict{String,Any}}()
+    uniform_density = 1.0 / Float64(buf["L"])
+    for i in eachindex(centers)
+        massA = totalA > 0 ? histA[i] / totalA : NaN
+        massB = totalB > 0 ? histB[i] / totalB : NaN
+        massC = totalC > 0 ? histC[i] / totalC : NaN
+        densityA = isfinite(massA) ? massA / widths[i] : NaN
+        densityB = isfinite(massB) ? massB / widths[i] : NaN
+        densityC = isfinite(massC) ? massC / widths[i] : NaN
+        push!(rows, Dict(
+            "x_left" => edges[i],
+            "x_right" => edges[i + 1],
+            "x_center" => centers[i],
+            "XA_count" => histA[i],
+            "XB_count" => histB[i],
+            "center_count" => histC[i],
+            "XA_P_mass" => massA,
+            "XB_P_mass" => massB,
+            "center_P_mass" => massC,
+            "XA_P_density" => densityA,
+            "XB_P_density" => densityB,
+            "center_P_density" => densityC,
+            "uniform_density" => uniform_density,
+        ))
+    end
+    return rows
+end
+
 function select_fit_rows(rows, args)
     fit_rows = [r for r in rows if r["count"] > 0 && isfinite(r["D_rel_proxy"]) && r["bin_center"] > 0]
     if haskey(args, "fit_min") && !isnothing(args["fit_min"])
@@ -310,7 +364,33 @@ function write_csv(path, rows)
     return path
 end
 
-function write_summary(path, buf, rows, fit, slope, skipped, args)
+function write_location_csv(path, rows)
+    open(path, "w") do io
+        println(io, "x_left,x_right,x_center,XA_count,XB_count,center_count,XA_P_mass,XB_P_mass,center_P_mass,XA_P_density,XB_P_density,center_P_density,uniform_density")
+        for r in rows
+            @printf(io, "%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e\n",
+                r["x_left"], r["x_right"], r["x_center"], r["XA_count"], r["XB_count"], r["center_count"],
+                r["XA_P_mass"], r["XB_P_mass"], r["center_P_mass"], r["XA_P_density"], r["XB_P_density"],
+                r["center_P_density"], r["uniform_density"])
+        end
+    end
+    return path
+end
+
+function max_abs_location_density_deviation(location_rows, key::String)
+    vals = Float64[]
+    for r in location_rows
+        density = Float64(r[key])
+        uniform_density = Float64(r["uniform_density"])
+        if isfinite(density) && uniform_density > 0
+            push!(vals, abs(density - uniform_density) / uniform_density)
+        end
+    end
+    isempty(vals) && return NaN
+    return maximum(vals)
+end
+
+function write_summary(path, buf, rows, location_rows, fit, slope, skipped, args)
     fit_rows = select_fit_rows(rows, args)
     flatness_std = finite_std([r["P_times_D_proxy"] for r in fit_rows])
     open(path, "w") do io
@@ -325,6 +405,9 @@ function write_summary(path, buf, rows, fit, slope, skipped, args)
         println(io, "history_truncated_replicas=$(buf["history_truncated_replicas"])")
         println(io, "periodic_fit=$(args["periodic_fit"])")
         println(io, "P_times_D_proxy_std_in_fit_window=$(flatness_std)")
+        println(io, "XA_location_max_abs_relative_deviation_from_uniform=$(max_abs_location_density_deviation(location_rows, "XA_P_density"))")
+        println(io, "XB_location_max_abs_relative_deviation_from_uniform=$(max_abs_location_density_deviation(location_rows, "XB_P_density"))")
+        println(io, "center_location_max_abs_relative_deviation_from_uniform=$(max_abs_location_density_deviation(location_rows, "center_P_density"))")
         if !isnothing(fit)
             println(io, "fit_Dinf=$(fit["Dinf"])")
             println(io, "fit_A=$(fit["A"])")
@@ -387,6 +470,7 @@ function main()
     paths = resolve_inputs(args)
     buffer, skipped = aggregate_results(paths)
     rows = rows_from_buffer(buffer)
+    location_rows = location_rows_from_buffer(buffer)
     fit_rows = select_fit_rows(rows, args)
     fit = fit_proxy(fit_rows, Float64(buffer["L"]); periodic_fit=Bool(args["periodic_fit"]))
     Dinf_for_slope = isnothing(fit) ? tail_dinf(rows, Int(args["tail_count"])) : fit["Dinf"]
@@ -396,16 +480,19 @@ function main()
     mkpath(output_dir)
     tag = replace(String(args["save_tag"]), r"[^A-Za-z0-9._-]+" => "-")
     csv_path = joinpath(output_dir, "$(tag)_mobile_aggregate.csv")
+    location_csv_path = joinpath(output_dir, "$(tag)_mobile_locations.csv")
     jld2_path = joinpath(output_dir, "$(tag)_mobile_aggregate.jld2")
     summary_path = joinpath(output_dir, "$(tag)_mobile_summary.txt")
     plot_path = joinpath(output_dir, "$(tag)_mobile.png")
     write_csv(csv_path, rows)
-    jldsave(jld2_path; rows=rows, fit=fit, slope=slope, skipped=skipped)
-    write_summary(summary_path, buffer, rows, fit, slope, skipped, args)
+    write_location_csv(location_csv_path, location_rows)
+    jldsave(jld2_path; rows=rows, location_rows=location_rows, fit=fit, slope=slope, skipped=skipped)
+    write_summary(summary_path, buffer, rows, location_rows, fit, slope, skipped, args)
     maybe_plot(plot_path, rows, fit, args)
 
     println("Saved mobile-object coupled-SDE aggregate:")
     println("  $(csv_path)")
+    println("  $(location_csv_path)")
     println("  $(jld2_path)")
     println("  $(summary_path)")
     if !args["no_plot"]

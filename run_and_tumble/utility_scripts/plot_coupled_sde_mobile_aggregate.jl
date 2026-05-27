@@ -2,6 +2,7 @@
 
 using ArgParse
 using JLD2
+using Printf
 
 if get(ENV, "GKSwstype", "") == ""
     ENV["GKSwstype"] = "100"
@@ -72,6 +73,40 @@ function finite_columns(rows, keys::Vector{String})
     return cols
 end
 
+function finite_ratio(rows)
+    d = Float64[]
+    ratio = Float64[]
+    for r in rows
+        distance = Float64(r["bin_center"])
+        measured = Float64(r["P_density"])
+        expected = Float64(r["inv_D_proxy_density"])
+        if isfinite(distance) && isfinite(measured) && isfinite(expected) && distance > 0 && measured > 0 && expected > 0
+            push!(d, distance)
+            push!(ratio, measured / expected)
+        end
+    end
+    return d, ratio
+end
+
+function linear_fit(x::Vector{Float64}, y::Vector{Float64})
+    n = length(x)
+    n >= 2 || return (slope=NaN, intercept=NaN, r2=NaN)
+    mx = sum(x) / n
+    my = sum(y) / n
+    sxx = sum((xi - mx)^2 for xi in x)
+    sxy = sum((x[i] - mx) * (y[i] - my) for i in eachindex(x))
+    if sxx <= 0
+        return (slope=NaN, intercept=NaN, r2=NaN)
+    end
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    yhat = [intercept + slope * xi for xi in x]
+    ss_res = sum((y[i] - yhat[i])^2 for i in eachindex(y))
+    ss_tot = sum((yi - my)^2 for yi in y)
+    r2 = ss_tot > 0 ? 1.0 - ss_res / ss_tot : NaN
+    return (slope=slope, intercept=intercept, r2=r2)
+end
+
 function distance_plot(rows)
     d, measured, expected, flatness = finite_columns(
         rows,
@@ -129,6 +164,57 @@ function distance_plot(rows)
     return p1, p2, p3
 end
 
+function ratio_diagnostic_plot(rows)
+    d, ratio = finite_ratio(rows)
+    if length(d) < 2
+        empty_plot = plot(title="Distance-ratio diagnostics unavailable", axis=false, legend=false)
+        return empty_plot, empty_plot, (powerlaw=(slope=NaN, intercept=NaN, r2=NaN), exponential=(slope=NaN, intercept=NaN, r2=NaN))
+    end
+
+    logd = log.(d)
+    logr = log.(ratio)
+    powerlaw_fit = linear_fit(logd, logr)
+    exponential_fit = linear_fit(d, logr)
+
+    powerlaw_curve = exp(powerlaw_fit.intercept) .* d .^ powerlaw_fit.slope
+    exponential_curve = exp.(exponential_fit.intercept .+ exponential_fit.slope .* d)
+
+    p_loglog = plot(
+        d,
+        ratio;
+        lw=2,
+        marker=:circle,
+        markersize=3,
+        xlabel="minimum separation",
+        ylabel="measured / expected",
+        title=@sprintf("Ratio log-log: slope %.3g, R2 %.3g", powerlaw_fit.slope, powerlaw_fit.r2),
+        label="ratio",
+        xscale=:log10,
+        yscale=:log10,
+        framestyle=:box,
+        grid=:both,
+    )
+    plot!(p_loglog, d, powerlaw_curve; lw=2, ls=:dash, color=:black, label="power-law fit")
+
+    p_semilog = plot(
+        d,
+        ratio;
+        lw=2,
+        marker=:circle,
+        markersize=3,
+        xlabel="minimum separation",
+        ylabel="measured / expected",
+        title=@sprintf("Ratio semi-log: exp slope %.3g, R2 %.3g", exponential_fit.slope, exponential_fit.r2),
+        label="ratio",
+        yscale=:log10,
+        framestyle=:box,
+        grid=:both,
+    )
+    plot!(p_semilog, d, exponential_curve; lw=2, ls=:dash, color=:black, label="exponential fit")
+
+    return p_loglog, p_semilog, (powerlaw=powerlaw_fit, exponential=exponential_fit)
+end
+
 function location_plot(location_rows)
     x, xa, xb, center, uniform = finite_columns(
         location_rows,
@@ -167,6 +253,7 @@ function main()
     rows = data["rows"]
     location_rows = data["location_rows"]
     p_distance, p_ratio, p_flatness = distance_plot(rows)
+    p_ratio_loglog, p_ratio_semilog, ratio_fits = ratio_diagnostic_plot(rows)
     p_locations = location_plot(location_rows)
 
     out_dir = if haskey(args, "out_dir") && !isnothing(args["out_dir"])
@@ -178,8 +265,22 @@ function main()
     tag = sanitize_tag(String(args["save_tag"]))
     out_path = joinpath(out_dir, "$(tag)_mobile_steady_state_expected_comparison.png")
     savefig(plot(p_distance, p_ratio, p_flatness, p_locations; layout=(2, 2), size=(1400, 1000)), out_path)
+    ratio_out_path = joinpath(out_dir, "$(tag)_mobile_distance_ratio_scaling.png")
+    savefig(plot(p_ratio_loglog, p_ratio_semilog; layout=(1, 2), size=(1400, 560)), ratio_out_path)
     println("Saved coupled-SDE mobile steady-state comparison plot:")
     println("  $(out_path)")
+    println("Saved coupled-SDE mobile distance-ratio scaling plot:")
+    println("  $(ratio_out_path)")
+    println(@sprintf(
+        "Distance-ratio power-law fit: ratio ~ d^%.6g, R2=%.6g",
+        ratio_fits.powerlaw.slope,
+        ratio_fits.powerlaw.r2,
+    ))
+    println(@sprintf(
+        "Distance-ratio exponential fit: ratio ~ exp(%.6g d), R2=%.6g",
+        ratio_fits.exponential.slope,
+        ratio_fits.exponential.r2,
+    ))
     println("Expected distance profile: normalized 1 / D_proxy(d).")
     println("Expected location profile: uniform density 1/L.")
 end
