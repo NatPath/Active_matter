@@ -8,6 +8,7 @@ export normalize_mode, initialize_state, initialize_uniform_bath!
 export wrap_position, minimal_image, oriented_separation, minimum_separation
 export profile_value, compute_profile_sums!, draw_sde_noises
 export step_fixed_separation!, step_mobile_objects!
+export enforce_hard_minimum_separation!, step_mobile_objects_hard_minimum!
 export run_fixed_separation!, run_mobile_objects!
 export fixed_result_dict, mobile_result_dict, stability_recommendations
 
@@ -443,6 +444,67 @@ function step_mobile_objects!(
     )
 end
 
+function enforce_hard_minimum_separation!(state::CoupledSDEState, param::CoupledSDEParam, hard_min::Real)
+    min_allowed = Float64(hard_min)
+    min_allowed <= 0.0 && return 0.0, 0.0, false
+
+    signed_sep = minimal_image(state.XA - state.XB, param.L)
+    current = abs(signed_sep)
+    current >= min_allowed && return 0.0, 0.0, false
+
+    direction = current > eps(Float64) ? sign(signed_sep) : 1.0
+    target = min_allowed + max(16.0 * eps(Float64) * max(param.L, min_allowed), 1.0e-12 * max(min_allowed, 1.0))
+    correction = target - current
+    dXA_hard = 0.5 * direction * correction
+    dXB_hard = -0.5 * direction * correction
+
+    state.XA_unwrapped += dXA_hard
+    state.XB_unwrapped += dXB_hard
+    state.XA = wrap_position(state.XA_unwrapped, param.L)
+    state.XB = wrap_position(state.XB_unwrapped, param.L)
+    state.last_dXA += dXA_hard
+    state.last_dXB += dXB_hard
+    state.last_drel = state.last_dXA - state.last_dXB
+
+    return dXA_hard, dXB_hard, true
+end
+
+function step_mobile_objects_hard_minimum!(
+    state::CoupledSDEState,
+    param::CoupledSDEParam,
+    work::SDEWork,
+    dWA::Real,
+    dWB::Real,
+    dWi::AbstractVector{Float64},
+    hard_min::Real,
+)
+    obs = step_mobile_objects!(state, param, work, dWA, dWB, dWi)
+    dXA_hard, dXB_hard, hit = enforce_hard_minimum_separation!(state, param, hard_min)
+    hit || return obs
+
+    dXA = obs.dXA + dXA_hard
+    dXB = obs.dXB + dXB_hard
+    return StepObservables(
+        obs.step,
+        obs.time,
+        obs.XA,
+        obs.XB,
+        obs.separation_oriented,
+        obs.separation_min,
+        obs.SA,
+        obs.SB,
+        obs.Ssum,
+        obs.dWA,
+        obs.dWB,
+        dXA,
+        dXB,
+        dXA - dXB,
+        obs.max_abs_bath_active_step,
+        obs.max_abs_bath_thermal_step,
+        max(obs.max_abs_object_step, abs(dXA), abs(dXB)),
+    )
+end
+
 function step_mobile_objects!(
     state::CoupledSDEState,
     param::CoupledSDEParam,
@@ -451,6 +513,19 @@ function step_mobile_objects!(
 )
     dWA, dWB, dWi = draw_sde_noises!(work.dWi, rng, param.dt)
     return step_mobile_objects!(state, param, work, dWA, dWB, dWi)
+end
+
+function step_mobile_objects_hard_minimum!(
+    state::CoupledSDEState,
+    param::CoupledSDEParam,
+    rng::AbstractRNG,
+    work::SDEWork,
+    hard_min::Real,
+)
+    hard = Float64(hard_min)
+    hard <= 0.0 && return step_mobile_objects!(state, param, rng, work)
+    dWA, dWB, dWi = draw_sde_noises!(work.dWi, rng, param.dt)
+    return step_mobile_objects_hard_minimum!(state, param, work, dWA, dWB, dWi, hard)
 end
 
 function accumulate!(stats::FixedStats, obs::StepObservables)
@@ -575,6 +650,23 @@ function run_mobile_objects!(state::CoupledSDEState, param::CoupledSDEParam, rng
     stats = MobileStats(param)
     for production_step in 1:max(param.n_steps, 0)
         obs = step_mobile_objects!(state, param, rng, work)
+        accumulate!(stats, obs, state, param, production_step)
+    end
+    return stats
+end
+
+function run_mobile_objects!(state::CoupledSDEState, param::CoupledSDEParam, rng::AbstractRNG, hard_min_separation::Real)
+    hard = Float64(hard_min_separation)
+    hard <= 0.0 && return run_mobile_objects!(state, param, rng)
+
+    work = SDEWork(param.N)
+    for _ in 1:max(param.warmup_steps, 0)
+        step_mobile_objects_hard_minimum!(state, param, rng, work, hard)
+    end
+
+    stats = MobileStats(param)
+    for production_step in 1:max(param.n_steps, 0)
+        obs = step_mobile_objects_hard_minimum!(state, param, rng, work, hard)
         accumulate!(stats, obs, state, param, production_step)
     end
     return stats

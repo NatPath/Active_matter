@@ -67,6 +67,8 @@ function get_default_params()
         "random_initial_objects" => false,
         "initial_min_separation" => 0.0,
         "initial_max_separation" => nothing,
+        "hard_min_separation" => 0.0,
+        "hard_min_separation_sigma" => 0.0,
         "n_steps" => 10_000,
         "warmup_steps" => 1_000,
         "sample_interval" => 1,
@@ -196,6 +198,21 @@ function build_param(params, defaults)
     )
 end
 
+function get_hard_min_separation(params, defaults, param::CoupledSDEParam)
+    hard_min = if haskey(params, "hard_min_separation") && !isnothing(params["hard_min_separation"])
+        to_float(params["hard_min_separation"], "hard_min_separation")
+    elseif haskey(params, "hard_min_separation_sigma") && !isnothing(params["hard_min_separation_sigma"])
+        to_float(params["hard_min_separation_sigma"], "hard_min_separation_sigma") * param.sigma_f
+    elseif haskey(params, "hard_minimum_separation") && !isnothing(params["hard_minimum_separation"])
+        to_float(params["hard_minimum_separation"], "hard_minimum_separation")
+    else
+        to_float(defaults["hard_min_separation"], "hard_min_separation")
+    end
+    hard_min >= 0.0 || error("hard_min_separation must be nonnegative. Got $(hard_min).")
+    hard_min <= 0.5 * param.L || error("hard_min_separation must be <= L/2. Got $(hard_min), L=$(param.L).")
+    return hard_min
+end
+
 function performance_mode_from_params(args, params, defaults)
     if get(args, "performance_mode", false)
         return true
@@ -261,6 +278,7 @@ function load_resume_checkpoint(path::AbstractString, param::CoupledSDEParam)
         "rng" => data["rng"],
         "completed_warmup_steps" => Int(get(checkpoint, "completed_warmup_steps", 0)),
         "completed_production_steps" => Int(get(checkpoint, "completed_production_steps", 0)),
+        "hard_min_separation" => haskey(checkpoint, "hard_min_separation") ? Float64(checkpoint["hard_min_separation"]) : nothing,
     )
 end
 
@@ -298,7 +316,8 @@ function write_summary(path::AbstractString, result::Dict, output_path::Abstract
         println(io, "mode=$(result["mode"])")
         println(io, "sample_count=$(result["sample_count"])")
         params = result["parameters"]
-        for key in ["L", "rho0", "N", "D0", "dt", "mu_bath", "mu_obj", "f0", "sigma_f", "separation", "n_steps", "warmup_steps", "sample_interval"]
+        for key in ["L", "rho0", "N", "D0", "dt", "mu_bath", "mu_obj", "f0", "sigma_f", "separation", "hard_min_separation", "hard_min_separation_over_sigma_f", "n_steps", "warmup_steps", "sample_interval"]
+            haskey(params, key) || continue
             println(io, "$(key)=$(params[key])")
         end
         if haskey(result, "D_rel_proxy")
@@ -312,13 +331,15 @@ function write_summary(path::AbstractString, result::Dict, output_path::Abstract
     return path
 end
 
-function print_estimate(param::CoupledSDEParam)
+function print_estimate(param::CoupledSDEParam, hard_min_separation::Real=0.0)
     total_steps = param.warmup_steps + param.n_steps
     println("Coupled-SDE active-object run estimate")
     println("  mode=$(param.mode)")
     println("  N=$(param.N)")
     println("  warmup_steps=$(param.warmup_steps)")
     println("  production_steps=$(param.n_steps)")
+    println("  hard_min_separation=$(Float64(hard_min_separation))")
+    println("  hard_min_separation/sigma_f=$(Float64(hard_min_separation) / param.sigma_f)")
     println("  total particle updates=$(total_steps * param.N)")
     println("  thermal_rms=$(sqrt(2.0 * param.D0 * param.dt))")
     println("  thermal_rms/sigma_f=$(sqrt(2.0 * param.D0 * param.dt) / param.sigma_f)")
@@ -334,6 +355,7 @@ function save_checkpoint(
     completed_warmup_steps::Integer,
     completed_production_steps::Integer,
     phase::AbstractString,
+    hard_min_separation::Real=0.0,
 )
     isempty(checkpoint_path) && return nothing
     mkpath(dirname(checkpoint_path))
@@ -344,6 +366,8 @@ function save_checkpoint(
         "completed_production_steps" => Int(completed_production_steps),
         "target_warmup_steps" => param.warmup_steps,
         "target_production_steps" => param.n_steps,
+        "hard_min_separation" => Float64(hard_min_separation),
+        "hard_min_separation_over_sigma_f" => Float64(hard_min_separation) / param.sigma_f,
         "saved_at" => Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),
     )
     tmp = "$(checkpoint_path).tmp.$(getpid())"
@@ -363,11 +387,12 @@ function maybe_save_checkpoint!(
     completed_warmup_steps::Integer,
     completed_production_steps::Integer,
     phase::AbstractString,
+    hard_min_separation::Real=0.0,
 )
     checkpoint_interval_steps > 0 || return nothing
     total_completed = Int(completed_warmup_steps + completed_production_steps)
     if total_completed - last_checkpoint_total[] >= checkpoint_interval_steps
-        save_checkpoint(checkpoint_path, param, state, stats, rng, completed_warmup_steps, completed_production_steps, phase)
+        save_checkpoint(checkpoint_path, param, state, stats, rng, completed_warmup_steps, completed_production_steps, phase, hard_min_separation)
         last_checkpoint_total[] = total_completed
     end
     return nothing
@@ -380,6 +405,7 @@ function run_mobile_objects_checkpointed!(
     checkpoint_path::AbstractString="",
     checkpoint_interval_steps::Integer=0,
     resume_data=nothing,
+    hard_min_separation::Real=0.0,
 )
     work = SDEWork(param.N)
     completed_warmup_steps = 0
@@ -393,7 +419,7 @@ function run_mobile_objects_checkpointed!(
     last_checkpoint_total = Ref(completed_warmup_steps + completed_production_steps)
 
     while completed_warmup_steps < max(param.warmup_steps, 0)
-        step_mobile_objects!(state, param, rng, work)
+        step_mobile_objects_hard_minimum!(state, param, rng, work, hard_min_separation)
         completed_warmup_steps += 1
         maybe_save_checkpoint!(
             checkpoint_path,
@@ -406,6 +432,7 @@ function run_mobile_objects_checkpointed!(
             completed_warmup_steps,
             completed_production_steps,
             "warmup",
+            hard_min_separation,
         )
     end
 
@@ -414,7 +441,7 @@ function run_mobile_objects_checkpointed!(
     end
     while completed_production_steps < max(param.n_steps, 0)
         completed_production_steps += 1
-        obs = step_mobile_objects!(state, param, rng, work)
+        obs = step_mobile_objects_hard_minimum!(state, param, rng, work, hard_min_separation)
         FPCoupledSDEActiveObjects.accumulate!(stats, obs, state, param, completed_production_steps)
         maybe_save_checkpoint!(
             checkpoint_path,
@@ -427,11 +454,12 @@ function run_mobile_objects_checkpointed!(
             completed_warmup_steps,
             completed_production_steps,
             "production",
+            hard_min_separation,
         )
     end
 
     if checkpoint_interval_steps > 0
-        save_checkpoint(checkpoint_path, param, state, stats, rng, completed_warmup_steps, completed_production_steps, "complete")
+        save_checkpoint(checkpoint_path, param, state, stats, rng, completed_warmup_steps, completed_production_steps, "complete", hard_min_separation)
     end
     return stats
 end
@@ -441,6 +469,7 @@ function main()
     defaults = get_default_params()
     params = YAML.load_file(String(args["config"]))
     param = build_param(params, defaults)
+    hard_min_separation = get_hard_min_separation(params, defaults, param)
     performance_mode = performance_mode_from_params(args, params, defaults)
     initial_state_path = get(args, "initial_state", nothing)
     resume_checkpoint_path = get(args, "resume_checkpoint", nothing)
@@ -449,7 +478,7 @@ function main()
     checkpoint_interval_steps = max(Int(get(args, "checkpoint_interval_steps", 0)), 0)
 
     if get(args, "estimate_only", false)
-        print_estimate(param)
+        print_estimate(param, hard_min_separation)
         return
     end
     if !isnothing(initial_state_path) && !isnothing(resume_checkpoint_path)
@@ -461,6 +490,11 @@ function main()
     rng = rng_from_param(param)
     state = if !isnothing(resume_checkpoint_path)
         resume_data = load_resume_checkpoint(String(resume_checkpoint_path), param)
+        saved_hard_min = resume_data["hard_min_separation"]
+        if !isnothing(saved_hard_min)
+            isapprox(Float64(saved_hard_min), hard_min_separation; rtol=1.0e-10, atol=1.0e-12) ||
+                error("Incompatible hard_min_separation in checkpoint: saved=$(saved_hard_min) current=$(hard_min_separation)")
+        end
         rng = resume_data["rng"]
         resume_data["state"]
     elseif !isnothing(initial_state_path)
@@ -469,7 +503,7 @@ function main()
         initialize_state(param, rng)
     end
 
-    !performance_mode && print_estimate(param)
+    !performance_mode && print_estimate(param, hard_min_separation)
     start_time = time()
     stats = if param.mode == FPCoupledSDEActiveObjects.FIXED_SEPARATION_MODE
         run_fixed_separation!(state, param, rng)
@@ -482,9 +516,10 @@ function main()
                 checkpoint_path=checkpoint_path,
                 checkpoint_interval_steps=checkpoint_interval_steps,
                 resume_data=resume_data,
+                hard_min_separation=hard_min_separation,
             )
         else
-            run_mobile_objects!(state, param, rng)
+            run_mobile_objects!(state, param, rng, hard_min_separation)
         end
     else
         error("Unsupported mode stored in param: $(param.mode)")
@@ -496,6 +531,8 @@ function main()
     else
         mobile_result_dict(param, state, stats)
     end
+    result["parameters"]["hard_min_separation"] = Float64(hard_min_separation)
+    result["parameters"]["hard_min_separation_over_sigma_f"] = Float64(hard_min_separation) / param.sigma_f
     metadata = Dict(
         "config_path" => abspath(String(args["config"])),
         "save_tag" => get(args, "save_tag", nothing),
@@ -506,6 +543,8 @@ function main()
         "resume_checkpoint_path" => isnothing(resume_checkpoint_path) ? nothing : abspath(String(resume_checkpoint_path)),
         "checkpoint_path" => isempty(checkpoint_path) ? nothing : abspath(checkpoint_path),
         "checkpoint_interval_steps" => checkpoint_interval_steps,
+        "hard_min_separation" => Float64(hard_min_separation),
+        "hard_min_separation_over_sigma_f" => Float64(hard_min_separation) / param.sigma_f,
     )
 
     output_path = output_filename(save_dir, param; save_tag=get(args, "save_tag", nothing))

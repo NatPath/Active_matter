@@ -32,7 +32,8 @@ Paths / connection:
   --local_root <path>                     Local root for downloaded data (default: <repo>/cluster_results)
   --sync_scope <auto|aggregation|full>    Data sync scope:
                                           auto (default): if run_id looks aggregated (_nr...), fetch aggregated artifacts only
-                                          aggregation: fetch aggregated state files + run metadata
+                                          aggregation: fetch aggregate analysis/artifacts + run metadata
+                                          (for coupled_sde and fluctuating_force_sde, fetches analysis/ and metadata only)
                                           (for diffusive_1d_pmlr / diffusive_1d_center_bond / diffusive_2d_origin_bond run_ids, fetches the run-specific
                                           batch aggregate from aggregate_root/batches;
                                           otherwise prefers aggregated/, then states/aggregated, with legacy fallback;
@@ -40,7 +41,15 @@ Paths / connection:
                                           full: fetch full run directory
 
 Post-processing:
-  --plot                                  Run load_and_plot.jl after sync
+  --plot                                  Run plotting after sync. For coupled_sde mobile_objects this runs
+                                          steady-state comparison, distance-density log-log, and offset-power-law scaling plots.
+  --no_remote_reports                     In aggregation sync, skip remote reports/ and only fetch aggregate artifacts + metadata
+  --latest_aggregate_only                 In aggregation sync, fetch only the newest remote aggregate needed for plotting
+                                          plus lightweight run metadata and sibling summary/CSV artifacts when present
+  --pinf_tail_count <int>                 Coupled-SDE mobile offset plot: tail count used for Pinf. Default: 12
+  --reference_slope <float>               Coupled-SDE mobile offset plot reference slope. Default: -2
+  --fixed_slope <float>                   Coupled-SDE mobile offset plot: also scan the best Pinf at this fixed slope
+  --fixed_slope_scan_min_points <int>     Minimum points required in the fixed-slope scan. Default: 10
   --aggregated_saved_only                 Restrict copy/plot to live *_id-aggregated_saved_*.jld2 only
                                           under aggregated/ (or states/aggregated/ / states/<state_subdir>/ when provided)
                                           and skip legacy fallback paths
@@ -66,6 +75,7 @@ Examples:
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
   bash copy_data_from_cluster.sh --run_id coupled_sde_mobile_600cpu_12h_prod_001 --sync_scope aggregation --plot
+  bash copy_data_from_cluster.sh --run_id coupled_sde_mobile_600cpu_12h_prod_001 --latest_aggregate_only --plot
   bash copy_data_from_cluster.sh --run_id ffsde_two_force_L160_600cpu_20260524-120000 --run_family fluctuating_force_sde --sync_scope aggregation
   bash copy_data_from_cluster.sh --run_id diffusive_1d_pmlr_L512_rho100_gamma1_V16_production_ns1000000_nr600_20260420-120000 --plot --collapse_indices 20:10:80
   bash copy_data_from_cluster.sh --run_id diffusive_1d_center_bond_L2048_rho100_f1_ffr1 --sync_scope aggregation --plot
@@ -118,6 +128,8 @@ local_root="${LOCAL_RESULTS_ROOT:-${REPO_ROOT}/cluster_results}"
 sync_scope="auto"
 
 plot_after_sync="false"
+no_remote_reports="false"
+latest_aggregate_only="false"
 aggregated_saved_only="false"
 state_subdir=""
 state_glob=""
@@ -130,6 +142,10 @@ bond_centered_collapse="false"
 plot_mode="two_force_d"
 plot_mode_explicit="false"
 sample_count="0"
+pinf_tail_count="12"
+reference_slope="-2"
+fixed_slope=""
+fixed_slope_scan_min_points="10"
 
 ssh_control_dir=""
 ssh_control_path=""
@@ -392,6 +408,30 @@ while [[ $# -gt 0 ]]; do
             plot_after_sync="true"
             shift 1
             ;;
+        --no_remote_reports)
+            no_remote_reports="true"
+            shift 1
+            ;;
+        --latest_aggregate_only)
+            latest_aggregate_only="true"
+            shift 1
+            ;;
+        --pinf_tail_count)
+            pinf_tail_count="${2:-}"
+            shift 2
+            ;;
+        --reference_slope)
+            reference_slope="${2:-}"
+            shift 2
+            ;;
+        --fixed_slope)
+            fixed_slope="${2:-}"
+            shift 2
+            ;;
+        --fixed_slope_scan_min_points)
+            fixed_slope_scan_min_points="${2:-}"
+            shift 2
+            ;;
         --aggregated_saved_only)
             aggregated_saved_only="true"
             shift 1
@@ -476,6 +516,22 @@ if ! [[ "${sample_count}" =~ ^[0-9]+$ ]]; then
     echo "--sample_count must be a non-negative integer. Got '${sample_count}'."
     exit 1
 fi
+if ! [[ "${pinf_tail_count}" =~ ^[0-9]+$ ]] || (( pinf_tail_count <= 0 )); then
+    echo "--pinf_tail_count must be a positive integer. Got '${pinf_tail_count}'."
+    exit 1
+fi
+if [[ -n "${reference_slope}" && ! "${reference_slope}" =~ ^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]]; then
+    echo "--reference_slope must be numeric when provided. Got '${reference_slope}'."
+    exit 1
+fi
+if [[ -n "${fixed_slope}" && ! "${fixed_slope}" =~ ^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]]; then
+    echo "--fixed_slope must be numeric when provided. Got '${fixed_slope}'."
+    exit 1
+fi
+if ! [[ "${fixed_slope_scan_min_points}" =~ ^[0-9]+$ ]] || (( fixed_slope_scan_min_points < 2 )); then
+    echo "--fixed_slope_scan_min_points must be an integer >= 2. Got '${fixed_slope_scan_min_points}'."
+    exit 1
+fi
 if (( sample_count > 0 )); then
     if [[ "${sync_scope}" == "full" ]]; then
         echo "--sample_count is supported only with aggregation sync."
@@ -503,6 +559,10 @@ if [[ "${aggregated_saved_only}" == "true" ]]; then
     if [[ "${state_glob_explicit}" != "true" ]]; then
         state_glob="*id-aggregated_saved_*.jld2"
     fi
+fi
+if [[ "${latest_aggregate_only}" == "true" ]]; then
+    sync_scope="aggregation"
+    no_remote_reports="true"
 fi
 
 missing_settings=()
@@ -829,7 +889,11 @@ else
     found_families=()
     found_registries=()
     found_roots=()
-    read_lines_to_array candidate_families < <(candidate_families_for_run_id "${run_id}")
+    if [[ "${run_family}" != "auto" ]]; then
+        candidate_families=("${run_family}")
+    else
+        read_lines_to_array candidate_families < <(candidate_families_for_run_id "${run_id}")
+    fi
 
     for root_idx in "${!SEARCH_REMOTE_ROOTS[@]}"; do
         registry_root="${SEARCH_REMOTE_ROOTS[$root_idx]}"
@@ -943,6 +1007,9 @@ echo "  sync_scope=${sync_scope_effective}"
 if [[ -n "${state_subdir}" ]]; then
     echo "  state_subdir=${state_subdir}"
 fi
+if [[ "${latest_aggregate_only}" == "true" ]]; then
+    echo "  latest_aggregate_only=true"
+fi
 
 aggregation_glob="*id-aggregated_*.jld2"
 if [[ "${state_glob_explicit}" == "true" ]]; then
@@ -986,7 +1053,58 @@ if [[ "${sync_scope_effective}" == "aggregation" ]] && is_diffusive_family "${re
 fi
 
 if [[ "${sync_scope_effective}" == "aggregation" ]]; then
-    if [[ "${sync_latest_diffusive_aggregate_only}" == "true" ]]; then
+    if [[ "${latest_aggregate_only}" == "true" && ( "${resolved_family}" == "coupled_sde" || "${resolved_family}" == "fluctuating_force_sde" ) ]]; then
+        remote_latest_cmd=$(
+            cat <<EOF
+cd $(printf '%q' "${remote_run_dir}") && if [[ -d analysis ]]; then find analysis -maxdepth 1 -type f \( -name '*_mobile_aggregate.jld2' -o -name '*_aggregate.jld2' \) -printf '%T@ %p\n'; fi | sort -nr | head -n 1
+EOF
+        )
+        latest_remote_rel_path="$(
+            ssh_with_master "${remote_user}@${remote_host}" "${remote_latest_cmd}" | awk '{ $1=""; sub(/^ /,""); print }' | tail -n 1
+        )"
+        if [[ -z "${latest_remote_rel_path}" ]]; then
+            echo "No remote aggregate JLD2 found under ${remote_run_dir}/analysis; nothing to sync."
+        else
+            latest_stem="${latest_remote_rel_path%.jld2}"
+            candidate_files=(
+                "run_info.txt"
+                "manifest.csv"
+                "cluster_followup_commands.txt"
+                "analysis_commands.txt"
+                "continuation_notes.txt"
+                "${latest_remote_rel_path}"
+                "${latest_stem}.csv"
+                "${latest_stem}_summary.txt"
+            )
+            if [[ "${latest_stem}" == *_mobile_aggregate ]]; then
+                mobile_prefix="${latest_stem%_mobile_aggregate}"
+                candidate_files+=(
+                    "${mobile_prefix}_mobile_locations.csv"
+                    "${mobile_prefix}_mobile_summary.txt"
+                )
+            fi
+
+            files_from="$(mktemp)"
+            write_existing_remote_files_from "${remote_run_dir}" "${files_from}" "${candidate_files[@]}"
+            if [[ -s "${files_from}" ]]; then
+                rsync_with_master -av --progress --files-from="${files_from}" \
+                    "${remote_user}@${remote_host}:${remote_run_dir}/" "${local_run_dir}/"
+            fi
+            rm -f "${files_from}"
+
+            latest_local_aggregate="${local_run_dir}/${latest_remote_rel_path}"
+            if [[ -f "${latest_local_aggregate}" ]]; then
+                mkdir -p "${local_run_dir}/analysis"
+                printf "%s\n" "${latest_local_aggregate}" > "${local_run_dir}/analysis/latest_fetched_aggregate.txt"
+                echo "Fetched latest aggregate for plotting:"
+                echo "  ${latest_local_aggregate}"
+            fi
+        fi
+    elif [[ "${latest_aggregate_only}" == "true" ]]; then
+        echo "--latest_aggregate_only is currently supported for coupled_sde and fluctuating_force_sde aggregation runs."
+        echo "Resolved family was '${resolved_family}'."
+        exit 1
+    elif [[ "${sync_latest_diffusive_aggregate_only}" == "true" ]]; then
         local_aggregate_dir="${local_run_dir}/aggregated"
         mkdir -p "${local_aggregate_dir}"
 
@@ -1092,8 +1210,10 @@ EOF
             --exclude='states/aggregated/archive/***'
             --include='*/'
             --include='run_info.txt'
-            --include='manifest.csv'
-            --include='reports/***')
+            --include='manifest.csv')
+        if [[ "${no_remote_reports}" != "true" ]]; then
+            rsync_args+=(--include='reports/***')
+        fi
         if [[ "${resolved_family}" == "active_objects" ]]; then
             rsync_args+=(
                 --include='histograms/'
@@ -1102,8 +1222,9 @@ EOF
             )
         elif [[ "${resolved_family}" == "coupled_sde" ]]; then
             rsync_args+=(
+                --exclude='states/***'
+                --exclude='checkpoints/***'
                 --include='analysis/***'
-                --include='configs/***'
                 --include='cluster_followup_commands.txt'
                 --include='analysis_commands.txt'
                 --include='continuation_notes.txt'
@@ -1111,7 +1232,6 @@ EOF
         elif [[ "${resolved_family}" == "fluctuating_force_sde" ]]; then
             rsync_args+=(
                 --include='analysis/***'
-                --include='configs/***'
                 --include='cluster_followup_commands.txt'
                 --include='local_fetch_command.txt'
             )
@@ -1122,7 +1242,7 @@ EOF
         elif [[ "${resolved_family}" == "ssep" ]]; then
             rsync_args+=(--include="aggregated/${aggregation_glob}")
         fi
-        if [[ "${aggregated_saved_only}" != "true" && "${resolved_family}" != "active_objects" && "${resolved_family}" != "fluctuating_force_sde" ]]; then
+        if [[ "${aggregated_saved_only}" != "true" && "${resolved_family}" != "active_objects" && "${resolved_family}" != "coupled_sde" && "${resolved_family}" != "fluctuating_force_sde" ]]; then
             rsync_args+=(
                 --include="aggregated/${aggregation_glob}"
                 --include="states/aggregated/${aggregation_glob}"
@@ -1173,25 +1293,86 @@ if [[ "${plot_after_sync}" == "true" ]]; then
                     echo "No coupled-SDE analysis directory found at ${analysis_dir}; skipping plot."
                     exit 0
                 fi
-                read_lines_to_array coupled_mobile_aggregates < <(find "${analysis_dir}" -maxdepth 1 -type f -name "*_mobile_aggregate.jld2" | sort)
-                if (( ${#coupled_mobile_aggregates[@]} == 0 )); then
+                latest_marker="${analysis_dir}/latest_fetched_aggregate.txt"
+                latest_aggregate=""
+                if [[ -f "${latest_marker}" ]]; then
+                    latest_aggregate="$(head -n 1 "${latest_marker}")"
+                    if [[ ! -f "${latest_aggregate}" ]]; then
+                        latest_aggregate=""
+                    fi
+                fi
+                if [[ -z "${latest_aggregate}" ]]; then
+                    latest_aggregate="$(find "${analysis_dir}" -maxdepth 1 -type f -name "*_mobile_aggregate.jld2" -printf '%T@ %p\n' | sort -nr | head -n 1 | awk '{ $1=""; sub(/^ /,""); print }')"
+                fi
+                if [[ -z "${latest_aggregate}" ]]; then
                     echo "No coupled-SDE mobile aggregate JLD2 found in ${analysis_dir}; skipping plot."
                     exit 0
                 fi
-                plot_script="${REPO_ROOT}/utility_scripts/plot_coupled_sde_mobile_aggregate.jl"
-                if [[ ! -f "${plot_script}" ]]; then
-                    echo "Missing coupled-SDE mobile plot script: ${plot_script}"
-                    exit 1
+                steady_plot_script="${REPO_ROOT}/utility_scripts/plot_coupled_sde_mobile_aggregate.jl"
+                loglog_plot_script="${REPO_ROOT}/utility_scripts/plot_coupled_sde_mobile_distance_density_loglog.jl"
+                offset_plot_script="${REPO_ROOT}/utility_scripts/plot_coupled_sde_mobile_distance_density_offset_powerlaw.jl"
+                for plot_script in "${steady_plot_script}" "${loglog_plot_script}" "${offset_plot_script}"; do
+                    if [[ ! -f "${plot_script}" ]]; then
+                        echo "Missing coupled-SDE mobile plot script: ${plot_script}"
+                        exit 1
+                    fi
+                done
+
+                timestamp="$(date +%Y%m%d-%H%M%S)"
+                report_root="${local_run_dir}/reports/coupled_sde_mobile_scaling_${timestamp}"
+                steady_dir="${report_root}/steady_state_expected"
+                loglog_dir="${report_root}/distance_density_loglog"
+                if [[ "${reference_slope}" == -* ]]; then
+                    ref_label="minus${reference_slope#-}"
+                else
+                    ref_label="${reference_slope}"
                 fi
-                out_dir="${local_run_dir}/reports/coupled_sde_mobile_steady_state_$(date +%Y%m%d-%H%M%S)"
-                mkdir -p "${out_dir}"
-                latest_aggregate="$(find "${analysis_dir}" -maxdepth 1 -type f -name "*_mobile_aggregate.jld2" -printf '%T@ %p\n' | sort -nr | head -n 1 | awk '{ $1=""; sub(/^ /,""); print }')"
+                ref_label="$(printf '%s' "${ref_label}" | sed -e 's/-/minus/g; s/\./p/g')"
+                offset_dir="${report_root}/offset_powerlaw_tail${pinf_tail_count}_ref${ref_label}"
+                mkdir -p "${steady_dir}" "${loglog_dir}" "${offset_dir}"
+
                 echo "Running coupled-SDE mobile steady-state plotter on aggregate: ${latest_aggregate}"
-                "${julia_bin}" --startup-file=no "${plot_script}" \
+                "${julia_bin}" --startup-file=no "${steady_plot_script}" \
                     --aggregate "${latest_aggregate}" \
-                    --out_dir "${out_dir}" \
+                    --out_dir "${steady_dir}" \
                     --save_tag "${run_id}"
-                echo "Plots saved to: ${out_dir}"
+
+                echo "Running coupled-SDE mobile distance-density log-log scaling plotter..."
+                "${julia_bin}" --startup-file=no "${loglog_plot_script}" \
+                    --aggregate "${latest_aggregate}" \
+                    --out_dir "${loglog_dir}" \
+                    --save_tag "${run_id}"
+
+                echo "Running coupled-SDE mobile offset-power-law scaling plotter..."
+                offset_cmd=(
+                    "${julia_bin}" --startup-file=no "${offset_plot_script}"
+                    --aggregate "${latest_aggregate}" \
+                    --out_dir "${offset_dir}" \
+                    --save_tag "${run_id}_tail${pinf_tail_count}Pinf_ref${ref_label}" \
+                    --pinf_tail_count "${pinf_tail_count}" \
+                    --reference_slope "${reference_slope}"
+                )
+                if [[ -n "${fixed_slope}" ]]; then
+                    offset_cmd+=(
+                        --fixed_slope "${fixed_slope}"
+                        --fixed_slope_scan_min_points "${fixed_slope_scan_min_points}"
+                    )
+                fi
+                "${offset_cmd[@]}"
+
+                cat > "${report_root}/README.txt" <<EOF
+run_id=${run_id}
+aggregate=${latest_aggregate}
+created_at=${timestamp}
+pinf_tail_count=${pinf_tail_count}
+reference_slope=${reference_slope}
+fixed_slope=${fixed_slope}
+fixed_slope_scan_min_points=${fixed_slope_scan_min_points}
+steady_state_dir=${steady_dir}
+distance_density_loglog_dir=${loglog_dir}
+offset_powerlaw_dir=${offset_dir}
+EOF
+                echo "Scaling plots saved to: ${report_root}"
                 echo "Done. Local run folder: ${local_run_dir}"
                 exit 0
                 ;;
@@ -1205,6 +1386,55 @@ if [[ "${plot_after_sync}" == "true" ]]; then
             echo "No aggregate plot path matched; raw states are present at ${states_dir}."
         else
             echo "No aggregate plot path matched and raw states were not fetched."
+        fi
+        echo "Done. Local run folder: ${local_run_dir}"
+        exit 0
+    fi
+
+    if [[ "${resolved_family}" == "fluctuating_force_sde" ]]; then
+        analysis_dir="${local_run_dir}/analysis"
+        if [[ ! -d "${analysis_dir}" ]]; then
+            echo "No fluctuating-force SDE analysis directory found at ${analysis_dir}; skipping plot."
+            exit 0
+        fi
+        read_lines_to_array ffsde_plots < <(find "${analysis_dir}" -maxdepth 1 -type f -name "*.png" | sort)
+        if (( ${#ffsde_plots[@]} > 0 )); then
+            echo "Fetched fluctuating-force SDE aggregate plot(s):"
+            printf '  %s\n' "${ffsde_plots[@]}"
+            echo "Done. Local run folder: ${local_run_dir}"
+            exit 0
+        fi
+        latest_ffsde_aggregate="$(find "${analysis_dir}" -maxdepth 1 -type f -name "*_aggregate.jld2" -printf '%T@ %p\n' | sort -nr | head -n 1 | awk '{ $1=""; sub(/^ /,""); print }')"
+        latest_marker="${analysis_dir}/latest_fetched_aggregate.txt"
+        if [[ -f "${latest_marker}" ]]; then
+            marked_aggregate="$(head -n 1 "${latest_marker}")"
+            if [[ -f "${marked_aggregate}" ]]; then
+                latest_ffsde_aggregate="${marked_aggregate}"
+            fi
+        fi
+        if [[ -n "${latest_ffsde_aggregate}" ]]; then
+            plot_script="${REPO_ROOT}/utility_scripts/plot_fluctuating_force_sde_aggregate.jl"
+            if [[ ! -f "${plot_script}" ]]; then
+                echo "Missing fluctuating-force SDE plot script: ${plot_script}"
+                exit 1
+            fi
+            out_dir="${local_run_dir}/reports/fluctuating_force_sde_density_variance_$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "${out_dir}"
+            echo "Running fluctuating-force SDE density-variance plotter on aggregate: ${latest_ffsde_aggregate}"
+            "${julia_bin}" --startup-file=no "${plot_script}" \
+                --aggregate "${latest_ffsde_aggregate}" \
+                --out_dir "${out_dir}" \
+                --save_tag "${run_id}"
+            echo "Plots saved to: ${out_dir}"
+            echo "Done. Local run folder: ${local_run_dir}"
+            exit 0
+        fi
+        read_lines_to_array ffsde_aggregates < <(find "${analysis_dir}" -maxdepth 1 -type f \( -name "*.jld2" -o -name "*.csv" -o -name "*_summary.txt" \) | sort)
+        if (( ${#ffsde_aggregates[@]} > 0 )); then
+            echo "Fetched fluctuating-force SDE aggregate analysis files, but no PNG plot was present:"
+            printf '  %s\n' "${ffsde_aggregates[@]}"
+        else
+            echo "No fluctuating-force SDE aggregate analysis files found in ${analysis_dir}."
         fi
         echo "Done. Local run folder: ${local_run_dir}"
         exit 0
