@@ -47,6 +47,10 @@ function parse_commandline()
             help = "Save a checkpoint after this many warmup/production steps; 0 disables checkpointing"
             arg_type = Int
             default = 0
+        "--seed"
+            help = "Override the config seed. Use this for reproducible per-replica MersenneTwister streams."
+            arg_type = Int
+            required = false
     end
     return parse_args(settings)
 end
@@ -152,7 +156,7 @@ function get_n_steps(params, defaults)
     return to_int(defaults["n_steps"], "n_steps")
 end
 
-function build_param(params, defaults)
+function build_param(params, defaults; seed_override=nothing)
     L = to_float(get_value(params, defaults, "L"), "L")
     rho0 = get_rho0(params, defaults)
     N = if haskey(params, "N") && !isnothing(params["N"])
@@ -168,6 +172,8 @@ function build_param(params, defaults)
     max_history_records = max(to_int(get_value(params, defaults, "max_history_records"), "max_history_records"), 0)
 
     mode = FPCoupledSDEActiveObjects.normalize_mode(get(params, "mode", get(params, "simulation_mode", defaults["mode"])))
+    seed = isnothing(seed_override) ? to_int(get_value(params, defaults, "seed"), "seed") : Int(seed_override)
+
     return CoupledSDEParam(
         mode=mode,
         L=L,
@@ -193,7 +199,7 @@ function build_param(params, defaults)
         n_bins=n_bins,
         max_history_records=max_history_records,
         save_raw_history=to_bool(get_value(params, defaults, "save_raw_history"), "save_raw_history"),
-        seed=to_int(get_value(params, defaults, "seed"), "seed"),
+        seed=seed,
         description=String(get_value(params, defaults, "description")),
     )
 end
@@ -316,7 +322,7 @@ function write_summary(path::AbstractString, result::Dict, output_path::Abstract
         println(io, "mode=$(result["mode"])")
         println(io, "sample_count=$(result["sample_count"])")
         params = result["parameters"]
-        for key in ["L", "rho0", "N", "D0", "dt", "mu_bath", "mu_obj", "f0", "sigma_f", "separation", "hard_min_separation", "hard_min_separation_over_sigma_f", "n_steps", "warmup_steps", "sample_interval"]
+        for key in ["L", "rho0", "N", "D0", "dt", "mu_bath", "mu_obj", "f0", "sigma_f", "profile_type", "separation", "hard_min_separation", "hard_min_separation_over_sigma_f", "n_steps", "warmup_steps", "sample_interval", "seed"]
             haskey(params, key) || continue
             println(io, "$(key)=$(params[key])")
         end
@@ -468,7 +474,7 @@ function main()
     args = parse_commandline()
     defaults = get_default_params()
     params = YAML.load_file(String(args["config"]))
-    param = build_param(params, defaults)
+    param = build_param(params, defaults; seed_override=get(args, "seed", nothing))
     hard_min_separation = get_hard_min_separation(params, defaults, param)
     performance_mode = performance_mode_from_params(args, params, defaults)
     initial_state_path = get(args, "initial_state", nothing)
@@ -539,6 +545,8 @@ function main()
         "wall_time_seconds" => elapsed,
         "saved_at" => Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),
         "runner" => "run_coupled_sde_active_objects.jl",
+        "rng_type" => "MersenneTwister",
+        "seed" => param.seed,
         "initial_state_path" => isnothing(initial_state_path) ? nothing : abspath(String(initial_state_path)),
         "resume_checkpoint_path" => isnothing(resume_checkpoint_path) ? nothing : abspath(String(resume_checkpoint_path)),
         "checkpoint_path" => isempty(checkpoint_path) ? nothing : abspath(checkpoint_path),

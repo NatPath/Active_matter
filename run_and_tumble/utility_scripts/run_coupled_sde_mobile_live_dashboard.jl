@@ -53,13 +53,34 @@ function parse_commandline()
             arg_type = Float64
             default = 1.0
         "--sigma_f"
-            help = "Localized force-profile width"
+            help = "Localized force-profile radius. For compact_bump, full support width is 2*sigma_f"
             arg_type = Float64
             default = 0.25
+        "--profile_type"
+            help = "Force profile: gaussian or compact_bump"
+            arg_type = String
+            default = "gaussian"
+        "--hard_min_separation"
+            help = "Absolute hard minimum object separation; 0 disables hard exclusion"
+            arg_type = Float64
+            default = 0.0
+        "--hard_min_separation_sigma"
+            help = "Hard minimum object separation in units of sigma_f"
+            arg_type = Float64
         "--separation"
             help = "Initial object separation"
             arg_type = Float64
             default = 0.5
+        "--random_initial_objects"
+            help = "Randomize initial object positions and initial minimum separation"
+            action = :store_true
+        "--initial_min_separation"
+            help = "Minimum initial object separation when --random_initial_objects is set"
+            arg_type = Float64
+            default = 0.0
+        "--initial_max_separation"
+            help = "Maximum initial object separation when --random_initial_objects is set; default L/2"
+            arg_type = Float64
         "--n_steps"
             help = "Production steps to run"
             arg_type = Int
@@ -146,8 +167,11 @@ function build_param(args)
         mu_obj=Float64(args["mu_obj"]),
         f0=Float64(args["f0"]),
         sigma_f=Float64(args["sigma_f"]),
-        profile_type="gaussian",
+        profile_type=String(args["profile_type"]),
         separation=Float64(args["separation"]),
+        random_initial_objects=Bool(args["random_initial_objects"]),
+        initial_min_separation=Float64(args["initial_min_separation"]),
+        initial_max_separation=isnothing(args["initial_max_separation"]) ? nothing : Float64(args["initial_max_separation"]),
         n_steps=max(Int(args["n_steps"]), 0),
         warmup_steps=max(Int(args["warmup_steps"]), 0),
         sample_interval=max(Int(args["sample_interval"]), 1),
@@ -168,7 +192,24 @@ function validate_param(param::CoupledSDEParam)
     param.dt > 0 || error("dt must be positive.")
     param.sigma_f > 0 || error("sigma_f must be positive.")
     0.0 <= param.separation <= 0.5 * param.L || error("separation must be in [0, L/2].")
+    if param.random_initial_objects
+        max_sep = isnothing(param.initial_max_separation) ? param.L / 2 : Float64(param.initial_max_separation)
+        0.0 <= param.initial_min_separation <= max_sep <= param.L / 2 ||
+            error("Random initial separations require 0 <= initial_min_separation <= initial_max_separation <= L/2.")
+    end
     return true
+end
+
+function hard_min_from_args(args, param::CoupledSDEParam)
+    hard_abs = Float64(args["hard_min_separation"])
+    hard_sigma = args["hard_min_separation_sigma"]
+    if hard_abs > 0.0 && !isnothing(hard_sigma)
+        error("Use only one of --hard_min_separation or --hard_min_separation_sigma.")
+    end
+    hard = isnothing(hard_sigma) ? hard_abs : Float64(hard_sigma) * param.sigma_f
+    hard >= 0.0 || error("hard_min_separation must be nonnegative.")
+    hard <= 0.5 * param.L || error("hard_min_separation must be <= L/2. Got $(hard), L=$(param.L).")
+    return hard
 end
 
 function compatible_resume!(saved::CoupledSDEParam, current::CoupledSDEParam, path::AbstractString)
@@ -257,6 +298,11 @@ function finite_max(values::AbstractVector{Float64}, fallback::Float64)
         end
     end
     return isfinite(best) ? best : fallback
+end
+
+function compact_support_width(param::CoupledSDEParam)
+    profile = lowercase(strip(param.profile_type))
+    return profile in ("bump", "compact_bump", "compact") ? 2.0 * param.sigma_f : NaN
 end
 
 function push_limited!(values::Vector{Float64}, value::Real, limit::Integer)
@@ -404,7 +450,7 @@ function plot_signal_trace(trace, param::CoupledSDEParam)
     return p
 end
 
-function state_panel(state::CoupledSDEState, param::CoupledSDEParam, stats::FPCoupledSDEActiveObjects.MobileStats, density_stats::DensityFieldStats, production_step::Integer, elapsed::Real)
+function state_panel(state::CoupledSDEState, param::CoupledSDEParam, stats::FPCoupledSDEActiveObjects.MobileStats, density_stats::DensityFieldStats, production_step::Integer, elapsed::Real, hard_min_separation::Real)
     d_oriented = oriented_separation(state.XA, state.XB, param.L)
     d_min = minimum_separation(state.XA, state.XB, param.L)
     steps_per_second = elapsed > 0 ? production_step / elapsed : NaN
@@ -420,7 +466,9 @@ function state_panel(state::CoupledSDEState, param::CoupledSDEParam, stats::FPCo
         @sprintf("L, N, rho      %.3g, %d, %.3g", param.L, param.N, param.N / param.L),
         @sprintf("rho inst mean/max %.3g, %.3g", vector_mean(density_stats.current_density), finite_max(density_stats.current_density, NaN)),
         @sprintf("rho avg  mean/max %.3g, %.3g", vector_mean(density_avg), finite_max(density_avg, NaN)),
+        @sprintf("profile        %s", param.profile_type),
         @sprintf("dt, sigma_f    %.2e, %.3g", param.dt, param.sigma_f),
+        @sprintf("hard min       %.4g", Float64(hard_min_separation)),
         @sprintf("mu_bath/obj    %.3g, %.3g", param.mu_bath, param.mu_obj),
         @sprintf("X_A, X_B       %.4f, %.4f", state.XA, state.XB),
         @sprintf("sep orient/min %.4f, %.4f", d_oriented, d_min),
@@ -444,7 +492,7 @@ function state_panel(state::CoupledSDEState, param::CoupledSDEParam, stats::FPCo
     return p
 end
 
-function write_summary(path::AbstractString, state::CoupledSDEState, param::CoupledSDEParam, stats::FPCoupledSDEActiveObjects.MobileStats, density_stats::DensityFieldStats, production_step::Integer, elapsed::Real)
+function write_summary(path::AbstractString, state::CoupledSDEState, param::CoupledSDEParam, stats::FPCoupledSDEActiveObjects.MobileStats, density_stats::DensityFieldStats, production_step::Integer, elapsed::Real, hard_min_separation::Real)
     density_avg = average_density_field(density_stats)
     open(path, "w") do io
         println(io, "result_type=coupled_sde_mobile_live_dashboard")
@@ -467,6 +515,9 @@ function write_summary(path::AbstractString, state::CoupledSDEState, param::Coup
         println(io, "mu_obj=$(param.mu_obj)")
         println(io, "f0=$(param.f0)")
         println(io, "sigma_f=$(param.sigma_f)")
+        println(io, "profile_type=$(param.profile_type)")
+        println(io, "compact_bump_support_width=$(compact_support_width(param))")
+        println(io, "hard_min_separation=$(Float64(hard_min_separation))")
         println(io, "XA=$(state.XA)")
         println(io, "XB=$(state.XB)")
         println(io, "minimum_separation=$(minimum_separation(state.XA, state.XB, param.L))")
@@ -560,9 +611,9 @@ function write_html(path::AbstractString, png_name::AbstractString, summary_name
     return path
 end
 
-function save_dashboard(path::AbstractString, state::CoupledSDEState, param::CoupledSDEParam, stats::FPCoupledSDEActiveObjects.MobileStats, density_stats::DensityFieldStats, trace, production_step::Integer, elapsed::Real)
+function save_dashboard(path::AbstractString, state::CoupledSDEState, param::CoupledSDEParam, stats::FPCoupledSDEActiveObjects.MobileStats, density_stats::DensityFieldStats, trace, production_step::Integer, elapsed::Real, hard_min_separation::Real)
     p_density = plot_density_panel(state, param, density_stats)
-    p_state = state_panel(state, param, stats, density_stats, production_step, elapsed)
+    p_state = state_panel(state, param, stats, density_stats, production_step, elapsed, hard_min_separation)
     p_distance = plot_distance_pdf(stats, state, param)
     p_location = plot_location_pdf(stats, state, param)
     p_positions = plot_position_trace(trace, param)
@@ -614,6 +665,7 @@ function save_checkpoint(
     trace,
     rng::AbstractRNG,
     production_step::Integer,
+    hard_min_separation::Real,
 )
     tmp = replace(path, r"\.jld2$" => ".tmp.jld2")
     jldsave(
@@ -626,12 +678,13 @@ function save_checkpoint(
         trace=trace,
         rng=rng,
         production_step=Int(production_step),
+        hard_min_separation=Float64(hard_min_separation),
     )
     mv(tmp, path; force=true)
     return path
 end
 
-function load_checkpoint(path::AbstractString, current_param::CoupledSDEParam)
+function load_checkpoint(path::AbstractString, current_param::CoupledSDEParam, hard_min_separation::Real)
     data = JLD2.load(path)
     get(data, "result_type", "") == "coupled_sde_mobile_live_checkpoint" ||
         error("Not a coupled-SDE mobile live checkpoint: $path")
@@ -640,18 +693,23 @@ function load_checkpoint(path::AbstractString, current_param::CoupledSDEParam)
     end
     saved_param = data["param"]
     compatible_resume!(saved_param, current_param, path)
+    if haskey(data, "hard_min_separation")
+        saved_hard_min = Float64(data["hard_min_separation"])
+        isapprox(saved_hard_min, Float64(hard_min_separation); rtol=1.0e-10, atol=1.0e-12) ||
+            error("Checkpoint hard_min_separation=$(saved_hard_min) does not match current hard_min_separation=$(Float64(hard_min_separation)) in $path.")
+    end
     trace = get(data, "trace", fresh_trace(current_param))
     return data["state"], data["stats"], data["density_stats"], trace, data["rng"], Int(data["production_step"])
 end
 
-function write_live_outputs(out_dir::AbstractString, state::CoupledSDEState, param::CoupledSDEParam, stats::FPCoupledSDEActiveObjects.MobileStats, density_stats::DensityFieldStats, trace, production_step::Integer, elapsed::Real)
+function write_live_outputs(out_dir::AbstractString, state::CoupledSDEState, param::CoupledSDEParam, stats::FPCoupledSDEActiveObjects.MobileStats, density_stats::DensityFieldStats, trace, production_step::Integer, elapsed::Real, hard_min_separation::Real)
     png_path = joinpath(out_dir, "live_dashboard.png")
     summary_path = joinpath(out_dir, "live_summary.txt")
     csv_path = joinpath(out_dir, "live_distributions.csv")
     density_csv_path = joinpath(out_dir, "live_density_field.csv")
     html_path = joinpath(out_dir, "index.html")
-    save_dashboard(png_path, state, param, stats, density_stats, trace, production_step, elapsed)
-    write_summary(summary_path, state, param, stats, density_stats, production_step, elapsed)
+    save_dashboard(png_path, state, param, stats, density_stats, trace, production_step, elapsed, hard_min_separation)
+    write_summary(summary_path, state, param, stats, density_stats, production_step, elapsed, hard_min_separation)
     write_distributions_csv(csv_path, stats)
     write_density_csv(density_csv_path, density_stats)
     write_html(html_path, basename(png_path), basename(summary_path))
@@ -662,6 +720,7 @@ function main()
     args = parse_commandline()
     param = build_param(args)
     validate_param(param)
+    hard_min_separation = hard_min_from_args(args, param)
     resume_checkpoint = args["resume_checkpoint"]
 
     out_dir = if !isnothing(args["out_dir"])
@@ -691,7 +750,7 @@ function main()
         trace = fresh_trace(param)
     else
         state, stats, density_stats, trace, rng, start_production_step =
-            load_checkpoint(abspath(String(resume_checkpoint)), param)
+            load_checkpoint(abspath(String(resume_checkpoint)), param, hard_min_separation)
     end
     work = SDEWork(param.N)
     target_production_step = if !isnothing(resume_checkpoint) && !isnothing(args["additional_steps"])
@@ -708,7 +767,10 @@ function main()
         println("  resumed_production_step=$(start_production_step)")
     end
     println("  L=$(param.L), rho0=$(param.N / param.L), N=$(param.N)")
-    println("  sigma_f=$(param.sigma_f), f0=$(param.f0), dt=$(param.dt), n_bins=$(param.n_bins)")
+    println("  profile_type=$(param.profile_type), sigma_f=$(param.sigma_f), support_width=$(compact_support_width(param))")
+    println("  hard_min_separation=$(hard_min_separation)")
+    println("  f0=$(param.f0), dt=$(param.dt), n_bins=$(param.n_bins)")
+    println("  random_initial_objects=$(param.random_initial_objects), initial_min=$(param.initial_min_separation), initial_max=$(isnothing(param.initial_max_separation) ? param.L / 2 : param.initial_max_separation)")
     println("  warmup_steps=$(isnothing(resume_checkpoint) ? param.warmup_steps : 0), target_production_step=$(target_production_step), sample_interval=$(param.sample_interval)")
     println("  plot_interval_steps=$(args["plot_interval_steps"]), min_plot_interval_seconds=$(args["min_plot_interval_seconds"])")
     println("  live plot: $(joinpath(out_dir, "live_dashboard.png"))")
@@ -718,7 +780,7 @@ function main()
     start_time = time()
     if isnothing(resume_checkpoint)
         for step_idx in 1:param.warmup_steps
-            step_mobile_objects!(state, param, rng, work)
+            step_mobile_objects_hard_minimum!(state, param, rng, work, hard_min_separation)
             if step_idx == param.warmup_steps || step_idx % max(Int(args["progress_interval_steps"]), 1) == 0
                 @printf("warmup step %d / %d, elapsed %.1fs\n", step_idx, param.warmup_steps, time() - start_time)
                 flush(stdout)
@@ -736,7 +798,7 @@ function main()
 
     if target_production_step > start_production_step
         for production_step in (start_production_step + 1):target_production_step
-            obs = step_mobile_objects!(state, param, rng, work)
+            obs = step_mobile_objects_hard_minimum!(state, param, rng, work, hard_min_separation)
             FPCoupledSDEActiveObjects.accumulate!(stats, obs, state, param, production_step)
             if production_step % param.sample_interval == 0
                 accumulate_density_field!(density_stats, state, param)
@@ -749,8 +811,8 @@ function main()
             is_final = production_step == target_production_step
 
             if should_plot || is_final
-                png_path = write_live_outputs(out_dir, state, param, stats, density_stats, trace, production_step, now_time - start_time)
-                save_checkpoint(checkpoint_path, param, state, stats, density_stats, trace, rng, production_step)
+                png_path = write_live_outputs(out_dir, state, param, stats, density_stats, trace, production_step, now_time - start_time, hard_min_separation)
+                save_checkpoint(checkpoint_path, param, state, stats, density_stats, trace, rng, production_step, hard_min_separation)
                 wrote_final_outputs = is_final
                 last_plot_step = production_step
                 last_plot_time = now_time
@@ -765,8 +827,8 @@ function main()
 
     if !wrote_final_outputs
         elapsed_now = time() - start_time
-        png_path = write_live_outputs(out_dir, state, param, stats, density_stats, trace, start_production_step, elapsed_now)
-        save_checkpoint(checkpoint_path, param, state, stats, density_stats, trace, rng, start_production_step)
+        png_path = write_live_outputs(out_dir, state, param, stats, density_stats, trace, start_production_step, elapsed_now, hard_min_separation)
+        save_checkpoint(checkpoint_path, param, state, stats, density_stats, trace, rng, start_production_step, hard_min_separation)
         @printf("updated %s at step %d, samples %d, elapsed %.1fs\n", png_path, start_production_step, stats.sample_count, elapsed_now)
         flush(stdout)
     end
@@ -778,6 +840,6 @@ function main()
     println("  elapsed_seconds=$(round(elapsed, digits=3))")
 end
 
-if abspath(PROGRAM_FILE) == @__FILE__
+if abspath(PROGRAM_FILE) == abspath(@__FILE__)
     main()
 end

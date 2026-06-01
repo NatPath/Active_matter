@@ -14,7 +14,8 @@ Options:
   -h, --help             Show this help.
 
 Environment overrides:
-  L, RHO0, DT, D0, MU_BATH, MU_OBJ, F0, SIGMA_F
+  L, RHO0, DT, D0, MU_BATH, MU_OBJ, F0, SIGMA_F, PROFILE_TYPE
+  HARD_MIN_SEPARATION, HARD_MIN_SEPARATION_SIGMA
   SAMPLE_INTERVAL, WARMUP_FRACTION, TARGET_UTILIZATION
   PARTICLE_UPDATES_PER_SECOND
   N_BINS, HISTORY_INTERVAL, MAX_HISTORY_RECORDS, SAVE_RAW_HISTORY
@@ -99,6 +100,9 @@ MU_BATH="${MU_BATH:-1.0}"
 MU_OBJ="${MU_OBJ:-0.0015}"
 F0="${F0:-1.5}"
 SIGMA_F="${SIGMA_F:-1.5}"
+PROFILE_TYPE="${PROFILE_TYPE:-gaussian}"
+HARD_MIN_SEPARATION="${HARD_MIN_SEPARATION:-}"
+HARD_MIN_SEPARATION_SIGMA="${HARD_MIN_SEPARATION_SIGMA:-}"
 SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-20}"
 WARMUP_FRACTION="${WARMUP_FRACTION:-0.25}"
 TARGET_UTILIZATION="${TARGET_UTILIZATION:-0.88}"
@@ -141,8 +145,12 @@ computed_values="$(awk \
         target_seconds = target_hours * 3600.0 * util
         total_steps = int(target_seconds * updates_per_second / n_particles)
         if (total_steps < 200000) total_steps = 200000
-        warmup_steps = int(total_steps * warmup_fraction)
-        if (warmup_steps < 100000) warmup_steps = 100000
+        if (warmup_fraction <= 0.0) {
+            warmup_steps = 0
+        } else {
+            warmup_steps = int(total_steps * warmup_fraction)
+            if (warmup_steps < 100000) warmup_steps = 100000
+        }
         production_steps = total_steps - warmup_steps
         if (production_steps < 100000) production_steps = 100000
         printf "%d %d %d %.1f", total_steps, warmup_steps, production_steps, target_seconds
@@ -170,7 +178,13 @@ echo "Preparing coupled-SDE two-mobile-object 600-CPU run"
 echo "  run_id=${run_id}"
 echo "  L=${L}, rho0=${RHO0}, N=${N_PARTICLES}"
 echo "  replicas=${total_cpus}, request_cpus=${REQUEST_CPUS}"
-echo "  mu_obj=${MU_OBJ}, f0=${F0}, sigma_f=${SIGMA_F}"
+echo "  mu_obj=${MU_OBJ}, f0=${F0}, sigma_f=${SIGMA_F}, profile_type=${PROFILE_TYPE}"
+if [[ -n "${HARD_MIN_SEPARATION}" ]]; then
+    echo "  hard_min_separation=${HARD_MIN_SEPARATION}"
+fi
+if [[ -n "${HARD_MIN_SEPARATION_SIGMA}" ]]; then
+    echo "  hard_min_separation_sigma=${HARD_MIN_SEPARATION_SIGMA}"
+fi
 echo "  random_initial_objects=${RANDOM_INITIAL_OBJECTS}, initial_min=${INITIAL_MIN_SEPARATION}, initial_max=${INITIAL_MAX_SEPARATION}"
 echo "  target_hours=${target_hours}, target_utilization=${TARGET_UTILIZATION}"
 echo "  particle_updates_per_second=${PARTICLE_UPDATES_PER_SECOND}"
@@ -181,7 +195,8 @@ echo "  sample_interval=${SAMPLE_INTERVAL}, expected_samples_per_replica=$((PROD
 echo "  n_bins=${N_BINS}"
 echo "  save_raw_history=${SAVE_RAW_HISTORY}, checkpoint_interval_steps=${CHECKPOINT_INTERVAL_STEPS}"
 
-export L RHO0 D0 DT MU_BATH F0 SIGMA_F SAMPLE_INTERVAL
+export L RHO0 D0 DT MU_BATH F0 SIGMA_F PROFILE_TYPE SAMPLE_INTERVAL
+export HARD_MIN_SEPARATION HARD_MIN_SEPARATION_SIGMA
 export WARMUP_STEPS PRODUCTION_STEPS N_BINS HISTORY_INTERVAL MAX_HISTORY_RECORDS SAVE_RAW_HISTORY
 export INITIAL_SEPARATION RANDOM_INITIAL_OBJECTS INITIAL_MIN_SEPARATION INITIAL_MAX_SEPARATION
 export MU_OBJ_VALUES_CSV="${MU_OBJ}"
