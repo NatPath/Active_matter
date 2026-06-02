@@ -152,6 +152,15 @@ aggregate_error_file="${log_dir}/coupled_sde_mobile_aggregate.err"
 aggregate_log_file="${log_dir}/coupled_sde_mobile_aggregate.log"
 aggregate_save_tag="aggregated_${run_id}"
 
+replica_seed_base="${REPLICA_SEED_BASE:-}"
+if [[ -z "${replica_seed_base}" ]]; then
+    replica_seed_base="$(printf "%s" "${run_id}" | cksum | awk '{ v = $1 % 2147483000; if (v < 1) v += 1; printf "%d", v }')"
+fi
+if ! [[ "${replica_seed_base}" =~ ^[0-9]+$ ]] || (( replica_seed_base <= 0 )); then
+    echo "REPLICA_SEED_BASE must be a positive integer. Got '${replica_seed_base}'."
+    exit 1
+fi
+
 mkdir -p "${runtime_config_dir}" "${submit_dir}" "${log_dir}" "${state_dir}" "${checkpoint_dir}" "${analysis_dir}"
 
 awk \
@@ -182,17 +191,18 @@ awk \
     }' "${config_path}" > "${runtime_config}"
 
 : > "${dag_file}"
-echo "job_type,job_name,config_path,submit_file,output_file,error_file,log_file,save_tag,checkpoint_file" > "${manifest}"
+echo "job_type,job_name,config_path,submit_file,output_file,error_file,log_file,save_tag,checkpoint_file,seed" > "${manifest}"
 
 for ((replica_idx = 1; replica_idx <= num_replicas; replica_idx++)); do
     job_id="R${replica_idx}"
     replica_tag="replica_${run_id}_r${replica_idx}"
+    replica_seed=$(( (replica_seed_base + replica_idx - 2) % 2147483646 + 1 ))
     checkpoint_file="${checkpoint_dir}/${replica_tag}.checkpoint.jld2"
     submit_file="${submit_dir}/mobile_r${replica_idx}.sub"
     output_file="${log_dir}/mobile_r${replica_idx}.out"
     error_file="${log_dir}/mobile_r${replica_idx}.err"
     log_file="${log_dir}/mobile_r${replica_idx}.log"
-    runner_arguments="${RUNNER_SCRIPT} ${runtime_config} --save_tag ${replica_tag} --performance_mode"
+    runner_arguments="${RUNNER_SCRIPT} ${runtime_config} --save_tag ${replica_tag} --performance_mode --seed ${replica_seed}"
     if (( checkpoint_interval_steps > 0 )); then
         runner_arguments="${runner_arguments} --checkpoint_path ${checkpoint_file} --checkpoint_interval_steps ${checkpoint_interval_steps}"
     fi
@@ -213,8 +223,8 @@ queue
 EOF
 
     printf "JOB %s %s\n" "${job_id}" "${submit_file}" >> "${dag_file}"
-    printf "replica,%s,%s,%s,%s,%s,%s,%s,%s\n" \
-        "${job_id}" "${runtime_config}" "${submit_file}" "${output_file}" "${error_file}" "${log_file}" "${replica_tag}" "${checkpoint_file}" >> "${manifest}"
+    printf "replica,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+        "${job_id}" "${runtime_config}" "${submit_file}" "${output_file}" "${error_file}" "${log_file}" "${replica_tag}" "${checkpoint_file}" "${replica_seed}" >> "${manifest}"
 done
 
 cat > "${aggregate_submit_file}" <<EOF
@@ -233,8 +243,8 @@ queue
 EOF
 
 printf "FINAL AGG %s\n" "${aggregate_submit_file}" >> "${dag_file}"
-printf "aggregate,AGG,%s,%s,%s,%s,%s,%s,%s\n" \
-    "${runtime_config}" "${aggregate_submit_file}" "${aggregate_output_file}" "${aggregate_error_file}" "${aggregate_log_file}" "${aggregate_save_tag}" "" >> "${manifest}"
+printf "aggregate,AGG,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+    "${runtime_config}" "${aggregate_submit_file}" "${aggregate_output_file}" "${aggregate_error_file}" "${aggregate_log_file}" "${aggregate_save_tag}" "" "" >> "${manifest}"
 
 dag_append_post_notification_script "${dag_file}" "AGG" "${submit_dir}" "${log_dir}" "${run_root}" "${run_id}" "coupled_sde_mobile_objects" "${REPO_ROOT}"
 
@@ -256,6 +266,9 @@ request_cpus=${request_cpus}
 request_memory=${request_memory}
 aggregate_request_cpus=${aggregate_request_cpus}
 checkpoint_interval_steps=${checkpoint_interval_steps}
+replica_seed_base=${replica_seed_base}
+replica_seed_rule=seed(replica_idx)=((replica_seed_base + replica_idx - 2) % 2147483646) + 1
+rng_type=MersenneTwister
 dag_file=${dag_file}
 aggregate_save_tag=${aggregate_save_tag}
 dag_notification_status_log=${DAG_NOTIFICATION_STATUS_LOG}

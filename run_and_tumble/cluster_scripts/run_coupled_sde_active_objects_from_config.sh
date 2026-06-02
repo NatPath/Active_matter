@@ -25,6 +25,9 @@ shift || true
 EXTRA_ARGS=("$@")
 
 JULIA_SETUP_SCRIPT="${JULIA_SETUP_SCRIPT:-${CLUSTER_JULIA_SETUP_SCRIPT:-}}"
+if [[ -z "${JULIA_SETUP_SCRIPT}" && -f "/Local/ph_kafri/julia-1.7.2/bin/setup.sh" ]]; then
+    JULIA_SETUP_SCRIPT="/Local/ph_kafri/julia-1.7.2/bin/setup.sh"
+fi
 if [[ -n "${JULIA_SETUP_SCRIPT}" && -f "${JULIA_SETUP_SCRIPT}" ]]; then
     # shellcheck disable=SC1090
     source "${JULIA_SETUP_SCRIPT}"
@@ -32,8 +35,9 @@ fi
 
 JULIA_BIN="${JULIA_BIN:-julia}"
 if ! command -v "${JULIA_BIN}" >/dev/null 2>&1; then
-    echo "Julia executable '${JULIA_BIN}' not found in PATH."
-    echo "Tried setup script: ${JULIA_SETUP_SCRIPT}"
+    echo "Julia executable '${JULIA_BIN}' not found in PATH." >&2
+    echo "Tried setup script: ${JULIA_SETUP_SCRIPT}" >&2
+    echo "Set JULIA_BIN or CLUSTER_JULIA_SETUP_SCRIPT in ${cluster_env_path}." >&2
     exit 127
 fi
 

@@ -14,7 +14,8 @@ Options:
   -h, --help                   Show this help.
 
 Environment overrides:
-  L, RHO0, DT, D0, MU_BATH, MU_OBJ, F0, SIGMA_F
+  L, RHO0, DT, D0, MU_BATH, MU_OBJ, F0, SIGMA_F, PROFILE_TYPE
+  HARD_MIN_SEPARATION, HARD_MIN_SEPARATION_SIGMA
   SAMPLE_INTERVAL, WARMUP_FRACTION, TARGET_UTILIZATION
   PARTICLE_UPDATES_PER_SECOND
   N_BINS, HISTORY_INTERVAL, MAX_HISTORY_RECORDS, SAVE_RAW_HISTORY
@@ -101,6 +102,9 @@ MU_BATH="${MU_BATH:-1.0}"
 MU_OBJ="${MU_OBJ:-0.0015}"
 F0="${F0:-1.5}"
 SIGMA_F="${SIGMA_F:-1.5}"
+PROFILE_TYPE="${PROFILE_TYPE:-gaussian}"
+HARD_MIN_SEPARATION="${HARD_MIN_SEPARATION:-}"
+HARD_MIN_SEPARATION_SIGMA="${HARD_MIN_SEPARATION_SIGMA:-}"
 SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-20}"
 WARMUP_FRACTION="${WARMUP_FRACTION:-0.20}"
 TARGET_UTILIZATION="${TARGET_UTILIZATION:-0.85}"
@@ -156,7 +160,13 @@ echo "Preparing coupled-SDE mobile-object signal run"
 echo "  run_id=${run_id}"
 echo "  L=${L}, rho0=${RHO0}, N=${N_PARTICLES}"
 echo "  replicas=${num_replicas}"
-echo "  mu_obj=${MU_OBJ}"
+echo "  mu_obj=${MU_OBJ}, f0=${F0}, sigma_f=${SIGMA_F}, profile_type=${PROFILE_TYPE}"
+if [[ -n "${HARD_MIN_SEPARATION}" ]]; then
+    echo "  hard_min_separation=${HARD_MIN_SEPARATION}"
+fi
+if [[ -n "${HARD_MIN_SEPARATION_SIGMA}" ]]; then
+    echo "  hard_min_separation_sigma=${HARD_MIN_SEPARATION_SIGMA}"
+fi
 echo "  random_initial_objects=${RANDOM_INITIAL_OBJECTS}, initial_min=${INITIAL_MIN_SEPARATION}, initial_max=${INITIAL_MAX_SEPARATION}"
 echo "  target_hours=${target_hours}, target_utilization=${TARGET_UTILIZATION}"
 echo "  particle_updates_per_second=${PARTICLE_UPDATES_PER_SECOND}"
@@ -165,7 +175,8 @@ echo "  warmup_steps=${WARMUP_STEPS}"
 echo "  production_steps=${PRODUCTION_STEPS}"
 echo "  sample_interval=${SAMPLE_INTERVAL}, n_bins=${N_BINS}"
 
-export L RHO0 D0 DT MU_BATH F0 SIGMA_F SAMPLE_INTERVAL
+export L RHO0 D0 DT MU_BATH F0 SIGMA_F PROFILE_TYPE SAMPLE_INTERVAL
+export HARD_MIN_SEPARATION HARD_MIN_SEPARATION_SIGMA
 export WARMUP_STEPS PRODUCTION_STEPS N_BINS HISTORY_INTERVAL MAX_HISTORY_RECORDS SAVE_RAW_HISTORY
 export INITIAL_SEPARATION RANDOM_INITIAL_OBJECTS INITIAL_MIN_SEPARATION INITIAL_MAX_SEPARATION
 export MU_OBJ_VALUES_CSV="${MU_OBJ}"
