@@ -284,10 +284,10 @@ function occupancy_state_from_components(
     )
 end
 
-function setOccupancyState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64, param.dims)), bond_force=Potentials.setBondForce(([1], [2]), true, 0.0);
+function setOccupancyState(t, rng, param, T, potential=Potentials.setPotential(zeros(Float64, param.dims)), bond_force=BondForce[];
                            ic="random", full_corr_tensor=false, int_type::Type{<:Signed}=Int32,
                            keep_directional_densities::Bool=false,
-                           bond_pass_count_mode::AbstractString="nonzero_magnitude")
+                           bond_pass_count_mode::AbstractString="none")
     N = param.N
     N > typemax(int_type) && throw(ArgumentError("Requested density int_type $(int_type) cannot represent max site occupancy N=$(N)."))
 
@@ -307,8 +307,11 @@ function setOccupancyState(t, rng, param, T, potential=Potentials.setPotential(z
     else
         throw(ArgumentError("bond_force must be BondForce or Vector{BondForce}"))
     end
+    validate_bond_passage_mode(bond_forces, String(bond_pass_count_mode))
     track_mask = bond_pass_track_mask_for_forcings(bond_forces, String(bond_pass_count_mode))
-    initialize_bond_passage_stats!(bond_pass_stats, length(bond_forces); track_mask=track_mask)
+    initialize_bond_passage_stats!(bond_pass_stats, length(bond_forces);
+                                   track_mask=track_mask,
+                                   collection_enabled=String(bond_pass_count_mode) != "none")
     if ndims(ρ) == 1
         initialize_spatial_bond_passage_stats!(bond_pass_stats, param.dims[1])
     end
@@ -357,13 +360,17 @@ function reset_statistics!(state::OccupancyState)
     end
 
     forcings = get_state_forcings!(state)
+    collection_enabled = bond_passage_collection_enabled(state.bond_pass_stats)
     existing_mask = if haskey(state.bond_pass_stats, BOND_PASS_TRACK_MASK_KEY) &&
                        length(state.bond_pass_stats[BOND_PASS_TRACK_MASK_KEY]) == length(forcings)
         Float64.(state.bond_pass_stats[BOND_PASS_TRACK_MASK_KEY])
     else
-        bond_pass_track_mask_for_forcings(forcings, "nonzero_magnitude")
+        default_mode = collection_enabled ? "nonzero_magnitude" : "none"
+        bond_pass_track_mask_for_forcings(forcings, default_mode)
     end
-    initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings); track_mask=existing_mask)
+    initialize_bond_passage_stats!(state.bond_pass_stats, length(forcings);
+                                   track_mask=existing_mask,
+                                   collection_enabled=collection_enabled)
     if dim == 1
         initialize_spatial_bond_passage_stats!(state.bond_pass_stats, size(state.ρ, 1))
     end
@@ -383,17 +390,25 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
         forcings = get_state_forcings!(state)
         n_forces = length(forcings)
         scheme = forcing_rate_scheme(param)
-        rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
+        max_force_magnitude = max_forcing_magnitude_per_bond(forcings)
+        has_rate_forcing = max_force_magnitude > 0.0
+        has_force_flips = has_force_fluctuations(forcings, ffrs)
+        rate_normalization = hop_rate_normalization(param.D, max_force_magnitude, scheme)
         L = param.dims[1]
         scratch = runtime_scratch!(state)
         left_neighbors, right_neighbors = periodic_neighbors_1d!(state, L)
-        ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
-        tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-        sweep_forward_counts = cached_int_buffer!(scratch, :bond_forward_counts_1d, n_forces)
-        sweep_reverse_counts = cached_int_buffer!(scratch, :bond_reverse_counts_1d, n_forces)
-        ensure_spatial_bond_passage_stats!(state, L)
-        sweep_spatial_forward_counts = cached_int_buffer!(scratch, :spatial_forward_counts_1d, L)
-        sweep_spatial_reverse_counts = cached_int_buffer!(scratch, :spatial_reverse_counts_1d, L)
+        track_bond_passages = collect_statistics && n_forces > 0 && bond_passage_collection_enabled(state.bond_pass_stats)
+        if track_bond_passages
+            ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
+        end
+        tracked_force_indices = track_bond_passages ? tracked_force_indices_from_state(state, n_forces) : Int[]
+        sweep_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_forward_counts_1d, n_forces) : Int64[]
+        sweep_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_reverse_counts_1d, n_forces) : Int64[]
+        if track_bond_passages
+            ensure_spatial_bond_passage_stats!(state, L)
+        end
+        sweep_spatial_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :spatial_forward_counts_1d, L) : Int64[]
+        sweep_spatial_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :spatial_reverse_counts_1d, L) : Int64[]
         t_end = state.t + 1
         t = state.t
         while t < t_end
@@ -423,7 +438,7 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
                 if benchmark
                     t2 = time_ns()
                 end
-                directed_bond_forcing = directed_bond_forcing_1d(forcings, spot_index, candidate_spot_index)
+                directed_bond_forcing = has_rate_forcing ? directed_bond_forcing_1d(forcings, spot_index, candidate_spot_index) : 0.0
                 if static_zero_potential
                     p_candidate = bond_rate_prefactor(param.D, directed_bond_forcing, rate_normalization, scheme)
                 else
@@ -456,9 +471,9 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
                                                 forcings, tracked_force_indices,
                                                 spot_index, candidate_spot_index)
                     end
-                    if action_index == 2 && candidate_spot_index == right_neighbors[spot_index]
+                    if track_bond_passages && action_index == 2 && candidate_spot_index == right_neighbors[spot_index]
                         sweep_spatial_forward_counts[spot_index] += 1
-                    elseif action_index == 1 && candidate_spot_index == left_neighbors[spot_index]
+                    elseif track_bond_passages && action_index == 1 && candidate_spot_index == left_neighbors[spot_index]
                         sweep_spatial_reverse_counts[candidate_spot_index] += 1
                     end
 
@@ -488,15 +503,18 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
                 end
             end
 
-            for force_idx in 1:n_forces
-                p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
-                if p_force > 1.0
-                    p_force = 1.0
-                elseif p_force < 0.0
-                    p_force = 0.0
-                end
-                if rand(rng) < p_force
-                    bondforce_update!(forcings[force_idx])
+            if has_force_flips
+                for force_idx in 1:n_forces
+                    abs(forcings[force_idx].magnitude) > 0.0 || continue
+                    p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
+                    if p_force > 1.0
+                        p_force = 1.0
+                    elseif p_force < 0.0
+                        p_force = 0.0
+                    end
+                    if rand(rng) < p_force
+                        bondforce_update!(forcings[force_idx])
+                    end
                 end
             end
 
@@ -508,7 +526,7 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
         end
 
         refresh_occupancy_sampler_after_sweep!(state)
-        if collect_statistics
+        if track_bond_passages
             update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
             update_spatial_bond_passage_averages!(state, sweep_spatial_forward_counts, sweep_spatial_reverse_counts)
         end
@@ -521,14 +539,20 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
         forcings = get_state_forcings!(state)
         n_forces = length(forcings)
         scheme = forcing_rate_scheme(param)
-        rate_normalization = hop_rate_normalization(param.D, max_forcing_magnitude_per_bond(forcings), scheme)
+        max_force_magnitude = max_forcing_magnitude_per_bond(forcings)
+        has_rate_forcing = max_force_magnitude > 0.0
+        has_force_flips = has_force_fluctuations(forcings, ffrs)
+        rate_normalization = hop_rate_normalization(param.D, max_force_magnitude, scheme)
         Lx, Ly = param.dims
         scratch = runtime_scratch!(state)
         left_x, right_x, down_y, up_y = periodic_neighbors_2d!(state, Lx, Ly)
-        ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
-        tracked_force_indices = tracked_force_indices_from_state(state, n_forces)
-        sweep_forward_counts = cached_int_buffer!(scratch, :bond_forward_counts_2d, n_forces)
-        sweep_reverse_counts = cached_int_buffer!(scratch, :bond_reverse_counts_2d, n_forces)
+        track_bond_passages = collect_statistics && n_forces > 0 && bond_passage_collection_enabled(state.bond_pass_stats)
+        if track_bond_passages
+            ensure_bond_passage_stats!(state, n_forces; forcings=forcings)
+        end
+        tracked_force_indices = track_bond_passages ? tracked_force_indices_from_state(state, n_forces) : Int[]
+        sweep_forward_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_forward_counts_2d, n_forces) : Int64[]
+        sweep_reverse_counts = track_bond_passages ? cached_int_buffer!(scratch, :bond_reverse_counts_2d, n_forces) : Int64[]
         t_end = state.t + 1
         t = state.t
         while t < t_end
@@ -573,7 +597,7 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
                 if benchmark
                     t2 = time_ns()
                 end
-                directed_bond_forcing = directed_bond_forcing_2d(forcings, (source_i, source_j), (cand_i, cand_j))
+                directed_bond_forcing = has_rate_forcing ? directed_bond_forcing_2d(forcings, (source_i, source_j), (cand_i, cand_j)) : 0.0
                 if static_zero_potential
                     p_cand = bond_rate_prefactor(param.D, directed_bond_forcing, rate_normalization, scheme)
                 else
@@ -633,15 +657,18 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
                 end
             end
 
-            for force_idx in 1:n_forces
-                p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
-                if p_force > 1.0
-                    p_force = 1.0
-                elseif p_force < 0.0
-                    p_force = 0.0
-                end
-                if rand(rng) < p_force
-                    bondforce_update!(forcings[force_idx])
+            if has_force_flips
+                for force_idx in 1:n_forces
+                    abs(forcings[force_idx].magnitude) > 0.0 || continue
+                    p_force = forcing_rate(ffrs, force_idx) / max(param.N, 1)
+                    if p_force > 1.0
+                        p_force = 1.0
+                    elseif p_force < 0.0
+                        p_force = 0.0
+                    end
+                    if rand(rng) < p_force
+                        bondforce_update!(forcings[force_idx])
+                    end
                 end
             end
 
@@ -653,7 +680,7 @@ function update!(param, state::OccupancyState, rng; benchmark=false, collect_sta
         end
 
         refresh_occupancy_sampler_after_sweep!(state)
-        if collect_statistics
+        if track_bond_passages
             update_bond_passage_averages!(state, sweep_forward_counts, sweep_reverse_counts)
         end
     else

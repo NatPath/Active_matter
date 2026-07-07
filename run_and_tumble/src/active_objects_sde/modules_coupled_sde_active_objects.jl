@@ -5,7 +5,7 @@ using Random: AbstractRNG, rand, randn
 export CoupledSDEParam, CoupledSDEState, SDEWork, StepObservables
 export FIXED_SEPARATION_MODE, MOBILE_OBJECTS_MODE
 export normalize_mode, initialize_state, initialize_uniform_bath!
-export wrap_position, minimal_image, oriented_separation, minimum_separation
+export wrap_position, minimal_image, oriented_separation, minimum_separation, pair_center_minimum_arc
 export profile_value, compute_profile_sums!, draw_sde_noises
 export step_fixed_separation!, step_mobile_objects!
 export enforce_hard_minimum_separation!, step_mobile_objects_hard_minimum!
@@ -203,6 +203,11 @@ end
     return min(d, Float64(L) - d)
 end
 
+@inline function pair_center_minimum_arc(XA::Real, XB::Real, L::Real)
+    signed_sep = minimal_image(Float64(XA) - Float64(XB), L)
+    return wrap_position(Float64(XB) + 0.5 * signed_sep, L)
+end
+
 @inline function profile_value(r::Real, param::CoupledSDEParam)
     sigma = param.sigma_f
     sigma > 0 || throw(ArgumentError("sigma_f must be positive. Got $(param.sigma_f)."))
@@ -214,8 +219,10 @@ end
         u = abs(rr) / sigma
         u >= 1.0 && return 0.0
         return param.f0 * exp(1.0 - 1.0 / (1.0 - u^2))
+    elseif profile in ("top_hat", "tophat", "box", "square", "constant_window")
+        return abs(rr) < sigma ? param.f0 : 0.0
     end
-    throw(ArgumentError("Unsupported profile_type=$(param.profile_type). Use gaussian or compact_bump."))
+    throw(ArgumentError("Unsupported profile_type=$(param.profile_type). Use gaussian, compact_bump, or top_hat."))
 end
 
 function default_object_positions(param::CoupledSDEParam, rng::AbstractRNG)
@@ -289,6 +296,49 @@ function compute_profile_sums!(
         SB += valB
     end
     return SA, SB
+end
+
+function compute_profile_sum(x::AbstractVector{Float64}, center::Real, param::CoupledSDEParam)
+    total = 0.0
+    @inbounds for i in eachindex(x)
+        total += profile_value(minimal_image(x[i] - center, param.L), param)
+    end
+    return total
+end
+
+function profile_integral(param::CoupledSDEParam; n_points::Integer=8192)
+    profile = lowercase(strip(param.profile_type))
+    if profile in ("top_hat", "tophat", "box", "square", "constant_window")
+        support = min(2.0 * param.sigma_f, param.L)
+        return support * param.f0
+    end
+
+    n = max(Int(n_points), 16)
+    dx = param.L / n
+    total = 0.0
+    @inbounds for i in 1:n
+        r = -0.5 * param.L + (i - 0.5) * dx
+        total += profile_value(r, param)
+    end
+    return total * dx
+end
+
+function profile_square_integral(param::CoupledSDEParam; n_points::Integer=8192)
+    profile = lowercase(strip(param.profile_type))
+    if profile in ("top_hat", "tophat", "box", "square", "constant_window")
+        support = min(2.0 * param.sigma_f, param.L)
+        return support * param.f0^2
+    end
+
+    n = max(Int(n_points), 16)
+    dx = param.L / n
+    total = 0.0
+    @inbounds for i in 1:n
+        r = -0.5 * param.L + (i - 0.5) * dx
+        value = profile_value(r, param)
+        total += value * value
+    end
+    return total * dx
 end
 
 function draw_sde_noises!(dWi::AbstractVector{Float64}, rng::AbstractRNG, dt::Real)
@@ -610,7 +660,7 @@ function accumulate!(stats::MobileStats, obs::StepObservables, state::CoupledSDE
 
         idxA = position_bin_index(stats, obs.XA, param.L)
         idxB = position_bin_index(stats, obs.XB, param.L)
-        center = wrap_position(0.5 * (state.XA_unwrapped + state.XB_unwrapped), param.L)
+        center = pair_center_minimum_arc(obs.XA, obs.XB, param.L)
         idxC = position_bin_index(stats, center, param.L)
         isnothing(idxA) || (stats.XA_histogram_counts[idxA] += 1.0)
         isnothing(idxB) || (stats.XB_histogram_counts[idxB] += 1.0)

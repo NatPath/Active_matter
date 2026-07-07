@@ -9,6 +9,9 @@ if get(ENV, "GKSwstype", "") == ""
 end
 using Plots
 
+const OUTSIDE_LEGEND = :outertopright
+const NORMAL_CI95 = 1.959963984540054
+
 const SCRIPT_DIR = @__DIR__
 const REPO_ROOT = normpath(joinpath(SCRIPT_DIR, ".."))
 
@@ -88,12 +91,18 @@ function resolve_inputs(args)
     return abspath.(find_jld2_files(String(args["state_dir"])))
 end
 
-function load_result(path::AbstractString)
+function load_result_and_metadata(path::AbstractString)
     data = JLD2.load(path)
     haskey(data, "result") || error("File does not contain a result dataset: $path")
     result = data["result"]
     get(result, "result_type", "") == "coupled_sde_mobile_objects" ||
         error("Expected coupled_sde_mobile_objects result in $path, got $(get(result, "result_type", "missing")).")
+    metadata = get(data, "metadata", Dict{String,Any}())
+    return result, metadata
+end
+
+function load_result(path::AbstractString)
+    result, _ = load_result_and_metadata(path)
     return result
 end
 
@@ -118,11 +127,23 @@ function init_buffer(result)
         "sum_delta_rel_sq" => zeros(Float64, n_bins),
         "sum_Ssum" => zeros(Float64, n_bins),
         "sum_separation_min" => zeros(Float64, n_bins),
+        "replica_P_mass_sum" => zeros(Float64, n_bins),
+        "replica_P_mass_sumsq" => zeros(Float64, n_bins),
+        "replica_P_density_sum" => zeros(Float64, n_bins),
+        "replica_P_density_sumsq" => zeros(Float64, n_bins),
+        "replica_P_density_count" => 0,
         "position_edges" => Float64.(get(result, "locations", Dict("edges" => bins["edges"]))["edges"]),
         "position_centers" => Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]),
         "XA_histogram_counts" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
         "XB_histogram_counts" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
         "center_histogram_counts" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "replica_XA_P_density_sum" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "replica_XA_P_density_sumsq" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "replica_XB_P_density_sum" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "replica_XB_P_density_sumsq" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "replica_center_P_density_sum" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "replica_center_P_density_sumsq" => zeros(Float64, length(Float64.(get(result, "locations", Dict("centers" => bins["centers"]))["centers"]))),
+        "replica_location_density_count" => 0,
         "sample_count" => 0,
         "n_replicas" => 0,
         "history_records" => 0,
@@ -157,11 +178,42 @@ function accumulate!(buf, result, path)
     buf["sum_delta_rel_sq"] .+= Float64.(bins["sum_delta_rel_sq"])
     buf["sum_Ssum"] .+= Float64.(bins["sum_Ssum"])
     buf["sum_separation_min"] .+= Float64.(bins["sum_separation_min"])
+    replica_hist = Float64.(bins["histogram_counts"])
+    replica_total = sum(replica_hist)
+    if replica_total > 0
+        widths = diff(buf["edges"])
+        replica_mass = replica_hist ./ replica_total
+        replica_density = replica_mass ./ widths
+        buf["replica_P_mass_sum"] .+= replica_mass
+        buf["replica_P_mass_sumsq"] .+= replica_mass .^ 2
+        buf["replica_P_density_sum"] .+= replica_density
+        buf["replica_P_density_sumsq"] .+= replica_density .^ 2
+        buf["replica_P_density_count"] += 1
+    end
     if haskey(result, "locations")
         locations = result["locations"]
-        buf["XA_histogram_counts"] .+= Float64.(locations["XA_histogram_counts"])
-        buf["XB_histogram_counts"] .+= Float64.(locations["XB_histogram_counts"])
-        buf["center_histogram_counts"] .+= Float64.(locations["center_histogram_counts"])
+        histA = Float64.(locations["XA_histogram_counts"])
+        histB = Float64.(locations["XB_histogram_counts"])
+        histC = Float64.(locations["center_histogram_counts"])
+        buf["XA_histogram_counts"] .+= histA
+        buf["XB_histogram_counts"] .+= histB
+        buf["center_histogram_counts"] .+= histC
+        totalA = sum(histA)
+        totalB = sum(histB)
+        totalC = sum(histC)
+        if totalA > 0 && totalB > 0 && totalC > 0
+            position_widths = diff(buf["position_edges"])
+            densityA = (histA ./ totalA) ./ position_widths
+            densityB = (histB ./ totalB) ./ position_widths
+            densityC = (histC ./ totalC) ./ position_widths
+            buf["replica_XA_P_density_sum"] .+= densityA
+            buf["replica_XA_P_density_sumsq"] .+= densityA .^ 2
+            buf["replica_XB_P_density_sum"] .+= densityB
+            buf["replica_XB_P_density_sumsq"] .+= densityB .^ 2
+            buf["replica_center_P_density_sum"] .+= densityC
+            buf["replica_center_P_density_sumsq"] .+= densityC .^ 2
+            buf["replica_location_density_count"] += 1
+        end
     end
     buf["sample_count"] += Int(result["sample_count"])
     buf["n_replicas"] += 1
@@ -180,9 +232,10 @@ function aggregate_results(paths)
     isempty(paths) && error("No JLD2 files found.")
     buffer = nothing
     skipped = String[]
+    initial_rows = Vector{Dict{String,Any}}()
     for path in paths
-        result = try
-            load_result(path)
+        result, metadata = try
+            load_result_and_metadata(path)
         catch err
             push!(skipped, "$(path): $(sprint(showerror, err))")
             continue
@@ -191,9 +244,47 @@ function aggregate_results(paths)
             buffer = init_buffer(result)
         end
         accumulate!(buffer, result, path)
+        push!(initial_rows, initial_condition_row(path, result, metadata))
     end
     isnothing(buffer) && error("No mobile-object coupled-SDE results could be loaded.")
-    return buffer, skipped
+    return buffer, skipped, initial_rows
+end
+
+function dict_value(data, key::String, default=missing)
+    data isa AbstractDict || return default
+    return haskey(data, key) ? data[key] : default
+end
+
+function nested_initial_condition(result, metadata)
+    result_initial = dict_value(result, "initial_condition", missing)
+    result_initial isa AbstractDict && return result_initial
+    metadata_initial = dict_value(metadata, "initial_condition", missing)
+    metadata_initial isa AbstractDict && return metadata_initial
+    return Dict{String,Any}()
+end
+
+function initial_condition_row(path::AbstractString, result, metadata)
+    params = dict_value(result, "parameters", Dict{String,Any}())
+    initial = nested_initial_condition(result, metadata)
+    return Dict(
+        "source_file" => path,
+        "save_tag" => dict_value(metadata, "save_tag", ""),
+        "seed" => dict_value(metadata, "seed", dict_value(params, "seed", "")),
+        "random_initial_objects" => dict_value(params, "random_initial_objects", ""),
+        "initial_min_separation_config" => dict_value(params, "initial_min_separation", missing),
+        "initial_max_separation_config" => dict_value(params, "initial_max_separation", missing),
+        "hard_min_separation" => dict_value(params, "hard_min_separation", dict_value(metadata, "hard_min_separation", missing)),
+        "initial_source" => dict_value(initial, "source", dict_value(metadata, "initial_condition_source", "")),
+        "initial_step" => dict_value(initial, "step", missing),
+        "initial_time" => dict_value(initial, "time", missing),
+        "initial_XA" => dict_value(initial, "XA", missing),
+        "initial_XB" => dict_value(initial, "XB", missing),
+        "initial_XA_unwrapped" => dict_value(initial, "XA_unwrapped", missing),
+        "initial_XB_unwrapped" => dict_value(initial, "XB_unwrapped", missing),
+        "initial_separation_oriented" => dict_value(initial, "separation_oriented", missing),
+        "initial_separation_min" => dict_value(initial, "separation_min", missing),
+        "initial_pair_center" => dict_value(initial, "pair_center", missing),
+    )
 end
 
 function safe_divide(numer::AbstractVector{Float64}, denom::AbstractVector{Float64})
@@ -202,6 +293,47 @@ function safe_divide(numer::AbstractVector{Float64}, denom::AbstractVector{Float
         out[i] = denom[i] > 0 ? numer[i] / denom[i] : NaN
     end
     return out
+end
+
+function sample_sem_from_sums(sum_values::AbstractVector{Float64}, sumsq_values::AbstractVector{Float64}, n::Integer)
+    sem = similar(sum_values)
+    if n <= 1
+        fill!(sem, NaN)
+        return sem
+    end
+    for i in eachindex(sum_values)
+        mean_value = sum_values[i] / n
+        variance = (sumsq_values[i] - n * mean_value^2) / (n - 1)
+        variance = max(variance, 0.0)
+        sem[i] = sqrt(variance / n)
+    end
+    return sem
+end
+
+function ci95_from_sem(sem::AbstractVector{Float64}, n::Integer)
+    n > 1 || return fill(NaN, length(sem))
+    return NORMAL_CI95 .* sem
+end
+
+function ci95_from_se(se::AbstractVector{Float64})
+    return NORMAL_CI95 .* se
+end
+
+function aggregate_error_metadata()
+    return Dict(
+        "P_mass_sem" => "standard error across replica-normalized distance probability masses",
+        "P_density_sem" => "standard error across replica-normalized distance probability densities",
+        "P_mass_ci95" => "normal-approximate 95% confidence half-width across replica-normalized distance probability masses",
+        "P_density_ci95" => "normal-approximate 95% confidence half-width across replica-normalized distance probability densities",
+        "P_mass_multinomial_se" => "pooled multinomial standard error from aggregate distance counts; ignores autocorrelation and replica-to-replica variation",
+        "P_density_multinomial_se" => "pooled multinomial density standard error from aggregate distance counts; ignores autocorrelation and replica-to-replica variation",
+        "P_mass_multinomial_ci95" => "normal-approximate 95% confidence half-width from pooled multinomial distance counts; ignores autocorrelation and replica-to-replica variation",
+        "P_density_multinomial_ci95" => "normal-approximate 95% confidence half-width from pooled multinomial distance counts; ignores autocorrelation and replica-to-replica variation",
+        "location_density_sem" => "standard error across replica-normalized object-location densities",
+        "location_density_ci95" => "normal-approximate 95% confidence half-width across replica-normalized object-location densities",
+        "location_density_multinomial_se" => "pooled multinomial density standard error from aggregate location counts; ignores autocorrelation and replica-to-replica variation",
+        "location_density_multinomial_ci95" => "normal-approximate 95% confidence half-width from pooled multinomial location counts; ignores autocorrelation and replica-to-replica variation",
+    )
 end
 
 function rows_from_buffer(buf)
@@ -220,6 +352,15 @@ function rows_from_buffer(buf)
     D_proxy = 0.5 * mu_obj^2 .* mean_Ssum
     P_mass = total_hist > 0 ? hist ./ total_hist : fill(NaN, length(hist))
     P_density = P_mass ./ widths
+    replica_density_count = Int(get(buf, "replica_P_density_count", 0))
+    P_mass_sem = sample_sem_from_sums(buf["replica_P_mass_sum"], buf["replica_P_mass_sumsq"], replica_density_count)
+    P_density_sem = sample_sem_from_sums(buf["replica_P_density_sum"], buf["replica_P_density_sumsq"], replica_density_count)
+    P_mass_ci95 = ci95_from_sem(P_mass_sem, replica_density_count)
+    P_density_ci95 = ci95_from_sem(P_density_sem, replica_density_count)
+    P_mass_multinomial_se = total_hist > 0 ? sqrt.(max.(P_mass .* (1.0 .- P_mass), 0.0) ./ total_hist) : fill(NaN, length(hist))
+    P_density_multinomial_se = P_mass_multinomial_se ./ widths
+    P_mass_multinomial_ci95 = ci95_from_se(P_mass_multinomial_se)
+    P_density_multinomial_ci95 = ci95_from_se(P_density_multinomial_se)
 
     invD_raw = similar(D_proxy)
     for i in eachindex(D_proxy)
@@ -240,6 +381,15 @@ function rows_from_buffer(buf)
             "histogram_count" => hist[i],
             "P_mass" => P_mass[i],
             "P_density" => P_density[i],
+            "P_mass_sem" => P_mass_sem[i],
+            "P_density_sem" => P_density_sem[i],
+            "P_mass_ci95" => P_mass_ci95[i],
+            "P_density_ci95" => P_density_ci95[i],
+            "P_mass_multinomial_se" => P_mass_multinomial_se[i],
+            "P_density_multinomial_se" => P_density_multinomial_se[i],
+            "P_mass_multinomial_ci95" => P_mass_multinomial_ci95[i],
+            "P_density_multinomial_ci95" => P_density_multinomial_ci95[i],
+            "P_error_replicas" => replica_density_count,
             "mean_delta_rel_sq" => mean_delta_rel_sq[i],
             "mean_Ssum" => mean_Ssum[i],
             "D_rel_traj" => D_traj[i],
@@ -261,6 +411,13 @@ function location_rows_from_buffer(buf)
     totalA = sum(histA)
     totalB = sum(histB)
     totalC = sum(histC)
+    replica_location_density_count = Int(get(buf, "replica_location_density_count", 0))
+    densityA_sem = sample_sem_from_sums(buf["replica_XA_P_density_sum"], buf["replica_XA_P_density_sumsq"], replica_location_density_count)
+    densityB_sem = sample_sem_from_sums(buf["replica_XB_P_density_sum"], buf["replica_XB_P_density_sumsq"], replica_location_density_count)
+    densityC_sem = sample_sem_from_sums(buf["replica_center_P_density_sum"], buf["replica_center_P_density_sumsq"], replica_location_density_count)
+    densityA_ci95 = ci95_from_sem(densityA_sem, replica_location_density_count)
+    densityB_ci95 = ci95_from_sem(densityB_sem, replica_location_density_count)
+    densityC_ci95 = ci95_from_sem(densityC_sem, replica_location_density_count)
     rows = Vector{Dict{String,Any}}()
     uniform_density = 1.0 / Float64(buf["L"])
     for i in eachindex(centers)
@@ -270,6 +427,12 @@ function location_rows_from_buffer(buf)
         densityA = isfinite(massA) ? massA / widths[i] : NaN
         densityB = isfinite(massB) ? massB / widths[i] : NaN
         densityC = isfinite(massC) ? massC / widths[i] : NaN
+        densityA_multinomial_se = totalA > 0 ? sqrt(max(massA * (1.0 - massA), 0.0) / totalA) / widths[i] : NaN
+        densityB_multinomial_se = totalB > 0 ? sqrt(max(massB * (1.0 - massB), 0.0) / totalB) / widths[i] : NaN
+        densityC_multinomial_se = totalC > 0 ? sqrt(max(massC * (1.0 - massC), 0.0) / totalC) / widths[i] : NaN
+        densityA_multinomial_ci95 = NORMAL_CI95 * densityA_multinomial_se
+        densityB_multinomial_ci95 = NORMAL_CI95 * densityB_multinomial_se
+        densityC_multinomial_ci95 = NORMAL_CI95 * densityC_multinomial_se
         push!(rows, Dict(
             "x_left" => edges[i],
             "x_right" => edges[i + 1],
@@ -283,6 +446,19 @@ function location_rows_from_buffer(buf)
             "XA_P_density" => densityA,
             "XB_P_density" => densityB,
             "center_P_density" => densityC,
+            "XA_P_density_sem" => densityA_sem[i],
+            "XB_P_density_sem" => densityB_sem[i],
+            "center_P_density_sem" => densityC_sem[i],
+            "XA_P_density_ci95" => densityA_ci95[i],
+            "XB_P_density_ci95" => densityB_ci95[i],
+            "center_P_density_ci95" => densityC_ci95[i],
+            "XA_P_density_multinomial_se" => densityA_multinomial_se,
+            "XB_P_density_multinomial_se" => densityB_multinomial_se,
+            "center_P_density_multinomial_se" => densityC_multinomial_se,
+            "XA_P_density_multinomial_ci95" => densityA_multinomial_ci95,
+            "XB_P_density_multinomial_ci95" => densityB_multinomial_ci95,
+            "center_P_density_multinomial_ci95" => densityC_multinomial_ci95,
+            "location_error_replicas" => replica_location_density_count,
             "uniform_density" => uniform_density,
         ))
     end
@@ -353,11 +529,13 @@ end
 
 function write_csv(path, rows)
     open(path, "w") do io
-        println(io, "bin_left,bin_right,bin_center,mean_separation_min,count,histogram_count,P_mass,P_density,mean_delta_rel_sq,mean_Ssum,D_rel_traj,D_rel_proxy,inv_D_proxy_density,P_times_D_proxy")
+        println(io, "bin_left,bin_right,bin_center,mean_separation_min,count,histogram_count,P_mass,P_density,P_mass_sem,P_density_sem,P_mass_ci95,P_density_ci95,P_mass_multinomial_se,P_density_multinomial_se,P_mass_multinomial_ci95,P_density_multinomial_ci95,P_error_replicas,mean_delta_rel_sq,mean_Ssum,D_rel_traj,D_rel_proxy,inv_D_proxy_density,P_times_D_proxy")
         for r in rows
-            @printf(io, "%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e\n",
+            @printf(io, "%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%d,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e\n",
                 r["bin_left"], r["bin_right"], r["bin_center"], r["mean_separation_min"], r["count"], r["histogram_count"],
-                r["P_mass"], r["P_density"], r["mean_delta_rel_sq"], r["mean_Ssum"], r["D_rel_traj"], r["D_rel_proxy"],
+                r["P_mass"], r["P_density"], r["P_mass_sem"], r["P_density_sem"], r["P_mass_ci95"], r["P_density_ci95"],
+                r["P_mass_multinomial_se"], r["P_density_multinomial_se"], r["P_mass_multinomial_ci95"], r["P_density_multinomial_ci95"],
+                Int(r["P_error_replicas"]), r["mean_delta_rel_sq"], r["mean_Ssum"], r["D_rel_traj"], r["D_rel_proxy"],
                 r["inv_D_proxy_density"], r["P_times_D_proxy"])
         end
     end
@@ -366,12 +544,74 @@ end
 
 function write_location_csv(path, rows)
     open(path, "w") do io
-        println(io, "x_left,x_right,x_center,XA_count,XB_count,center_count,XA_P_mass,XB_P_mass,center_P_mass,XA_P_density,XB_P_density,center_P_density,uniform_density")
+        println(io, "x_left,x_right,x_center,XA_count,XB_count,center_count,XA_P_mass,XB_P_mass,center_P_mass,XA_P_density,XB_P_density,center_P_density,XA_P_density_sem,XB_P_density_sem,center_P_density_sem,XA_P_density_ci95,XB_P_density_ci95,center_P_density_ci95,XA_P_density_multinomial_se,XB_P_density_multinomial_se,center_P_density_multinomial_se,XA_P_density_multinomial_ci95,XB_P_density_multinomial_ci95,center_P_density_multinomial_ci95,location_error_replicas,uniform_density")
         for r in rows
-            @printf(io, "%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e\n",
+            @printf(io, "%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%.16e,%d,%.16e\n",
                 r["x_left"], r["x_right"], r["x_center"], r["XA_count"], r["XB_count"], r["center_count"],
                 r["XA_P_mass"], r["XB_P_mass"], r["center_P_mass"], r["XA_P_density"], r["XB_P_density"],
-                r["center_P_density"], r["uniform_density"])
+                r["center_P_density"], r["XA_P_density_sem"], r["XB_P_density_sem"], r["center_P_density_sem"],
+                r["XA_P_density_ci95"], r["XB_P_density_ci95"], r["center_P_density_ci95"],
+                r["XA_P_density_multinomial_se"], r["XB_P_density_multinomial_se"], r["center_P_density_multinomial_se"],
+                r["XA_P_density_multinomial_ci95"], r["XB_P_density_multinomial_ci95"], r["center_P_density_multinomial_ci95"],
+                Int(r["location_error_replicas"]), r["uniform_density"])
+        end
+    end
+    return path
+end
+
+function csv_field(value)
+    if value === missing || isnothing(value)
+        return ""
+    end
+    text = string(value)
+    return "\"" * replace(text, "\"" => "\"\"") * "\""
+end
+
+function finite_or_nan(value)
+    if value === missing || isnothing(value)
+        return NaN
+    elseif value isa Number
+        return Float64(value)
+    elseif value isa AbstractString
+        stripped = strip(value)
+        isempty(stripped) && return NaN
+        try
+            return parse(Float64, stripped)
+        catch
+            return NaN
+        end
+    end
+    return NaN
+end
+
+function number_field(value)
+    return @sprintf("%.16e", finite_or_nan(value))
+end
+
+function write_initial_conditions_csv(path, rows)
+    open(path, "w") do io
+        println(io, "source_file,save_tag,seed,random_initial_objects,initial_min_separation_config,initial_max_separation_config,hard_min_separation,initial_source,initial_step,initial_time,initial_XA,initial_XB,initial_XA_unwrapped,initial_XB_unwrapped,initial_separation_oriented,initial_separation_min,initial_pair_center")
+        for r in rows
+            fields = [
+                csv_field(r["source_file"]),
+                csv_field(r["save_tag"]),
+                csv_field(r["seed"]),
+                csv_field(r["random_initial_objects"]),
+                number_field(r["initial_min_separation_config"]),
+                number_field(r["initial_max_separation_config"]),
+                number_field(r["hard_min_separation"]),
+                csv_field(r["initial_source"]),
+                number_field(r["initial_step"]),
+                number_field(r["initial_time"]),
+                number_field(r["initial_XA"]),
+                number_field(r["initial_XB"]),
+                number_field(r["initial_XA_unwrapped"]),
+                number_field(r["initial_XB_unwrapped"]),
+                number_field(r["initial_separation_oriented"]),
+                number_field(r["initial_separation_min"]),
+                number_field(r["initial_pair_center"]),
+            ]
+            println(io, join(fields, ","))
         end
     end
     return path
@@ -390,7 +630,7 @@ function max_abs_location_density_deviation(location_rows, key::String)
     return maximum(vals)
 end
 
-function write_summary(path, buf, rows, location_rows, fit, slope, skipped, args)
+function write_summary(path, buf, rows, location_rows, fit, slope, skipped, args, initial_rows)
     fit_rows = select_fit_rows(rows, args)
     flatness_std = finite_std([r["P_times_D_proxy"] for r in fit_rows])
     open(path, "w") do io
@@ -403,6 +643,17 @@ function write_summary(path, buf, rows, location_rows, fit, slope, skipped, args
         println(io, "mu_obj=$(buf["mu_obj"])")
         println(io, "history_records=$(buf["history_records"])")
         println(io, "history_truncated_replicas=$(buf["history_truncated_replicas"])")
+        println(io, "initial_condition_records=$(length(initial_rows))")
+        println(io, "P_error_replicas=$(get(buf, "replica_P_density_count", 0))")
+        println(io, "location_error_replicas=$(get(buf, "replica_location_density_count", 0))")
+        println(io, "P_error_method=replica_sem_over_normalized_histograms")
+        println(io, "P_ci95_method=normal_approx_1.96_times_replica_sem")
+        println(io, "P_count_error_method=pooled_multinomial_se_ignores_autocorrelation")
+        println(io, "P_count_ci95_method=normal_approx_1.96_times_pooled_multinomial_se")
+        println(io, "location_error_method=replica_sem_over_normalized_location_histograms")
+        println(io, "location_ci95_method=normal_approx_1.96_times_replica_sem")
+        println(io, "location_count_error_method=pooled_multinomial_se_ignores_autocorrelation")
+        println(io, "location_count_ci95_method=normal_approx_1.96_times_pooled_multinomial_se")
         println(io, "periodic_fit=$(args["periodic_fit"])")
         println(io, "P_times_D_proxy_std_in_fit_window=$(flatness_std)")
         println(io, "XA_location_max_abs_relative_deviation_from_uniform=$(max_abs_location_density_deviation(location_rows, "XA_P_density"))")
@@ -428,6 +679,33 @@ function write_summary(path, buf, rows, location_rows, fit, slope, skipped, args
     return path
 end
 
+function optional_error_vector(rows, indices, key::String)
+    errors = Float64[]
+    has_positive_error = false
+    for i in indices
+        value = Float64(get(rows[i], key, NaN))
+        if isfinite(value) && value >= 0
+            push!(errors, value)
+            has_positive_error |= value > 0
+        else
+            push!(errors, 0.0)
+        end
+    end
+    return has_positive_error ? errors : nothing
+end
+
+function optional_ci95_or_sem_vector(rows, indices, ci_key::String, sem_key::String)
+    ci = optional_error_vector(rows, indices, ci_key)
+    if !isnothing(ci)
+        return ci, "95% CI"
+    end
+    sem = optional_error_vector(rows, indices, sem_key)
+    if !isnothing(sem)
+        return sem, "replica SEM"
+    end
+    return nothing, ""
+end
+
 function maybe_plot(output_path, rows, fit, args)
     args["no_plot"] && return nothing
     centers = [Float64(r["bin_center"]) for r in rows]
@@ -437,13 +715,18 @@ function maybe_plot(output_path, rows, fit, args)
     Dtraj = [Float64(rows[i]["D_rel_traj"]) for i in nonempty]
     Dproxy = [Float64(rows[i]["D_rel_proxy"]) for i in nonempty]
     P = [Float64(rows[i]["P_density"]) for i in nonempty]
+    Perr, Perr_label = optional_ci95_or_sem_vector(rows, nonempty, "P_density_ci95", "P_density_sem")
     invD = [Float64(rows[i]["inv_D_proxy_density"]) for i in nonempty]
     flat = [Float64(rows[i]["P_times_D_proxy"]) for i in nonempty]
 
-    p1 = plot(c, Dproxy; marker=:circle, lw=2, xlabel="minimum separation", ylabel="D_rel", title="Conditional diffusivity", label="proxy")
+    p1 = plot(c, Dproxy; marker=:circle, lw=2, xlabel="minimum separation", ylabel="D_rel", title="Conditional diffusivity", label="proxy", legend=OUTSIDE_LEGEND)
     plot!(p1, c, Dtraj; marker=:diamond, lw=2, label="trajectory")
 
-    p2 = plot(c, P; marker=:circle, lw=2, xlabel="minimum separation", ylabel="density", title="Stationary separation", label="P_ss")
+    p2 = if isnothing(Perr)
+        plot(c, P; marker=:circle, lw=2, xlabel="minimum separation", ylabel="density", title="Stationary separation", label="P_ss", legend=OUTSIDE_LEGEND)
+    else
+        plot(c, P; yerror=Perr, marker=:circle, lw=2, xlabel="minimum separation", ylabel="density", title="Stationary separation", label="P_ss $(Perr_label)", legend=OUTSIDE_LEGEND)
+    end
     plot!(p2, c, invD; marker=:diamond, lw=2, label="normalized 1/D_proxy")
 
     p3 = plot(c, flat; marker=:circle, lw=2, xlabel="minimum separation", ylabel="P_ss * D_proxy", title="Ito flatness diagnostic", legend=false)
@@ -452,7 +735,7 @@ function maybe_plot(output_path, rows, fit, args)
         Dinf = fit["Dinf"]
         ycorr = Dproxy .- Dinf
         positive = findall(>(0.0), ycorr)
-        p4 = plot(c[positive], ycorr[positive]; xscale=:log10, yscale=:log10, marker=:circle, lw=2, xlabel="minimum separation", ylabel="D_proxy - Dinf", title="Scaling diagnostic", label="proxy")
+        p4 = plot(c[positive], ycorr[positive]; xscale=:log10, yscale=:log10, marker=:circle, lw=2, xlabel="minimum separation", ylabel="D_proxy - Dinf", title="Scaling diagnostic", label="proxy", legend=OUTSIDE_LEGEND)
         if !isempty(positive)
             ref = ycorr[positive][1] .* (c[positive] ./ c[positive][1]).^(-2)
             plot!(p4, c[positive], ref; lw=2, ls=:dash, label="slope -2")
@@ -461,14 +744,14 @@ function maybe_plot(output_path, rows, fit, args)
         p4 = plot(title="Scaling diagnostic unavailable", axis=false, legend=false)
     end
 
-    savefig(plot(p1, p2, p3, p4, layout=(2, 2), size=(1300, 950)), output_path)
+    savefig(plot(p1, p2, p3, p4, layout=(2, 2), size=(1550, 980)), output_path)
     return output_path
 end
 
 function main()
     args = parse_commandline()
     paths = resolve_inputs(args)
-    buffer, skipped = aggregate_results(paths)
+    buffer, skipped, initial_rows = aggregate_results(paths)
     rows = rows_from_buffer(buffer)
     location_rows = location_rows_from_buffer(buffer)
     fit_rows = select_fit_rows(rows, args)
@@ -481,18 +764,21 @@ function main()
     tag = replace(String(args["save_tag"]), r"[^A-Za-z0-9._-]+" => "-")
     csv_path = joinpath(output_dir, "$(tag)_mobile_aggregate.csv")
     location_csv_path = joinpath(output_dir, "$(tag)_mobile_locations.csv")
+    initial_csv_path = joinpath(output_dir, "$(tag)_mobile_initial_conditions.csv")
     jld2_path = joinpath(output_dir, "$(tag)_mobile_aggregate.jld2")
     summary_path = joinpath(output_dir, "$(tag)_mobile_summary.txt")
     plot_path = joinpath(output_dir, "$(tag)_mobile.png")
     write_csv(csv_path, rows)
     write_location_csv(location_csv_path, location_rows)
-    jldsave(jld2_path; rows=rows, location_rows=location_rows, fit=fit, slope=slope, skipped=skipped)
-    write_summary(summary_path, buffer, rows, location_rows, fit, slope, skipped, args)
+    write_initial_conditions_csv(initial_csv_path, initial_rows)
+    jldsave(jld2_path; rows=rows, location_rows=location_rows, initial_rows=initial_rows, fit=fit, slope=slope, skipped=skipped, error_metadata=aggregate_error_metadata())
+    write_summary(summary_path, buffer, rows, location_rows, fit, slope, skipped, args, initial_rows)
     maybe_plot(plot_path, rows, fit, args)
 
     println("Saved mobile-object coupled-SDE aggregate:")
     println("  $(csv_path)")
     println("  $(location_csv_path)")
+    println("  $(initial_csv_path)")
     println("  $(jld2_path)")
     println("  $(summary_path)")
     if !args["no_plot"]

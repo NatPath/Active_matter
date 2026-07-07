@@ -43,6 +43,7 @@ Paths / connection:
 Post-processing:
   --plot                                  Run plotting after sync. For coupled_sde mobile_objects this runs
                                           steady-state comparison, distance-density log-log, and offset-power-law scaling plots.
+                                          For coupled_sde ghost_probe this plots the fetched replica aggregate CSVs.
   --no_remote_reports                     In aggregation sync, skip remote reports/ and only fetch aggregate artifacts + metadata
   --latest_aggregate_only                 In aggregation sync, fetch only the newest remote aggregate needed for plotting
                                           plus lightweight run metadata and sibling summary/CSV artifacts when present
@@ -75,6 +76,7 @@ Examples:
   bash copy_data_from_cluster.sh --run_id ssep_ctmc_single_center_bond_L256_rho05_ns500000000_nr600_dag_20260328-120000
   bash copy_data_from_cluster.sh --run_id active_objects_1d_two_objects_L64_rho100_d16_hard_refresh_k5e-5_nr10_hist_20260331-120000 --plot
   bash copy_data_from_cluster.sh --run_id coupled_sde_mobile_600cpu_12h_prod_001 --sync_scope aggregation --plot
+  bash copy_data_from_cluster.sh --run_id ghost_probe_L128_rho100_dt0p001_warm1000000_prod3000000_nr600_... --run_family coupled_sde --sync_scope aggregation --plot
   bash copy_data_from_cluster.sh --run_id coupled_sde_mobile_600cpu_12h_prod_001 --latest_aggregate_only --plot
   bash copy_data_from_cluster.sh --run_id ffsde_two_force_L160_600cpu_20260524-120000 --run_family fluctuating_force_sde --sync_scope aggregation
   bash copy_data_from_cluster.sh --run_id diffusive_1d_pmlr_L512_rho100_gamma1_V16_production_ns1000000_nr600_20260420-120000 --plot --collapse_indices 20:10:80
@@ -1373,6 +1375,36 @@ distance_density_loglog_dir=${loglog_dir}
 offset_powerlaw_dir=${offset_dir}
 EOF
                 echo "Scaling plots saved to: ${report_root}"
+                echo "Done. Local run folder: ${local_run_dir}"
+                exit 0
+                ;;
+            ghost_probe)
+                analysis_dir="${local_run_dir}/analysis"
+                if [[ ! -d "${analysis_dir}" ]]; then
+                    echo "No coupled-SDE ghost-probe analysis directory found at ${analysis_dir}; skipping plot."
+                    exit 0
+                fi
+                final_aggregate="${analysis_dir}/ghost_probe_replica_aggregate_final.csv"
+                cumulative_aggregate="${analysis_dir}/ghost_probe_replica_aggregate_cumulative.csv"
+                if [[ ! -f "${final_aggregate}" || ! -f "${cumulative_aggregate}" ]]; then
+                    echo "Missing required coupled-SDE ghost-probe aggregate CSVs; skipping plot."
+                    echo "  expected=${final_aggregate}"
+                    echo "  expected=${cumulative_aggregate}"
+                    exit 0
+                fi
+                plot_script="${REPO_ROOT}/utility_scripts/plot_coupled_sde_ghost_probe_aggregate.jl"
+                if [[ ! -f "${plot_script}" ]]; then
+                    echo "Missing coupled-SDE ghost-probe plot script: ${plot_script}"
+                    exit 1
+                fi
+                report_dir="${local_run_dir}/reports/ghost_probe_aggregate_$(date +%Y%m%d-%H%M%S)"
+                mkdir -p "${report_dir}"
+                echo "Running coupled-SDE ghost-probe aggregate plotter..."
+                "${julia_bin}" --startup-file=no "${plot_script}" \
+                    --analysis_dir "${analysis_dir}" \
+                    --out_dir "${report_dir}" \
+                    --save_tag "${run_id}"
+                echo "Plots saved to: ${report_dir}"
                 echo "Done. Local run folder: ${local_run_dir}"
                 exit 0
                 ;;

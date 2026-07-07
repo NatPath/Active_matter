@@ -8,6 +8,7 @@ export initialize_state, step!, run!, result_dict, stability_recommendations
 
 const GAUSSIAN_PROFILE = 1
 const COMPACT_BUMP_PROFILE = 2
+const TOP_HAT_PROFILE = 3
 
 Base.@kwdef struct FluctuatingForceParam
     dims::Int = 1
@@ -131,8 +132,10 @@ function profile_kind(profile_type::AbstractString)
         return GAUSSIAN_PROFILE
     elseif profile in ("bump", "compact_bump", "compact")
         return COMPACT_BUMP_PROFILE
+    elseif profile in ("top_hat", "tophat", "box", "square", "constant_window")
+        return TOP_HAT_PROFILE
     end
-    throw(ArgumentError("Unsupported profile_type=$(profile_type). Use gaussian or compact_bump."))
+    throw(ArgumentError("Unsupported profile_type=$(profile_type). Use gaussian, compact_bump, or top_hat."))
 end
 
 @inline function profile_value_r2(r2::Real, param::FluctuatingForceParam, kind::Int)
@@ -145,6 +148,8 @@ end
         u = r / sigma
         u >= 1.0 && return 0.0
         return param.f0 * exp(1.0 - 1.0 / (1.0 - u * u))
+    elseif kind == TOP_HAT_PROFILE
+        return Float64(r2) < sigma * sigma ? param.f0 : 0.0
     end
     throw(ArgumentError("Unsupported profile kind code: $(kind)."))
 end

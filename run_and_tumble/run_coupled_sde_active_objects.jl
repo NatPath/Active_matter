@@ -315,6 +315,21 @@ function output_filename(save_dir::AbstractString, param::CoupledSDEParam; save_
     return joinpath(save_dir, stem * ".jld2")
 end
 
+function initial_condition_dict(state::CoupledSDEState, param::CoupledSDEParam; source::AbstractString="initialized")
+    return Dict(
+        "source" => String(source),
+        "step" => Int(state.step),
+        "time" => Float64(state.time),
+        "XA" => Float64(state.XA),
+        "XB" => Float64(state.XB),
+        "XA_unwrapped" => Float64(state.XA_unwrapped),
+        "XB_unwrapped" => Float64(state.XB_unwrapped),
+        "separation_oriented" => oriented_separation(state.XA, state.XB, param.L),
+        "separation_min" => minimum_separation(state.XA, state.XB, param.L),
+        "pair_center" => pair_center_minimum_arc(state.XA, state.XB, param.L),
+    )
+end
+
 function write_summary(path::AbstractString, result::Dict, output_path::AbstractString)
     open(path, "w") do io
         println(io, "output_path=$(output_path)")
@@ -328,6 +343,13 @@ function write_summary(path::AbstractString, result::Dict, output_path::Abstract
         end
         if haskey(result, "D_rel_proxy")
             println(io, "D_rel_proxy=$(result["D_rel_proxy"])")
+        end
+        if haskey(result, "initial_condition")
+            initial = result["initial_condition"]
+            for key in ["source", "step", "time", "XA", "XB", "XA_unwrapped", "XB_unwrapped", "separation_oriented", "separation_min", "pair_center"]
+                haskey(initial, key) || continue
+                println(io, "initial_$(key)=$(initial[key])")
+            end
         end
         stability = result["stability"]
         for key in sort(collect(keys(stability)))
@@ -494,6 +516,7 @@ function main()
     save_dir = String(get(params, "save_dir", defaults["save_dir"]))
     resume_data = nothing
     rng = rng_from_param(param)
+    initial_condition_source = ""
     state = if !isnothing(resume_checkpoint_path)
         resume_data = load_resume_checkpoint(String(resume_checkpoint_path), param)
         saved_hard_min = resume_data["hard_min_separation"]
@@ -502,12 +525,16 @@ function main()
                 error("Incompatible hard_min_separation in checkpoint: saved=$(saved_hard_min) current=$(hard_min_separation)")
         end
         rng = resume_data["rng"]
+        initial_condition_source = "resume_checkpoint"
         resume_data["state"]
     elseif !isnothing(initial_state_path)
+        initial_condition_source = "initial_state"
         load_initial_state(String(initial_state_path), param)
     else
+        initial_condition_source = param.random_initial_objects ? "random_initial_objects" : "config_initial_objects"
         initialize_state(param, rng)
     end
+    initial_condition = initial_condition_dict(state, param; source=initial_condition_source)
 
     !performance_mode && print_estimate(param, hard_min_separation)
     start_time = time()
@@ -539,6 +566,7 @@ function main()
     end
     result["parameters"]["hard_min_separation"] = Float64(hard_min_separation)
     result["parameters"]["hard_min_separation_over_sigma_f"] = Float64(hard_min_separation) / param.sigma_f
+    result["initial_condition"] = initial_condition
     metadata = Dict(
         "config_path" => abspath(String(args["config"])),
         "save_tag" => get(args, "save_tag", nothing),
@@ -553,6 +581,8 @@ function main()
         "checkpoint_interval_steps" => checkpoint_interval_steps,
         "hard_min_separation" => Float64(hard_min_separation),
         "hard_min_separation_over_sigma_f" => Float64(hard_min_separation) / param.sigma_f,
+        "initial_condition" => initial_condition,
+        "initial_condition_source" => initial_condition_source,
     )
 
     output_path = output_filename(save_dir, param; save_tag=get(args, "save_tag", nothing))
